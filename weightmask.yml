@@ -1,0 +1,71 @@
+# Configuration for Masking and Variance Pipeline
+
+# Flat Masking - Thresholds relative to median flat value
+flat_masking:
+  low_thresh: 0.5
+  high_thresh: 2.0
+
+# Saturation Detection
+saturation:
+  # method: 'histogram' or 'header'. Histogram is recommended for bias-subtracted data.
+  method: 'histogram'
+  # Keyword used if method is 'header' or as fallback from histogram
+  keyword: 'SATURATE'
+  # Histogram parameters (used if method is 'histogram')
+  hist_min_adu: 30000
+  hist_max_adu: 70000
+  hist_min_counts: 10
+  hist_drop_factor: 5.0
+  # Fallback default level if chosen/fallback methods fail
+  fallback_level: 65000.0
+
+# SEP Background Estimation
+sep_background:
+  box_size: 64       # pixels
+  filter_size: 3     # pixels
+
+# Astroscrappy Cosmic Ray Detection
+cosmic_ray:
+  sigclip: 4.5       # sigma threshold
+  objlim: 5.0        # contrast limit
+
+# SEP Object Detection
+sep_objects:
+  extract_thresh: 1.5 # sigma above background RMS
+  min_area: 5       # pixels
+  ellipse_k: 2.5    # ellipse scaling factor for masking
+
+# Streak Masking (Hough Transform based)
+streak_masking:
+  enable: True       # Enable/disable streak masking step
+  input_threshold_sigma: 3.0 # Sigma threshold for Hough input image
+  hough_angles: 360  # Number of angles to check
+  hough_peak_threshold_factor: 0.3 # Peak detection threshold (fraction of max Hough value)
+  hough_min_distance: 15     # Min pixel separation between peaks in Hough space
+  hough_min_angle: 5       # Min angle separation (degrees) between peaks
+  dilation_radius: 5     # Radius in pixels to dilate detected lines
+
+# Variance Calculation
+variance:
+  gain_keyword: 'GAIN'       # Header keyword for gain (e-/ADU)
+  rdnoise_keyword: 'RDNOISE'   # Header keyword for read noise (e-)
+  default_gain: 1.5        # Default gain if keyword missing
+  default_rdnoise: 5.0       # Default read noise if keyword missing
+  epsilon: 1.0e-9          # Small number for division stability
+
+# Mask Bit Definitions (Informational - used internally by the script)
+# mask_bits:
+#   BAD: 1
+#   SAT: 2
+#   CR: 4
+#   DETECTED: 8
+#   STREAK: 16
+
+# Confidence Map Generation (uses mask & invvar)
+confidence_map:
+  # Value for good pixels (usually 1)
+  good_value: 1
+  # Value for bad pixels (usually 0)
+  bad_value: 0
+  # Data type for output confidence map (uint8 is efficient for 0/1)
+  dtype: 'uint8' # e.g., uint8, int16
