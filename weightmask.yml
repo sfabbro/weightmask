@@ -12,10 +12,11 @@ saturation:
   # Keyword used if method is 'header' or as fallback from histogram
   keyword: 'SATURATE'
   # Histogram parameters (used if method is 'histogram')
-  hist_min_adu: 30000
-  hist_max_adu: 70000
-  hist_min_counts: 10
-  hist_drop_factor: 5.0
+  # Set to null/omit to auto-determine from data (recommended)
+  hist_min_adu: null   # Auto-determined if null
+  hist_max_adu: null   # Auto-determined if null
+  hist_min_counts: null   # Auto-determined if null
+  hist_drop_factor: null   # Uses default of 5.0 if null
   # Fallback default level if chosen/fallback methods fail
   fallback_level: 65000.0
 

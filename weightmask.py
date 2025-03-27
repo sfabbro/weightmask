@@ -57,26 +57,111 @@ def create_binary_mask(mask_data, bit_flag):
     return np.where((mask_data & bit_flag) > 0, 1, 0).astype(np.uint8)
 
 
-def estimate_saturation_from_histogram(data, min_adu, max_adu, min_counts, drop_factor):
-    """ Estimates saturation level from histogram. """
-    # [Function code remains the same - snipped for brevity]
-    print(f"  Attempting histogram analysis: range=[{min_adu},{max_adu}], min_counts={min_counts}, drop_factor={drop_factor:.1f}")
+def estimate_saturation_from_histogram(data, min_adu=None, max_adu=None, min_counts=None, drop_factor=None):
+    """
+    Estimates saturation level from histogram, with automatic parameter determination.
+    
+    Args:
+        data (ndarray): Image data array
+        min_adu (float, optional): Lower bound ADU value for histogram analysis. If None, auto-determined.
+        max_adu (float, optional): Upper bound ADU value for histogram analysis. If None, auto-determined.
+        min_counts (int, optional): Minimum counts threshold. If None, auto-determined.
+        drop_factor (float, optional): Counts ratio threshold between adjacent bins. If None, auto-determined.
+    
+    Returns:
+        float or None: Estimated saturation level, or None if not found
+    """
+    # Auto-determine parameters if not provided
+    try:
+        # Filter out infinities and NaNs for percentile calculations
+        finite_data = data[np.isfinite(data)]
+        if finite_data.size == 0:
+            print("  Histogram analysis: No finite data found.")
+            return None
+            
+        # Auto-determine min_adu and max_adu
+        if min_adu is None or max_adu is None:
+            p95 = np.percentile(finite_data, 95)
+            p99_9 = np.percentile(finite_data, 99.9)
+            p_max = np.max(finite_data)
+            
+            auto_min_adu = p95 * 0.9  # Start a bit below 95th percentile
+            auto_max_adu = min(p_max * 1.1, p99_9 * 1.5)  # Don't go too far beyond max value
+            
+            min_adu = min_adu if min_adu is not None else auto_min_adu
+            max_adu = max_adu if max_adu is not None else auto_max_adu
+            
+            print(f"  Auto-determined histogram range: [{min_adu:.1f},{max_adu:.1f}] ADU")
+        
+        # Auto-determine min_counts
+        if min_counts is None:
+            # Calculate based on image size - larger images need higher thresholds
+            img_size = data.size
+            auto_min_counts = max(10, int(img_size * 1e-5))  # Adjust factor as needed
+            min_counts = auto_min_counts
+            print(f"  Auto-determined minimum counts threshold: {min_counts}")
+        
+        # Auto-determine drop_factor
+        if drop_factor is None:
+            # Default based on typical CCD/CMOS saturation behavior
+            drop_factor = 5.0
+            print(f"  Using default drop factor: {drop_factor:.1f}")
+    
+    except Exception as e:
+        print(f"  Parameter auto-determination failed: {e}")
+        # Fall back to reasonable defaults
+        min_adu = min_adu if min_adu is not None else 30000
+        max_adu = max_adu if max_adu is not None else 65000
+        min_counts = min_counts if min_counts is not None else 10
+        drop_factor = drop_factor if drop_factor is not None else 5.0
+    
+    # Log final parameters
+    print(f"  Attempting histogram analysis: range=[{min_adu:.1f},{max_adu:.1f}], min_counts={min_counts}, drop_factor={drop_factor:.1f}")
+    
+    # Main histogram analysis (keeping existing logic with minor improvements)
     try:
         valid_data = data[(data >= min_adu) & (data <= max_adu) & np.isfinite(data)]
-        if valid_data.size < min_counts * 5: print("  Histogram analysis: Not enough valid pixels in range."); return None
-        bin_edges = np.arange(min_adu, max_adu + 2, 1); counts, _ = np.histogram(valid_data, bins=bin_edges)
+        if valid_data.size < min_counts * 5:
+            print("  Histogram analysis: Not enough valid pixels in range.")
+            return None
+            
+        bin_edges = np.arange(min_adu, max_adu + 2, 1)
+        counts, _ = np.histogram(valid_data, bins=bin_edges)
+        
         potential_sat_indices = np.where(counts >= min_counts)[0]
-        if len(potential_sat_indices) == 0: print("  Histogram analysis: No bins found with counts above threshold."); return None
+        if len(potential_sat_indices) == 0:
+            print("  Histogram analysis: No bins found with counts above threshold.")
+            return None
+            
         for idx in range(len(potential_sat_indices) - 1, -1, -1):
             i = potential_sat_indices[idx]
-            if i == len(counts) - 1: estimated_level = bin_edges[i]; print(f"  Histogram analysis: Found saturation plateau ending at highest analyzed bin: {estimated_level:.1f} ADU"); return float(estimated_level)
-            counts_current = counts[i]; counts_next = counts[i+1]
+            if i == len(counts) - 1:
+                estimated_level = bin_edges[i]
+                print(f"  Histogram analysis: Found saturation plateau ending at highest analyzed bin: {estimated_level:.1f} ADU")
+                return float(estimated_level)
+                
+            counts_current = counts[i]
+            counts_next = counts[i+1]
+            
             if counts_next <= 0:
-                 if counts_current >= min_counts: estimated_level = bin_edges[i]; print(f"  Histogram analysis: Found sharp drop to zero after bin {i}. Level: {estimated_level:.1f} ADU"); return float(estimated_level)
-                 else: continue
-            if counts_current / counts_next >= drop_factor: estimated_level = bin_edges[i]; print(f"  Histogram analysis: Found drop factor > {drop_factor:.1f} after bin {i}. Level: {estimated_level:.1f} ADU"); return float(estimated_level)
-        print("  Histogram analysis: No significant drop found."); return None
-    except Exception as e: print(f"  Histogram analysis failed with error: {e}"); return None
+                if counts_current >= min_counts:
+                    estimated_level = bin_edges[i]
+                    print(f"  Histogram analysis: Found sharp drop to zero after bin {i}. Level: {estimated_level:.1f} ADU")
+                    return float(estimated_level)
+                else:
+                    continue
+                    
+            if counts_current / counts_next >= drop_factor:
+                estimated_level = bin_edges[i]
+                print(f"  Histogram analysis: Found drop factor > {drop_factor:.1f} after bin {i}. Level: {estimated_level:.1f} ADU")
+                return float(estimated_level)
+                
+        print("  Histogram analysis: No significant drop found.")
+        return None
+        
+    except Exception as e:
+        print(f"  Histogram analysis failed with error: {e}")
+        return None
 
 
 def calculate_inverse_variance(sky_map_ff, flat_map, gain, read_noise_e, epsilon):
