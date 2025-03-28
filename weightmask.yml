@@ -22,7 +22,7 @@ saturation:
 
 # SEP Background Estimation
 sep_background:
-  box_size: 64       # pixels
+  box_size: 128       # pixels
   filter_size: 3     # pixels
 
 # Astroscrappy Cosmic Ray Detection
@@ -36,23 +36,65 @@ sep_objects:
   min_area: 5       # pixels
   ellipse_k: 2.5    # ellipse scaling factor for masking
 
-# Streak Masking (Hough Transform based)
+
+# Streak Masking Configuration
 streak_masking:
-  enable: True       # Enable/disable streak masking step
-  input_threshold_sigma: 3.0 # Sigma threshold for Hough input image
-  hough_angles: 360  # Number of angles to check
-  hough_peak_threshold_factor: 0.3 # Peak detection threshold (fraction of max Hough value)
-  hough_min_distance: 15     # Min pixel separation between peaks in Hough space
-  hough_min_angle: 5       # Min angle separation (degrees) between peaks
-  dilation_radius: 5     # Radius in pixels to dilate detected lines
+  enable: True
+  method: 'ransac'  # Choose 'ransac' or 'hough'
+
+  # Common parameter(s)
+  dilation_radius: 5       # Radius in pixels to dilate the final streak mask
+
+  # Parameters specific to the RANSAC method
+  ransac_params:
+    input_threshold_sigma: 3.0
+    use_canny: True
+    canny_sigma: 1.0
+    canny_low_threshold: 0.1
+    canny_high_threshold: 0.5
+    min_elongation: 5.0
+    min_pixels: 20
+    max_pixels: 10000
+    ransac_min_samples: 5
+    ransac_residual_threshold: 1.0
+    ransac_max_trials: 100
+    min_inliers: 15
+
+  # Parameters specific to the Probabilistic Hough method
+  hough_params:
+    input_threshold_sigma: 3.0
+    # Optional input filtering (choose one or none)
+    use_canny: False
+    canny_sigma: 1.0
+    canny_low_threshold: 0.1
+    canny_high_threshold: 0.5
+    use_morph_open: False
+    morph_kernel_size: 5 # Size for morphological opening kernel
+    # Probabilistic Hough Transform parameters
+    prob_hough_threshold: 10    # Minimum votes required to identify a line segment
+    prob_hough_line_length: 50  # Minimum length of a line segment (pixels)
+    prob_hough_line_gap: 10     # Maximum allowed gap between points on the same line (pixels)
 
 # Variance Calculation
 variance:
+  # Choose 'theoretical' or 'rms_map'. Default is 'theoretical'.
+  method: 'theoretical'
+  # Parameters for 'theoretical' method:
   gain_keyword: 'GAIN'       # Header keyword for gain (e-/ADU)
   rdnoise_keyword: 'RDNOISE'   # Header keyword for read noise (e-)
   default_gain: 1.5        # Default gain if keyword missing
   default_rdnoise: 5.0       # Default read noise if keyword missing
+  # Common parameter:
   epsilon: 1.0e-9          # Small number for division stability
+
+# Flat Masking - Thresholds relative to median flat value
+flat_masking:
+  low_thresh: 0.5           # For individual pixels
+  high_thresh: 2.0          # For individual pixels
+  # Bad Column Detection parameters
+  col_enable: True          # Enable/disable bad column detection
+  col_low_var_factor: 0.05  # Flag column if var < this * global_var
+  col_median_dev_factor: 0.1 # Flag column if |med - global_med| > this * global_med
 
 # Mask Bit Definitions (Informational - used internally by the script)
 # mask_bits:
@@ -62,11 +104,21 @@ variance:
 #   DETECTED: 8
 #   STREAK: 16
 
-# Confidence Map Generation (uses mask & invvar)
-confidence_map:
-  # Value for good pixels (usually 1)
-  good_value: 1
-  # Value for bad pixels (usually 0)
-  bad_value: 0
-  # Data type for output confidence map (uint8 is efficient for 0/1)
-  dtype: 'uint8' # e.g., uint8, int16
+# Confidence Map Normalization Parameters (used by weight.py)
+confidence_params:
+  # Data type for output confidence map (float32 recommended)
+  dtype: 'float32'
+  # Percentile of valid weights to use for normalization (1-100).
+  # 100 uses the absolute maximum. Lower values (e.g., 99) are robust to outliers.
+  normalize_percentile: 99.0
+  # Optionally scale the 0-1 normalized map to 0-100 for CASUTools compatibility
+  scale_to_100: False
+
+# Output Parameters
+output_params:
+  # Format for the primary map file (--output_map).
+  # 'weight': Raw masked inverse variance.
+  # 'confidence': Normalized/scaled weight map using confidence_params.
+  output_map_format: 'weight' # Choose 'weight' or 'confidence'
+  # Mask detected objects (MASK_BITS['DETECTED']) in the weight map?
+  mask_detected_in_weight: False
