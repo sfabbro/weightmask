@@ -102,7 +102,7 @@ def _detect_streaks_ransac(data_sub, bkg_rms_map, existing_mask, config):
             streak_core_mask[valid_rows[idx], valid_cols[idx]] = True
             print(f"    Dilating {np.sum(streak_core_mask)} streak core pixels by radius {dilation_radius}...")
             selem = disk(dilation_radius)
-            if selem.size > 0 : streak_mask_final_bool = binary_dilation(streak_core_mask, structure=selem)
+            if selem.size > 0 : streak_mask_final_bool = binary_dilation(streak_core_mask, footprint=selem)
             else: streak_mask_final_bool = streak_core_mask
 
     except Exception as e:
@@ -204,7 +204,7 @@ def _detect_streaks_hough(data_sub, bkg_rms_map, existing_mask, config):
             print(f"    Dilating {np.sum(streak_core_mask)} streak core pixels by radius {dilation_radius}...")
             selem = disk(dilation_radius)
             if selem.size > 0:
-                 streak_mask_final_bool = binary_dilation(streak_core_mask, structure=selem)
+                 streak_mask_final_bool = binary_dilation(streak_core_mask, footprint=selem)
             else:
                  streak_mask_final_bool = streak_core_mask
 

@@ -12,9 +12,10 @@ saturation:
   # Keyword used if method is 'header' or as fallback from histogram
   keyword: 'SATURATE'
   # Histogram parameters (used if method is 'histogram')
-  # Set to null/omit to auto-determine from data (recommended)
-  hist_min_adu: null   # Auto-determined if null
-  hist_max_adu: null   # Auto-determined if null
+  histogram_params:
+    hist_min_adu: 50000   # Start analysis well above sky level
+    hist_max_adu: null    # Auto-determined from data max
+    hist_iterations: 20   # Number of iterations for stable peak detection
   hist_min_counts: null   # Auto-determined if null
   hist_drop_factor: null   # Uses default of 5.0 if null
   # Fallback default level if chosen/fallback methods fail
@@ -22,19 +23,22 @@ saturation:
 
 # SEP Background Estimation
 sep_background:
-  box_size: 128       # pixels
-  filter_size: 3     # pixels
+  box_size: 128       # pixels - smaller boxes for better edge handling
+  filter_size: 3      # pixels - standard filter size
+  # Add padding to handle edges better
+  pad_mode: 'reflect' # Reflect pixels at edges instead of extrapolating
 
 # Astroscrappy Cosmic Ray Detection
 cosmic_ray:
-  sigclip: 4.5       # sigma threshold
-  objlim: 5.0        # contrast limit
+  sigclip: 5.0       # sigma threshold - higher to reduce false positives
+  objlim: 6.0        # contrast limit - higher to be more conservative
+  dynamic_sigclip: false  # disable dynamic adjustment for now
 
 # SEP Object Detection
 sep_objects:
-  extract_thresh: 1.5 # sigma above background RMS
-  min_area: 5       # pixels
-  ellipse_k: 2.5    # ellipse scaling factor for masking
+  extract_thresh: 3.0 # sigma above background RMS - higher to reduce false detections
+  min_area: 10      # pixels - larger minimum area
+  ellipse_k: 2.0    # ellipse scaling factor for masking - smaller to reduce over-masking
 
 
 # Streak Masking Configuration

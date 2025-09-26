@@ -163,7 +163,7 @@ This table focuses on noise or systematic errors introduced or amplified by the 
 
 
 ### Packages
-* Maximask
+* maximask
 * astroscrappy
 * ccdproc
 * cosmic-conn

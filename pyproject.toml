@@ -29,6 +29,9 @@ dependencies = [
 [project.urls]
 "Homepage" = "https://github.com/sfabbro/weightmask"
 
+[tool.setuptools.packages.find]
+exclude = ["sandbox*"]
+
 # --- This section creates the command-line script ---
 [project.scripts]
 weightmask = "weightmask.cli:run_pipeline" # Tells pip: command 'weightmask' runs 'run_pipeline' function in 'weightmask/cli.py'

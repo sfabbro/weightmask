@@ -1,10 +1,16 @@
+#!/usr/bin/env python3
+"""
+WeightMask CLI using fitsio instead of astropy.io.fits for better performance with MEF files.
+"""
+
 import os
 import time
 import warnings
 import argparse
 import yaml
-from astropy.io import fits
+import fitsio
 import numpy as np
+from typing import Optional, Tuple, Any, Union
 
 # Import from other modules within the package using relative imports
 from .bad import detect_bad_pixels
@@ -19,134 +25,191 @@ from .utils import extract_hdu_spec, create_binary_mask
 from . import MASK_BITS, MASK_DTYPE # Import from __init__.py
 
 
-def process_hdu(hdu_sci, hdu_flat, config, hdu_index):
-    """
-    Processes a single Science HDU to generate mask, inv variance, weight, conf, sky maps.
+def validate_fits_file(file_path: str) -> bool:
+    """Validate that a file is a proper FITS file."""
+    try:
+        with fitsio.FITS(file_path, 'r') as f:
+            if len(f) == 0:
+                print(f"ERROR: FITS file {file_path} appears to be empty.")
+                return False
+            return True
+    except Exception as e:
+        print(f"ERROR: Cannot open FITS file {file_path}: {e}")
+        return False
 
-    Args:
-        hdu_sci (fits.ImageHDU): Science image HDU.
-        hdu_flat (fits.ImageHDU or None): Flat field HDU, or None if using flat=1.
-        config (dict): Dictionary containing configuration parameters.
-        hdu_index (int): Index of the HDU in the original FITS file.
 
-    Returns:
-        tuple: (mask_data, inv_var_data, weight_map, confidence_map, sky_map, header_info)
-               Returns (None, None, None, None, None, None) on failure for this HDU.
-               header_info is a dict of key parameters used (for output headers).
-    """
+def validate_config(config: dict) -> bool:
+    """Validate configuration parameters."""
+    try:
+        required_sections = ['flat_masking', 'saturation', 'sep_background', 
+                           'cosmic_ray', 'sep_objects', 'streak_masking', 
+                           'variance', 'confidence_params', 'output_params']
+        for section in required_sections:
+            if section not in config:
+                print(f"WARNING: Required configuration section '{section}' missing.")
+        
+        if 'variance' in config:
+            var_method = config['variance'].get('method', 'theoretical')
+            if var_method not in ['theoretical', 'rms_map', 'empirical_fit']:
+                print(f"ERROR: Invalid variance method '{var_method}'.")
+                return False
+        return True
+    except Exception as e:
+        print(f"ERROR: Configuration validation failed: {e}")
+        return False
+
+
+def process_hdu(hdu_sci, hdu_flat, config: dict, hdu_index: int, tile_size: int = 1024) -> Tuple[Optional[np.ndarray], Optional[np.ndarray], Optional[np.ndarray], Optional[np.ndarray], Optional[np.ndarray], Optional[dict]]:
+    """Processes a single Science HDU to generate all mask and map products."""
     hdu_start_time = time.time()
-    print(f"\n--- Processing HDU {hdu_index} ({hdu_sci.name}) ---")
+    hdu_name = getattr(hdu_sci, 'name', f'HDU{hdu_index}') if hasattr(hdu_sci, 'name') else f'HDU{hdu_index}'
+    print(f"\n--- Processing HDU {hdu_index} ({hdu_name}) ---")
 
-    # --- 1. Load Data ---
-    if hdu_sci.data is None or not isinstance(hdu_sci, (fits.ImageHDU, fits.CompImageHDU)):
-         print("Skipping HDU: Science data missing or not an image HDU.")
-         return None, None, None, None, None, None
-    sci_shape = hdu_sci.data.shape
-    if hdu_flat is not None and (hdu_flat.data is None or hdu_flat.data.shape != sci_shape):
-         print("Skipping HDU: Flat data missing or shape mismatch.")
-         return None, None, None, None, None, None
-    sci_data = np.ascontiguousarray(hdu_sci.data.astype(np.float32))
-    sci_hdr = hdu_sci.header
+    # For fitsio, we need to read the data and header
+    try:
+        sci_data_full = np.ascontiguousarray(hdu_sci.read().astype(np.float32))
+        sci_hdr = hdu_sci.read_header()
+    except Exception as e:
+        print(f"Skipping HDU: Cannot read science data: {e}")
+        return None, None, None, None, None, None
+    
+    sci_shape = sci_data_full.shape
+    flat_data_full = None
+    using_unit_flat = True
+    
     if hdu_flat is not None:
-        flat_data = np.ascontiguousarray(hdu_flat.data.astype(np.float32))
-        using_unit_flat = False
+        try:
+            flat_data_full = np.ascontiguousarray(hdu_flat.read().astype(np.float32))
+            using_unit_flat = False
+            if flat_data_full.shape != sci_shape:
+                print("Skipping HDU: Flat data shape mismatch.")
+                return None, None, None, None, None, None
+        except Exception as e:
+            print(f"Skipping HDU: Cannot read flat data: {e}")
+            return None, None, None, None, None, None
     else:
         print("  INFO: No flat field provided, assuming flat = 1.0.")
-        flat_data = np.ones_like(sci_data, dtype=np.float32)
-        using_unit_flat = True
+        flat_data_full = np.ones_like(sci_data_full, dtype=np.float32)
 
-    final_mask_int = np.zeros(sci_data.shape, dtype=MASK_DTYPE)
-    header_info = {}
+    # --- 0. Initial Setup ---
+    final_mask_int = np.zeros(sci_shape, dtype=MASK_DTYPE)
+    header_info: dict = {}
 
-    # --- 2. Get Noise Parameters ---
-    variance_cfg_safe = config.get('variance', {}) # Ensure variance section exists
-    gain = sci_hdr.get(variance_cfg_safe.get('gain_keyword','GAIN'), variance_cfg_safe.get('default_gain', 1.0))
-    read_noise_e = sci_hdr.get(variance_cfg_safe.get('rdnoise_keyword','RDNOISE'), variance_cfg_safe.get('default_rdnoise', 0.0))
-    if variance_cfg_safe.get('gain_keyword','GAIN') not in sci_hdr: print(f"  WARNING: Keyword '{variance_cfg_safe.get('gain_keyword','GAIN')}' not found. Using default: {gain:.2f} e-/ADU.")
-    if variance_cfg_safe.get('rdnoise_keyword','RDNOISE') not in sci_hdr: print(f"  WARNING: Keyword '{variance_cfg_safe.get('rdnoise_keyword','RDNOISE')}' not found. Using default: {read_noise_e:.2f} e-.")
-    header_info['GAIN_USD'] = gain
-    header_info['RDNS_USD'] = read_noise_e
+    # Initialize individual masks
+    bad_mask = np.zeros(sci_shape, dtype=bool)
+    sat_mask = np.zeros(sci_shape, dtype=bool)
+    cr_mask = np.zeros(sci_shape, dtype=bool)
+    obj_mask = np.zeros(sci_shape, dtype=bool)
+    streak_mask = np.zeros(sci_shape, dtype=bool)
 
-    # --- 3-7. Masking Steps (Bad, Sat, CR, Obj, Streak) ---
-    print("Creating initial masks (Bad Flat, Saturation)...")
-    flat_mask_bool = detect_bad_pixels(flat_data, config.get('flat_masking',{}), using_unit_flat)
-    final_mask_int[flat_mask_bool] |= MASK_BITS['BAD']
-    saturation_level, sat_method_used, sat_mask_bool = detect_saturated_pixels(sci_data, sci_hdr, config.get('saturation',{}))
-    final_mask_int[sat_mask_bool] |= MASK_BITS['SAT']
-    print(f"  Masked {np.sum(flat_mask_bool)} BAD pixels, {np.sum(sat_mask_bool)} SAT pixels.")
-    header_info['SAT_LVL'] = saturation_level
-    header_info['SAT_METH'] = sat_method_used
-    interim_mask_1_bool = flat_mask_bool | sat_mask_bool
+    # --- 1. Tile-based Masking (Bad Pixels, Saturation) ---
+    print("  (1/7) Processing tiles for Bad Pixel and Saturation masks...")
+    saturation_level, sat_method_used = -1, 'unknown'
+    for y in range(0, sci_shape[0], tile_size):
+        for x in range(0, sci_shape[1], tile_size):
+            tile_slice = (slice(y, y + tile_size), slice(x, x + tile_size))
+            sci_data_tile = sci_data_full[tile_slice]
+            
+            flat_data_tile = flat_data_full[tile_slice]
 
-    print("Estimating initial background/RMS...")
-    sep_bg_cfg_safe = config.get('sep_background', {})
-    bkg_map1, bkg_rms_map1 = estimate_background(sci_data, interim_mask_1_bool, sep_bg_cfg_safe)
-    if bkg_map1 is None or bkg_rms_map1 is None: # Add check
-         print("  ERROR: Initial background estimation failed.")
-         return None, None, None, None, None, None
-    initial_bkg_rms_map = bkg_rms_map1
+            if not np.isfinite(sci_data_tile).any(): continue
 
-    print(f"Detecting Cosmic Rays...")
-    cosmic_cfg_safe = config.get('cosmic_ray', {})
-    header_info['CR_SIG'] = cosmic_cfg_safe.get('sigclip', 4.5)
-    cr_add_mask = detect_cosmic_rays(sci_data, interim_mask_1_bool, saturation_level,
-                                    gain, read_noise_e, cosmic_cfg_safe)
+            flat_mask_bool_tile = detect_bad_pixels(flat_data_tile, config.get('flat_masking',{}), using_unit_flat)
+            bad_mask[tile_slice] |= flat_mask_bool_tile
+            final_mask_int[tile_slice][flat_mask_bool_tile] |= MASK_BITS['BAD']
+            
+            sat_level_tile, sat_meth_tile, sat_mask_bool_tile = detect_saturated_pixels(sci_data_tile, sci_hdr, config.get('saturation',{}))
+            sat_mask[tile_slice] |= sat_mask_bool_tile
+            final_mask_int[tile_slice][sat_mask_bool_tile] |= MASK_BITS['SAT']
+            
+            if saturation_level < 0: # Use first tile's result as representative
+                saturation_level, sat_method_used = sat_level_tile, sat_meth_tile
+                header_info['SAT_LVL'], header_info['SAT_METH'] = saturation_level, sat_method_used
+
+    # --- Full Image Processing Steps ---
+    interim_mask_bool = (final_mask_int > 0)
+
+    # --- 2. First-Pass Cosmic Ray Detection ---
+    print("  (2/7) Running first-pass Cosmic Ray detection...")
+    cosmic_cfg = config.get('cosmic_ray', {})
+    variance_cfg = config.get('variance', {})
+    gain = sci_hdr.get(variance_cfg.get('gain_keyword','GAIN'), variance_cfg.get('default_gain', 1.0))
+    read_noise_e = sci_hdr.get(variance_cfg.get('rdnoise_keyword','RDNOISE'), variance_cfg.get('default_rdnoise', 0.0))
+    
+    # CR detection needs a preliminary background RMS map
+    _, prelim_bkg_rms = estimate_background(sci_data_full, interim_mask_bool, config.get('sep_background', {}))
+    
+    cr_add_mask = detect_cosmic_rays(sci_data_full, interim_mask_bool, saturation_level, gain, read_noise_e, cosmic_cfg, bkg_rms_map=prelim_bkg_rms)
+    cr_mask |= cr_add_mask
     final_mask_int[cr_add_mask] |= MASK_BITS['CR']
-    print(f"  Masked {np.sum(cr_add_mask)} new CR pixels.")
-    interim_mask_2_bool = interim_mask_1_bool | cr_add_mask
+    interim_mask_bool |= cr_add_mask
+    print(f"      Masked {np.sum(cr_add_mask)} new CR pixels.")
 
-    print(f"Detecting Objects...")
-    object_cfg_safe = config.get('sep_objects', {})
-    header_info['SEP_THR'] = object_cfg_safe.get('extract_thresh', 1.5)
-    data_sub = sci_data - bkg_map1
-    obj_add_mask = detect_objects(data_sub, initial_bkg_rms_map, interim_mask_2_bool, object_cfg_safe)
-    final_mask_int[obj_add_mask] |= MASK_BITS['DETECTED']
-    print(f"  Masked {np.sum(obj_add_mask)} new DETECTED pixels.")
-    interim_mask_3_bool = interim_mask_2_bool | obj_add_mask
+    # --- 3. Iterative Background and Object Detection ---
+    print("  (3/7) Starting iterative Background/Object detection...")
+    sep_bg_cfg = config.get('sep_background', {})
+    object_cfg = config.get('sep_objects', {})
+    iterations = sep_bg_cfg.get('iterations', 2)
+    current_obj_mask = np.zeros(sci_shape, dtype=bool)
 
+    for i in range(iterations):
+        print(f"    Iteration {i+1}/{iterations}...")
+        total_mask_for_bg = interim_mask_bool | current_obj_mask
+        bkg_map, bkg_rms_map = estimate_background(sci_data_full, total_mask_for_bg, sep_bg_cfg)
+        if bkg_map is None: return None, None, None, None, None, None
+
+        data_sub = sci_data_full - bkg_map
+        new_obj_add_mask = detect_objects(data_sub, bkg_rms_map, total_mask_for_bg, object_cfg)
+        
+        if np.sum(new_obj_add_mask) == 0 and i > 0:
+            print("      No new objects found, ending iteration.")
+            break
+        current_obj_mask |= new_obj_add_mask
+    
+    obj_mask |= current_obj_mask
+    final_mask_int[current_obj_mask] |= MASK_BITS['DETECTED']
+    print(f"      Masked {np.sum(current_obj_mask)} DETECTED pixels total.")
+
+    # --- 4. Final Sky Maps and Object Mask ---
+    print("  (4/7) Finalizing sky maps and object mask...")
+    final_obj_mask = current_obj_mask
+    final_full_mask = interim_mask_bool | final_obj_mask
+    sky_map, final_bkg_rms_map = estimate_background(sci_data_full, final_full_mask, sep_bg_cfg)
+    if sky_map is None: return None, None, None, None, None, None
+
+    # --- 5. Inverse Variance Map ---
+    print("  (5/7) Calculating inverse variance map...")
+    
+    # Pass necessary data to new variance function signature
+    variance_cfg['gain'] = gain # Pass header/default gain for fallback
+    variance_cfg['read_noise'] = read_noise_e
+    inv_variance_map = calculate_inverse_variance(variance_cfg, sky_map, flat_data_full, final_bkg_rms_map, sci_data=sci_data_full, obj_mask=final_obj_mask)
+    if inv_variance_map is None: return None, None, None, None, None, None
+
+    # --- 6. Streak Detection ---
+    print("  (6/7) Detecting streaks...")
     streak_cfg = config.get('streak_masking', {})
-    header_info['STRK_EN'] = streak_cfg.get('enable', False)
     if streak_cfg.get('enable', False):
-        print(f"Detecting Streaks using method: {streak_cfg.get('method', 'ransac')}...")
-        streak_start_time = time.time()
-        streak_add_mask = detect_streaks(data_sub, initial_bkg_rms_map, interim_mask_3_bool, streak_cfg)
+        data_sub = sci_data_full - sky_map
+        streak_add_mask = detect_streaks(data_sub, final_bkg_rms_map, final_full_mask, streak_cfg)
+        streak_mask |= streak_add_mask
         final_mask_int[streak_add_mask] |= MASK_BITS['STREAK']
-        print(f"  Masked {np.sum(streak_add_mask)} new STREAK pixels.")
-        print(f"  Streak detection finished in {time.time() - streak_start_time:.2f} seconds.")
-    else:
-        print("Streak masking disabled.")
+        final_full_mask |= streak_add_mask
+        print(f"      Masked {np.sum(streak_add_mask)} new STREAK pixels.")
 
+    # --- 7. Generate Final Weight and Confidence Maps ---
+    print("  (7/7) Generating final weight and confidence maps...")
+    weight_map, confidence_map = generate_weight_and_confidence(inv_variance_map, final_mask_int, config)
+    if weight_map is None: return None, None, None, None, None, None
 
-    # --- 8. Final Background Estimation ---
-    print("Estimating final background and RMS map...")
-    final_combined_bool_mask = (final_mask_int > 0)
-    sky_map, final_bkg_rms_map = estimate_background(sci_data, final_combined_bool_mask, sep_bg_cfg_safe)
-    if sky_map is None or final_bkg_rms_map is None:
-         print("  ERROR: Final background estimation failed.")
-         return None, None, None, None, None, None
-    print(f"  Final background global mean: {np.mean(sky_map):.3f}")
-
-    # --- 9. Inverse Variance Map ---
-    print("Calculating inverse variance map...")
-    variance_method = variance_cfg_safe.get('method', 'theoretical').lower()
-    header_info['VAR_METH'] = variance_method
-    inv_variance_map = calculate_inverse_variance(
-        method=variance_method,
-        sky_map=sky_map, flat_map=flat_data, gain=gain, read_noise_e=read_noise_e,
-        bkg_rms_map=final_bkg_rms_map, epsilon=variance_cfg_safe.get('epsilon', 1e-9)
-    )
-    if inv_variance_map is None:
-        print("  ERROR: Inverse variance calculation failed.")
-        return None, None, None, None, None, None
-    print(f"  Inverse variance map calculated (mean non-zero: {np.mean(inv_variance_map[inv_variance_map > 0]):.4g})")
-
-    # --- 10. Generate Weight and Confidence Maps ---
-    weight_map, confidence_map = generate_weight_and_confidence(
-        inv_variance_map, final_mask_int, config # Pass main config
-    )
-    if weight_map is None or confidence_map is None:
-         print("  ERROR: Weight/Confidence map generation failed.")
-         return None, None, None, None, None, None
+    # Store individual masks in header_info for later access
+    header_info['individual_masks'] = {
+        'bad': bad_mask,
+        'sat': sat_mask,
+        'cr': cr_mask,
+        'obj': obj_mask,
+        'streak': streak_mask
+    }
 
     # --- End Processing ---
     hdu_elapsed = time.time() - hdu_start_time
@@ -155,7 +218,7 @@ def process_hdu(hdu_sci, hdu_flat, config, hdu_index):
 
 
 # --- Main execution function called by entry point ---
-def run_pipeline():
+def run_pipeline() -> int:
     """ Main function to parse arguments and run the pipeline. """
     parser = argparse.ArgumentParser(description="Generate Mask and Weight/Confidence Maps for FITS files.")
     parser.add_argument('input_file', type=str, help="Path to input FITS file.")
@@ -175,35 +238,63 @@ def run_pipeline():
     print("Starting WeightMask Pipeline...")
     start_pipeline_time = time.time()
 
+    # --- Validate Input Files ---
+    if not os.path.exists(args.input_file):
+        print(f"ERROR: Input file not found: {args.input_file}")
+        return 1
+    
+    try:
+        if not validate_fits_file(args.input_file):
+            print(f"ERROR: Input file validation failed: {args.input_file}")
+            return 1
+    except Exception as e:
+        print(f"ERROR: Input file validation error: {e}")
+        return 1
+        
+    if args.flat_image:
+        if not os.path.exists(args.flat_image):
+            print(f"ERROR: Flat field file not found: {args.flat_image}")
+            return 1
+        try:
+            if not validate_fits_file(args.flat_image):
+                print(f"ERROR: Flat field file validation failed: {args.flat_image}")
+                return 1
+        except Exception as e:
+            print(f"ERROR: Flat field validation error: {e}")
+            return 1
+
     # --- Handle Configuration File ---
     config_path = args.config
     if config_path is None:
-        # Try finding default config in current dir or package dir
-        # Assumes cli.py is inside weightmask package
         script_dir = os.path.dirname(__file__)
-        possible_paths = ['weightmask.yml', os.path.join(script_dir, '../..', 'weightmask.yml')] # Check cwd, then project root
+        possible_paths = ['weightmask.yml', os.path.join(script_dir, '../..', 'weightmask.yml')]
         for p in possible_paths:
             if os.path.exists(p):
                 config_path = p
                 print(f"Using default config file found at: {config_path}")
                 break
         if config_path is None:
-             print("ERROR: Config file not specified (--config) and no default 'weightmask.yml' found in CWD or project root.")
-             return 1 # Indicate error
+             print("ERROR: Config file not specified and no default 'weightmask.yml' found.")
+             return 1
 
     # --- Load Configuration ---
     try:
         with open(config_path, 'r') as f:
             config = yaml.safe_load(f)
-        # Ensure default sub-dicts exist if missing entirely
         if 'output_params' not in config: config['output_params'] = {}
         if 'confidence_params' not in config: config['confidence_params'] = {}
-        # Set default output format if not specified
         if 'output_map_format' not in config['output_params']:
             config['output_params']['output_map_format'] = 'weight'
+        try:
+            if not validate_config(config):
+                print("ERROR: Configuration validation failed.")
+                return 1
+        except Exception as e:
+            print(f"ERROR: Configuration validation error: {e}")
+            return 1
     except Exception as e:
         print(f"ERROR: Failed to load or parse config file '{config_path}': {e}")
-        return 1 # Indicate error
+        return 1
 
     # --- Parse Input/Flat Files and HDU ---
     input_path, input_hdu = extract_hdu_spec(args.input_file)
@@ -215,215 +306,285 @@ def run_pipeline():
     # --- Determine Default Output Path if Needed ---
     out_map_path = args.output_map
     if out_map_path is None:
-        base = os.path.basename(input_path)
-        if base.lower().endswith(('.fits.gz', '.fits.fz', '.fit.gz', '.fit.fz')): base = os.path.splitext(os.path.splitext(base)[0])[0]
-        elif base.lower().endswith(('.fits', '.fit')): base = os.path.splitext(base)[0]
-        elif '.' in base: base = os.path.splitext(base)[0]
-        output_dir = os.path.dirname(input_path) or '.'
-        default_suffix = ".weight.fits" # Sensible default name
+        input_basename = os.path.basename(str(input_path))
+        if input_basename.endswith('.fits.fz'):
+            base = input_basename[:-8]  # Remove .fits.fz
+        elif input_basename.endswith('.fits'):
+            base = input_basename[:-5]  # Remove .fits
+        else:
+            base = os.path.splitext(input_basename)[0]
+        output_dir = os.path.dirname(str(input_path)) or '.'
+        default_suffix = ".weight.fits"
         out_map_path = os.path.join(output_dir, f"{base}{default_suffix}")
         print(f"Output map path not specified, using default: {out_map_path}")
 
-    # --- Determine Output Format ---
-    output_format_config = config.get('output_params',{}).get('output_map_format', 'weight')
-    if args.output_map is None and output_format_config != 'weight':
-         print(f"NOTE: Default output filename implies 'weight' format, but config specifies '{output_format_config}'. Saving as '{output_format_config}'.")
-
-
     # --- Define Other Output Paths ---
-    output_dir = os.path.dirname(out_map_path) or '.' # Base other optional outputs on primary map dir
-    base_out_map = os.path.basename(out_map_path)
-    base_out = os.path.splitext(base_out_map)[0]
-    if base_out.endswith('.map'): base_out = os.path.splitext(base_out)[0] # Remove .map too
-
-    out_mask_path = args.output_mask or os.path.join(output_dir, f"{base_out}.mask.fits") if args.output_mask != "" else None
-    out_invvar_path = args.output_invvar or os.path.join(output_dir, f"{base_out}.ivar.fits") if args.output_invvar != "" else None
-    out_sky_path = args.output_sky or os.path.join(output_dir, f"{base_out}.sky.fits") if args.output_sky != "" else None
-    out_weight_raw_path = args.output_weight_raw # Remains None if not specified
+    output_dir = os.path.dirname(out_map_path)
+    base_out = os.path.splitext(os.path.basename(out_map_path))[0]
+    out_mask_path = args.output_mask or os.path.join(output_dir, f"{base_out}.mask.fits") if args.output_mask is not None else None
+    out_invvar_path = args.output_invvar or os.path.join(output_dir, f"{base_out}.ivar.fits") if args.output_invvar is not None else None
+    out_sky_path = args.output_sky or os.path.join(output_dir, f"{base_out}.sky.fits") if args.output_sky is not None else None
+    out_weight_raw_path = args.output_weight_raw
 
     # --- Open Input FITS ---
     try:
-        hdul_input = fits.open(input_path, memmap=True)
-        hdul_flat = fits.open(flat_path, memmap=True) if flat_path else None
-    except FileNotFoundError as e: print(f"ERROR: Input file not found: {e}"); return 1
+        hdul_input = fitsio.FITS(input_path, 'r')
+        hdul_flat = fitsio.FITS(flat_path, 'r') if flat_path else None
     except Exception as e: print(f"ERROR: Could not open input files: {e}"); return 1
 
     # --- Handle HDU Selection ---
     hdus_to_process = []
-    hdu_name_suffix = "" # Suffix only relevant if saving multiple optional files *and* processing single HDU
     if input_hdu is not None:
         if 0 <= input_hdu < len(hdul_input):
             hdus_to_process = [input_hdu]
-            # Get name only if needed for optional outputs and processing single HDU
-            if args.individual_masks or out_weight_raw_path:
-                hdu_name = hdul_input[input_hdu].name if hasattr(hdul_input[input_hdu], 'name') and hdul_input[input_hdu].name else f"HDU{input_hdu}"
-                hdu_name_suffix = f"_{hdu_name}" if input_hdu > 0 or hdu_name != "" else ""
-            print(f"Processing single HDU: {input_hdu}")
         else:
-            print(f"ERROR: Specified HDU {input_hdu} not found."); hdul_input.close(); return 1
+            print(f"ERROR: Specified HDU {input_hdu} not found."); return 1
     else:
-        hdus_to_process = [i for i, hdu in enumerate(hdul_input) if isinstance(hdu, (fits.ImageHDU, fits.CompImageHDU)) and i > 0]
-        if not hdus_to_process and len(hdul_input)>0 and isinstance(hdul_input[0], (fits.ImageHDU, fits.CompImageHDU)):
-             print("No extensions found, processing Primary HDU (0)."); hdus_to_process = [0]
-        elif not hdus_to_process: print("ERROR: No suitable Image HDUs found."); hdul_input.close(); return 1
-        print(f"Processing {len(hdus_to_process)} Image HDU(s): {hdus_to_process}")
+        # For fitsio, we assume all HDUs are image HDUs for now
+        hdus_to_process = list(range(len(hdul_input)))
+        if not hdus_to_process: print("ERROR: No suitable Image HDUs found."); return 1
+    print(f"Processing {len(hdus_to_process)} Image HDU(s): {hdus_to_process}")
 
-    # --- Print final paths ---
-    print(f"\nInput File: {input_path}{f'[{input_hdu}]' if input_hdu is not None else ''}")
-    print(f"Flat Image: {flat_path}{f'[{flat_hdu}]' if flat_path and flat_hdu is not None else '' if flat_path else 'None (using 1.0)'}")
-    print(f"Output Map:    {out_map_path} (Format: {output_format_config})")
-    if out_mask_path: print(f"Output Mask:   {out_mask_path}")
-    if out_invvar_path: print(f"Output InvVar: {out_invvar_path}")
-    if out_sky_path: print(f"Output Sky:    {out_sky_path}")
-    if out_weight_raw_path: print(f"Output Raw Wt: {out_weight_raw_path}")
-
-    # --- Prepare Output HDU Lists ---
-    hdul_map_out = fits.HDUList([hdul_input[0].copy()]) if out_map_path else None
-    hdul_mask_out = fits.HDUList([hdul_input[0].copy()]) if out_mask_path else None
-    hdul_invvar_out = fits.HDUList([hdul_input[0].copy()]) if out_invvar_path else None
-    hdul_sky_out = fits.HDUList([hdul_input[0].copy()]) if out_sky_path else None
-    hdul_weight_raw_out = fits.HDUList([hdul_input[0].copy()]) if out_weight_raw_path else None
+    # --- Prepare Output File Paths ---
+    # For fitsio, we'll handle file writing differently - create files as needed
+    
+    # Initialize individual mask file paths as None
+    individual_mask_paths = {}
     if args.individual_masks:
-        hdul_bad_out, hdul_satur_out, hdul_cosmics_out, hdul_streaks_out = (fits.HDUList([hdul_input[0].copy()]) for _ in range(4))
-        # Use base_out for individual mask names
-        out_bad_path = os.path.join(output_dir, f"{base_out}_bad.fits")
-        out_satur_path = os.path.join(output_dir, f"{base_out}_satur.fits")
-        out_cosmics_path = os.path.join(output_dir, f"{base_out}_cosmic.fits")
-        out_streaks_path = os.path.join(output_dir, f"{base_out}_streak.fits")
-        print(f"Individual mask components base name: {base_out}")
-
-    print(f"\nProcessing {len(hdus_to_process)} science extension(s)...")
-    warnings.filterwarnings('ignore', category=UserWarning, append=True)
-    warnings.filterwarnings('ignore', category=RuntimeWarning, append=True)
+        individual_mask_paths = {
+            'bad': os.path.join(output_dir, f"{base_out}.bad.fits"),
+            'sat': os.path.join(output_dir, f"{base_out}.sat.fits"),
+            'cr': os.path.join(output_dir, f"{base_out}.cr.fits"),
+            'obj': os.path.join(output_dir, f"{base_out}.obj.fits"),
+            'streak': os.path.join(output_dir, f"{base_out}.streak.fits")
+        }
 
     # --- Process HDUs ---
     process_success_count = 0
+    output_data = {}  # Store output data for writing at the end
+    
     for i in hdus_to_process:
         try:
             hdu_sci = hdul_input[i]
-            hdu_flat = hdul_flat[i] if hdul_flat and i < len(hdul_flat) else None
-            mask_data, inv_var_data, weight_map, confidence_map, sky_map, header_info = process_hdu(hdu_sci, hdu_flat, config, i)
-            if mask_data is None: print(f"Skipping HDU {i} due to processing errors."); continue
+            hdu_flat_obj = hdul_flat[i] if hdul_flat and i < len(hdul_flat) else None
+            
+            result = process_hdu(hdu_sci, hdu_flat_obj, config, i)
+            if result[0] is None: 
+                print(f"Skipping HDU {i} due to processing errors."); continue
+            mask_data, inv_var_data, weight_map, confidence_map, sky_map, header_info = result
             process_success_count += 1
 
-            # --- Create and append HDUs based on which files are requested ---
-            output_format = config['output_params']['output_map_format'].lower()
-            conf_cfg = config.get('confidence_params', {})
+            # Extract individual masks from header_info
+            if header_info and 'individual_masks' in header_info:
+                individual_masks = header_info['individual_masks']
+                bad_mask = individual_masks.get('bad', np.zeros_like(mask_data, dtype=bool)) if mask_data is not None else np.array([])
+                sat_mask = individual_masks.get('sat', np.zeros_like(mask_data, dtype=bool)) if mask_data is not None else np.array([])
+                cr_mask = individual_masks.get('cr', np.zeros_like(mask_data, dtype=bool)) if mask_data is not None else np.array([])
+                obj_mask = individual_masks.get('obj', np.zeros_like(mask_data, dtype=bool)) if mask_data is not None else np.array([])
+                streak_mask = individual_masks.get('streak', np.zeros_like(mask_data, dtype=bool)) if mask_data is not None else np.array([])
+            else:
+                # Initialize empty masks if no individual masks data
+                shape = mask_data.shape if mask_data is not None else (0, 0)
+                bad_mask = np.zeros(shape, dtype=bool) if mask_data is not None else np.array([])
+                sat_mask = np.zeros(shape, dtype=bool) if mask_data is not None else np.array([])
+                cr_mask = np.zeros(shape, dtype=bool) if mask_data is not None else np.array([])
+                obj_mask = np.zeros(shape, dtype=bool) if mask_data is not None else np.array([])
+                streak_mask = np.zeros(shape, dtype=bool) if mask_data is not None else np.array([])
 
-            # Primary Output Map HDU (Potentially scaled int16)
-            if hdul_map_out is not None:
-                primary_map_save_data, primary_map_comment, primary_map_bunit = (None, "", "")
-                bscale, bzero = (1.0, 0.0) # Default for float/unscaled
+            # Store output data for writing later
+            hdu_name = getattr(hdu_sci, 'name', f'HDU{i}') if hasattr(hdu_sci, 'name') else f'HDU{i}'
+            
+            # Safely get the header
+            try:
+                hdu_header = hdul_input[i].read_header()
+            except:
+                hdu_header = None
+            if hdu_header is None:
+                hdu_header = fitsio.FITSHDR()
 
-                if output_format == 'weight':
-                    primary_map_save_data = weight_map.astype(np.float32) # Ensure float32
-                    primary_map_comment = 'Weight Map (masked inverse variance)'
-                    primary_map_bunit = 'adu**-2' # Adjust if variance units change
-                elif output_format == 'confidence':
-                    primary_map_data_float = confidence_map # Should be float 0-1 or 0-100
-                    primary_map_comment = 'Confidence Map (Normalized Weight Map, scaled int16)'
-                    min_phys, max_phys = (0.0, 100.0 if conf_cfg.get('scale_to_100', False) else 1.0)
-                    min_int, max_int = (-32768, 32767); int_range = max_int - min_int
-                    phys_range = max_phys - min_phys
-                    if abs(phys_range) > 1e-9 and int_range > 0:
-                        bscale = phys_range / int_range
-                        bzero = min_phys - bscale * min_int
-                        int_data = np.round((primary_map_data_float - bzero) / (bscale + 1e-30))
-                        primary_map_save_data = np.clip(int_data, min_int, max_int).astype(np.int16)
-                    else: # Handle cases where range is zero or invalid
-                        bscale = 1.0; bzero = min_phys
-                        primary_map_save_data = np.full(primary_map_data_float.shape, min_int, dtype=np.int16) # Save as min int value
-
-                    primary_map_comment += ' Scaled 0-100' if conf_cfg.get('scale_to_100', False) else ' Scaled 0-1'
-                    primary_map_bunit = 'percent' if conf_cfg.get('scale_to_100', False) else ''
-                else: # Default to weight
-                     primary_map_save_data = weight_map.astype(np.float32)
-                     primary_map_comment = 'Weight Map (masked inverse variance)'
-                     primary_map_bunit = 'adu**-2'
-
-                map_hdu = fits.ImageHDU(data=primary_map_save_data, header=hdu_sci.header.copy(), name=f'MAP_{hdu_sci.name}')
-                map_hdu.header['COMMENT'] = primary_map_comment
-                if primary_map_bunit: map_hdu.header['BUNIT'] = primary_map_bunit
-                if output_format == 'confidence':
-                    map_hdu.header['BSCALE'] = bscale; map_hdu.header['BZERO'] = bzero
-                map_hdu.header['VARMETH'] = (header_info.get('VAR_METH'), 'Variance calculation method used'); map_hdu.header['ORIG_HDU'] = (i, 'Original HDU index')
-                hdul_map_out.append(map_hdu)
-
-            # Optional outputs (Mask, InvVar, Sky, Raw Weight)
-            if hdul_mask_out is not None:
-                mask_hdu = fits.ImageHDU(data=mask_data, header=hdu_sci.header.copy(), name=f'MASK_{hdu_sci.name}')
-                mask_hdu.header['COMMENT'] = 'Combined Mask (Bitmask)'; hdul_mask_out.append(mask_hdu)
-            if hdul_invvar_out is not None:
-                invvar_hdu = fits.ImageHDU(data=inv_var_data.astype(np.float32), header=hdu_sci.header.copy(), name=f'INVVAR_{hdu_sci.name}')
-                invvar_hdu.header['COMMENT'] = 'Pure Inverse Variance Map'; invvar_hdu.header['BUNIT'] = 'adu**-2'; hdul_invvar_out.append(invvar_hdu)
-            if hdul_sky_out is not None:
-                sky_hdu = fits.ImageHDU(data=sky_map.astype(np.float32), header=hdu_sci.header.copy(), name=f'SKY_{hdu_sci.name}')
-                sky_hdu.header['COMMENT'] = 'Smoothed Sky Background Map'; sky_hdu.header['BUNIT'] = 'adu'; hdul_sky_out.append(sky_hdu)
-            if hdul_weight_raw_out is not None:
-                 weight_raw_hdu = fits.ImageHDU(data=weight_map.astype(np.float32), header=hdu_sci.header.copy(), name=f'WEIGHT_{hdu_sci.name}')
-                 weight_raw_hdu.header['COMMENT'] = 'Weight Map (masked inv_var, unnormalized)'; weight_raw_hdu.header['BUNIT'] = 'adu**-2'; hdul_weight_raw_out.append(weight_raw_hdu)
-
-            # Individual Masks
-            if args.individual_masks:
-                 # ... (creation and appending as before) ...
-                 bad_mask = create_binary_mask(mask_data, MASK_BITS['BAD']); bad_hdu = fits.ImageHDU(data=bad_mask, name=f'BAD_{hdu_sci.name}'); hdul_bad_out.append(bad_hdu)
-                 satur_mask = create_binary_mask(mask_data, MASK_BITS['SAT']); satur_hdu = fits.ImageHDU(data=satur_mask, name=f'SATUR_{hdu_sci.name}'); hdul_satur_out.append(satur_hdu)
-                 cosmic_mask = create_binary_mask(mask_data, MASK_BITS['CR']); cosmic_hdu = fits.ImageHDU(data=cosmic_mask, name=f'COSMIC_{hdu_sci.name}'); hdul_cosmics_out.append(cosmic_hdu)
-                 streak_mask = create_binary_mask(mask_data, MASK_BITS['STREAK']); streak_hdu = fits.ImageHDU(data=streak_mask, name=f'STREAK_{hdu_sci.name}'); hdul_streaks_out.append(streak_hdu)
+            # Store data for each output file
+            if out_map_path:
+                output_format = config.get('output_params',{}).get('output_map_format', 'weight').lower()
+                map_data = confidence_map if output_format == 'confidence' else weight_map
+                if i not in output_data:
+                    output_data[i] = {}
+                output_data[i]['map'] = {
+                    'data': map_data,
+                    'header': hdu_header,
+                    'name': f'MAP_{hdu_name}'
+                }
+            
+            if out_mask_path and mask_data is not None:
+                if i not in output_data:
+                    output_data[i] = {}
+                output_data[i]['mask'] = {
+                    'data': mask_data,
+                    'header': hdu_header,
+                    'name': f'MASK_{hdu_name}'
+                }
+            
+            if out_invvar_path and inv_var_data is not None:
+                if i not in output_data:
+                    output_data[i] = {}
+                output_data[i]['invvar'] = {
+                    'data': inv_var_data,
+                    'header': hdu_header,
+                    'name': f'INVVAR_{hdu_name}'
+                }
+            
+            if out_sky_path and sky_map is not None:
+                if i not in output_data:
+                    output_data[i] = {}
+                output_data[i]['sky'] = {
+                    'data': sky_map,
+                    'header': hdu_header,
+                    'name': f'SKY_{hdu_name}'
+                }
+            
+            if out_weight_raw_path and weight_map is not None:
+                if i not in output_data:
+                    output_data[i] = {}
+                output_data[i]['weight_raw'] = {
+                    'data': weight_map,
+                    'header': hdu_header,
+                    'name': f'WEIGHT_{hdu_name}'
+                }
+            
+            # Store individual masks if requested
+            if args.individual_masks and mask_data is not None:
+                if i not in output_data:
+                    output_data[i] = {}
+                output_data[i]['individual_masks'] = {
+                    'bad': {
+                        'data': bad_mask.astype(np.uint8),
+                        'header': hdu_header,
+                        'name': f'BAD_{hdu_name}'
+                    },
+                    'sat': {
+                        'data': sat_mask.astype(np.uint8),
+                        'header': hdu_header,
+                        'name': f'SAT_{hdu_name}'
+                    },
+                    'cr': {
+                        'data': cr_mask.astype(np.uint8),
+                        'header': hdu_header,
+                        'name': f'CR_{hdu_name}'
+                    },
+                    'obj': {
+                        'data': obj_mask.astype(np.uint8),
+                        'header': hdu_header,
+                        'name': f'OBJ_{hdu_name}'
+                    },
+                    'streak': {
+                        'data': streak_mask.astype(np.uint8),
+                        'header': hdu_header,
+                        'name': f'STREAK_{hdu_name}'
+                    }
+                }
 
         except Exception as e:
             import traceback
-            print(f"FATAL ERROR processing HDU {i} ({hdu_sci.name if 'hdu_sci' in locals() else 'Unknown'}): {e}")
-            print(traceback.format_exc())
-            print(f"Skipping output for this HDU.")
+            print(f"FATAL ERROR processing HDU {i}: {e}\n{traceback.format_exc()}")
 
     # --- Write Output Files ---
-    # Check if any HDUs were successfully processed before writing
-    if process_success_count == 0:
-        print("\nNo HDUs processed successfully. No output files will be written.")
-    else:
-        if hdul_map_out:
-            print(f"\nWriting primary map file to: {out_map_path}")
-            try: hdul_map_out.writeto(out_map_path, overwrite=True, checksum=True); print(" Map file OK.")
-            except Exception as e: print(f" ERROR writing map file: {e}")
-        # ... (rest of file writing, checking if list is not None and len > 1) ...
-        if hdul_mask_out and len(hdul_mask_out) > 1:
-            print(f"Writing mask file to: {out_mask_path}")
-            try: hdul_mask_out.writeto(out_mask_path, overwrite=True, checksum=True); print(" Mask file OK.")
-            except Exception as e: print(f" ERROR writing mask file: {e}")
-        if hdul_invvar_out and len(hdul_invvar_out) > 1:
-            print(f"Writing inverse variance file to: {out_invvar_path}")
-            try: hdul_invvar_out.writeto(out_invvar_path, overwrite=True, checksum=True); print(" InvVar file OK.")
-            except Exception as e: print(f" ERROR writing inverse variance file: {e}")
-        if hdul_sky_out and len(hdul_sky_out) > 1:
-            print(f"Writing sky background file to: {out_sky_path}")
-            try: hdul_sky_out.writeto(out_sky_path, overwrite=True, checksum=True); print(" Sky background file OK.")
-            except Exception as e: print(f" ERROR writing sky background file: {e}")
-        if hdul_weight_raw_out and len(hdul_weight_raw_out) > 1:
-            print(f"Writing raw weight file to: {out_weight_raw_path}")
-            try: hdul_weight_raw_out.writeto(out_weight_raw_path, overwrite=True, checksum=True); print(" Raw weight file OK.")
-            except Exception as e: print(f" ERROR writing raw weight file: {e}")
-        if args.individual_masks:
-            print(f"Writing individual mask component files...")
-            # Check len > 1 for each individual mask list before writing
-            if hdul_bad_out and len(hdul_bad_out) > 1:
-                try: hdul_bad_out.writeto(out_bad_path, overwrite=True); print("  Bad pixel mask OK.")
-                except Exception as e: print(f"  ERROR writing bad pixel mask: {e}")
-            # ... etc for satur, cosmics, streaks ...
+    if process_success_count > 0:
+        print("\nWriting output files...")
+        try:
+            # Write primary map file
+            if out_map_path and output_data:
+                # Create a new FITS file and write the primary HDU
+                primary_data = hdul_input[0].read() if len(hdul_input) > 0 else None
+                fitsio.write(out_map_path, primary_data, clobber=True)
+                # Append additional HDUs
+                with fitsio.FITS(out_map_path, 'rw') as f_out:
+                    for i in sorted(output_data.keys()):
+                        if 'map' in output_data[i]:
+                            f_out.write(output_data[i]['map']['data'], 
+                                       header=output_data[i]['map']['header'],
+                                       extname=output_data[i]['map']['name'])
+                print(f"  Map file written: {out_map_path}")
+            
+            # Write mask file
+            if out_mask_path and output_data:
+                primary_data = hdul_input[0].read() if len(hdul_input) > 0 else None
+                fitsio.write(out_mask_path, primary_data, clobber=True)
+                with fitsio.FITS(out_mask_path, 'rw') as f_out:
+                    for i in sorted(output_data.keys()):
+                        if 'mask' in output_data[i]:
+                            f_out.write(output_data[i]['mask']['data'], 
+                                       header=output_data[i]['mask']['header'],
+                                       extname=output_data[i]['mask']['name'])
+                print(f"  Mask file written: {out_mask_path}")
+            
+            # Write inverse variance file
+            if out_invvar_path and output_data:
+                primary_data = hdul_input[0].read() if len(hdul_input) > 0 else None
+                fitsio.write(out_invvar_path, primary_data, clobber=True)
+                with fitsio.FITS(out_invvar_path, 'rw') as f_out:
+                    for i in sorted(output_data.keys()):
+                        if 'invvar' in output_data[i]:
+                            f_out.write(output_data[i]['invvar']['data'], 
+                                       header=output_data[i]['invvar']['header'],
+                                       extname=output_data[i]['invvar']['name'])
+                print(f"  Inverse variance file written: {out_invvar_path}")
+            
+            # Write sky file
+            if out_sky_path and output_data:
+                primary_data = hdul_input[0].read() if len(hdul_input) > 0 else None
+                fitsio.write(out_sky_path, primary_data, clobber=True)
+                with fitsio.FITS(out_sky_path, 'rw') as f_out:
+                    for i in sorted(output_data.keys()):
+                        if 'sky' in output_data[i]:
+                            f_out.write(output_data[i]['sky']['data'], 
+                                       header=output_data[i]['sky']['header'],
+                                       extname=output_data[i]['sky']['name'])
+                print(f"  Sky file written: {out_sky_path}")
+            
+            # Write raw weight file
+            if out_weight_raw_path and output_data:
+                primary_data = hdul_input[0].read() if len(hdul_input) > 0 else None
+                fitsio.write(out_weight_raw_path, primary_data, clobber=True)
+                with fitsio.FITS(out_weight_raw_path, 'rw') as f_out:
+                    for i in sorted(output_data.keys()):
+                        if 'weight_raw' in output_data[i]:
+                            f_out.write(output_data[i]['weight_raw']['data'], 
+                                       header=output_data[i]['weight_raw']['header'],
+                                       extname=output_data[i]['weight_raw']['name'])
+                print(f"  Raw weight file written: {out_weight_raw_path}")
+            
+            # Write individual mask files if requested
+            if args.individual_masks and output_data:
+                for mask_type in ['bad', 'sat', 'cr', 'obj', 'streak']:
+                    mask_path = individual_mask_paths.get(mask_type)
+                    if mask_path:
+                        primary_data = hdul_input[0].read() if len(hdul_input) > 0 else None
+                        fitsio.write(mask_path, primary_data, clobber=True)
+                        with fitsio.FITS(mask_path, 'rw') as f_out:
+                            for i in sorted(output_data.keys()):
+                                if 'individual_masks' in output_data[i] and mask_type in output_data[i]['individual_masks']:
+                                    mask_info = output_data[i]['individual_masks'][mask_type]
+                                    f_out.write(mask_info['data'], 
+                                               header=mask_info['header'],
+                                               extname=mask_info['name'])
+                        print(f"  {mask_type.capitalize()} mask file written: {mask_path}")
 
+        except Exception as e:
+            print(f"ERROR: Failed to write output files: {e}")
+            import traceback
+            traceback.print_exc()
+            return 1
+    else:
+        print("\nNo HDUs processed successfully. No output files written.")
 
     # --- Cleanup ---
     if hdul_input: hdul_input.close()
     if hdul_flat: hdul_flat.close()
     warnings.filterwarnings('default', category=UserWarning)
     warnings.filterwarnings('default', category=RuntimeWarning)
-    pipeline_elapsed = time.time() - start_pipeline_time
-    print(f"\nPipeline finished in {pipeline_elapsed:.2f} seconds.")
-    return 0 # Indicate success
+    print(f"\nPipeline finished in {time.time() - start_pipeline_time:.2f} seconds.")
+    return 0
 
 
 if __name__ == "__main__":
-    # This allows running the script directly for debugging if needed
-    # but the primary execution path is via the entry point calling run_pipeline()
     import sys
     sys.exit(run_pipeline())
