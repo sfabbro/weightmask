@@ -39,7 +39,7 @@ def detect_objects(data_sub, bkg_rms_map, existing_mask, config):
                 else:
                     clean_config[k] = v
 
-        extract_thresh = float(clean_config.get('extract_thresh', 3.0))
+        base_extract_thresh = float(clean_config.get('extract_thresh', 3.0))
         min_area = int(clean_config.get('min_area', 10))
         
         # Force EVERYTHING to be clean, C-contiguous 32-bit floats
@@ -50,6 +50,23 @@ def detect_objects(data_sub, bkg_rms_map, existing_mask, config):
         if existing_mask is not None:
             m_in = np.require(existing_mask, dtype=np.bool_, requirements=['C', 'A'])
             
+        # --- Adaptive SEP Threshold (Density/Clutter Scaling) ---
+        extract_thresh = base_extract_thresh
+        valid_mask = ~m_in if m_in is not None else np.ones(data_sub.shape, dtype=bool)
+        if bkg_rms_map is not None:
+            valid_mask &= (bkg_rms_map > 0)
+        valid_data = data_sub[valid_mask]
+        
+        if len(valid_data) > 1000:
+            p50, p99 = np.percentile(valid_data, [50, 99])
+            mad_approx = np.median(np.abs(valid_data - p50)) * 1.4826
+            if mad_approx > 0:
+                tail_ratio = (p99 - p50) / mad_approx
+                if tail_ratio > 3.0:
+                    clutter_penalty = min(tail_ratio / 3.0, 3.0)
+                    extract_thresh = base_extract_thresh * np.sqrt(clutter_penalty)
+                    print(f"  [Adaptive SEP] Clutter penalty {clutter_penalty:.2f}x applied (tail ratio {tail_ratio:.1f}). Scaled extraction threshold to {extract_thresh:.2f} sigma.")
+
         # Extract objects using SEP
         objects = sep.extract(
             d_sub, 

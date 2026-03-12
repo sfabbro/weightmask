@@ -207,9 +207,32 @@ def _detect_trails_ransac(data_sub, bkg_rms_map, existing_mask, config):
     Ideal for faint "glint" trails (dotted lines of point sources).
     """
     cfg = config.get('ransac_params', {})
-    detect_thresh_sig = cfg.get('detect_thresh_sig', 5.0)
-    min_inliers = cfg.get('min_inliers', 10)
+    base_detect_thresh_sig = cfg.get('detect_thresh_sig', 5.0)
+    base_min_inliers = cfg.get('min_inliers', 10)
     residual_threshold = cfg.get('residual_threshold', 2.0)
+    
+    detect_thresh_sig = base_detect_thresh_sig
+    min_inliers = base_min_inliers
+    
+    # --- Adaptive RANSAC Thresholds (Density/Clutter Scaling) ---
+    # We inspect the global background to see how 'cluttered' or heavy-tailed the noise is.
+    # A purely Gaussian background has a P99 around 2.3 sigma.
+    valid_mask = ~existing_mask if existing_mask is not None else np.ones(data_sub.shape, dtype=bool)
+    if bkg_rms_map is not None:
+        valid_mask &= (bkg_rms_map > 0)
+    valid_data = data_sub[valid_mask]
+    
+    if len(valid_data) > 1000:
+        p50, p99 = np.percentile(valid_data, [50, 99])
+        mad_approx = np.median(np.abs(valid_data - p50)) * 1.4826
+        if mad_approx > 0:
+            tail_ratio = (p99 - p50) / mad_approx
+            if tail_ratio > 3.0:
+                # Highly cluttered field (many stars/artifacts). We must stiffen RANSAC requirements.
+                clutter_penalty = min(tail_ratio / 3.0, 4.0)
+                detect_thresh_sig *= np.sqrt(clutter_penalty)
+                min_inliers = int(min_inliers * clutter_penalty)
+                print(f"    [Adaptive RANSAC] Clutter penalty {clutter_penalty:.2f}x applied (tail ratio {tail_ratio:.1f}). New thresholds: sig={detect_thresh_sig:.1f}, min_inliers={min_inliers}")
     
     # 1. Candidate points: Bright points above noise floor
     if bkg_rms_map is not None:

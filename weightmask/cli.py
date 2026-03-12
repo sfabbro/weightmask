@@ -14,7 +14,7 @@ from typing import Optional, Tuple, Any, Union
 
 # Import from other modules within the package using relative imports
 from .bad import detect_bad_pixels
-from .satur import detect_saturated_pixels
+from .satur import detect_saturated_pixels, grow_bleed_trails
 from .cosmics import detect_cosmic_rays
 from .streaks import detect_streaks
 from .background import estimate_background
