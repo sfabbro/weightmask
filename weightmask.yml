@@ -70,8 +70,8 @@ streak_masking:
   # --- Sparse Trail Detection (RANSAC) ---
   enable_ransac_trails: True
   ransac_params:
-    detect_thresh_sig: 3.5  # Detection threshold for candidate points
-    min_inliers: 10         # Minimum number of points to form a trail
+    detect_thresh_sig: 4.5  # Detection threshold for candidate points
+    min_inliers: 20         # Minimum number of points to form a trail
     residual_threshold: 2.0 # Max distance for a point to be an inlier
     min_length: 50          # Minimum length of the trail in pixels
 
@@ -94,12 +94,12 @@ streak_masking:
     # 3. Hysteresis Thresholding 
     high_threshold: null
     low_threshold: null
-    high_threshold_sig: 3.0
-    low_threshold_sig: 1.0
+    high_threshold_sig: 8.0
+    low_threshold_sig: 3.0
     
     # 4. Region filtering
     min_area: 25           # Minimum number of pixels in a valid streak
-    min_elongation: 2.5    # Minimum ratio of major to minor axis length
+    min_elongation: 5.0    # Minimum ratio of major to minor axis length
 
 # Variance Calculation
 variance:

@@ -122,19 +122,22 @@ def _detect_streaks_frangi(data_sub, bkg_rms_map, existing_mask, config):
                 bkg_mask = np.ones_like(tophat_img, dtype=bool) # Fallback if entirely crowded
                 
             bkg_ridge = ridge_map[bkg_mask]
-            if len(bkg_ridge) > 0:
-                ridge_median = np.median(bkg_ridge)
-                ridge_mad = np.median(np.abs(bkg_ridge - ridge_median)) * 1.4826  # roughly std dev
-                if ridge_mad == 0:
-                    ridge_mad = np.std(bkg_ridge) + 1e-9 # fallback
-            else:
-                ridge_median = 0
-                ridge_mad = 1e-9
-                
-            high_thresh = ridge_median + high_threshold_sig * ridge_mad
-            low_thresh = ridge_median + low_threshold_sig * ridge_mad
             
-            # Allow detecting much fainter streaks, only small absolute floor.
+            # Use percentiles for robust estimation in extremely non-Gaussian backgrounds
+            if len(bkg_ridge) > 1000:
+                p50, p90, p99 = np.percentile(bkg_ridge, [50, 90, 99])
+                # Empirically scale the thresholds based on the long tail of the distribution
+                tail_spread = p99 - p50
+                if tail_spread == 0:
+                    tail_spread = 1e-9
+                
+                high_thresh = p50 + high_threshold_sig * tail_spread
+                low_thresh = p50 + low_threshold_sig * tail_spread
+            else:
+                high_thresh = 1e-5 # Fallback constants
+                low_thresh = 5e-6
+                
+            # Floor to ensure we don't pick up infinite 0s
             high_thresh = max(high_thresh, 1e-6)
             low_thresh = max(low_thresh, 1e-7)
             
@@ -210,7 +213,13 @@ def _detect_trails_ransac(data_sub, bkg_rms_map, existing_mask, config):
     
     # 1. Candidate points: Bright points above noise floor
     if bkg_rms_map is not None:
-        thresh = detect_thresh_sig * bkg_rms_map
+        median_rms = np.median(bkg_rms_map)
+        # Logarithmic threshold scaling for extremely noisy backgrounds
+        if median_rms > 15.0:
+            effective_sig = detect_thresh_sig * (1.0 + 0.5 * np.log10(median_rms / 15.0))
+            thresh = effective_sig * bkg_rms_map
+        else:
+            thresh = detect_thresh_sig * bkg_rms_map
     else:
         thresh = detect_thresh_sig * mad_std(data_sub)
         
