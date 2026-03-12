@@ -3,17 +3,16 @@ import warnings
 
 def detect_bad_pixels(flat_data, config, using_unit_flat=False):
     """
-    Detect bad pixels and columns in the flat field.
+    Detect bad pixels and columns in the flat field using local structural analysis.
 
-    Combines thresholding on individual pixel values with detection
-    of columns showing anomalous median values or low variance.
+    Instead of global thresholds which fail on vignetted fields, this applies
+    a median filter to create a structural model of the flat, and flags pixels
+    that deviate significantly from that model. Bad columns are found using
+    horizontal derivatives to find sharp discontinuities.
 
     Args:
         flat_data (ndarray): Flat field data array.
         config (dict): Configuration dictionary for flat masking.
-                       Should contain 'low_thresh', 'high_thresh', and
-                       optionally 'col_enable', 'col_low_var_factor',
-                       'col_median_dev_factor'.
         using_unit_flat (bool): Whether a unit flat (all 1.0) is being used.
 
     Returns:
@@ -23,88 +22,108 @@ def detect_bad_pixels(flat_data, config, using_unit_flat=False):
         warnings.warn("Flat data contains no finite values. Returning empty mask.", RuntimeWarning)
         return np.zeros(flat_data.shape, dtype=bool)
 
-    # --- 1. Individual Pixel Thresholding ---
     pixel_mask_bool = np.zeros(flat_data.shape, dtype=bool)
-    if not using_unit_flat:
-        print("  Detecting bad pixels via thresholds...")
-        try:
-            # Use nanmedian/nanmean for robustness against existing NaNs/Infs
-            with warnings.catch_warnings(): # Suppress RuntimeWarning from empty slices
-                warnings.simplefilter("ignore", category=RuntimeWarning)
-                median_flat = np.nanmedian(flat_data[flat_data > 0]) # Avoid zero/negative values for median calc
-
-            if not np.isfinite(median_flat) or median_flat <= 0:
-                warnings.warn("Could not determine a valid median flat value (>0). Using 1.0. Pixel thresholding may be unreliable.", RuntimeWarning)
-                median_flat = 1.0
-
-            flat_low = config.get('low_thresh', 0.5) * median_flat
-            flat_high = config.get('high_thresh', 2.0) * median_flat
-
-            # Create mask for pixels outside acceptable range or non-finite
-            pixel_mask_bool = (
-                (flat_data <= flat_low) |
-                (flat_data >= flat_high) |
-                (flat_data <= 0) | # Explicitly mask non-positive
-                (~np.isfinite(flat_data)) # Mask NaNs/Infs
-            )
-            print(f"    Found {np.sum(pixel_mask_bool)} bad pixels (Low<{flat_low:.3f}, High>{flat_high:.3f}).")
-
-        except Exception as e:
-            print(f"  WARNING: Pixel thresholding failed: {e}. Skipping.")
-            pixel_mask_bool.fill(False) # Reset mask if calculation failed
-    else:
-         print("  Skipping individual pixel thresholding (using unit flat).")
-
-    # --- 2. Bad Column Detection ---
     column_mask_bool = np.zeros(flat_data.shape, dtype=bool)
-    if not using_unit_flat and config.get('col_enable', True): # Check if enabled
-        print("  Detecting bad columns via statistics...")
+
+    if using_unit_flat:
+        print("  Skipping bad pixel/column detection (using unit flat).")
+        return pixel_mask_bool
+
+    # --- 1. Local Structural Pixel Thresholding ---
+    print("  Detecting bad pixels via local median deviation...")
+    try:
+        from scipy.ndimage import median_filter
+
+        filter_size = config.get('local_filter_size', 15)
+        local_low_thresh = config.get('local_low_thresh', 0.5)
+        local_high_thresh = config.get('local_high_thresh', 2.0)
+
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore", category=RuntimeWarning)
+            
+            # Create a heavily smoothed version of the flat to serve as the "true" illumination model.
+            # Replace NaNs/Infs with median so they don't corrupt the filter
+            clean_flat = flat_data.copy()
+            global_med = np.nanmedian(clean_flat[clean_flat > 0])
+            if not np.isfinite(global_med): global_med = 1.0
+            clean_flat[~np.isfinite(clean_flat)] = global_med
+
+            smoothed_flat = median_filter(clean_flat, size=filter_size)
+            
+            # Avoid division by zero
+            smoothed_flat[smoothed_flat <= 0] = 1e-6
+            
+            # Calculate the ratio between the raw flat and the local smoothed model
+            ratio = flat_data / smoothed_flat
+
+        # Flag pixels where the ratio is outside the acceptable bounds
+        pixel_mask_bool = (
+            (ratio <= local_low_thresh) |
+            (ratio >= local_high_thresh) |
+            (flat_data <= 0) |
+            (~np.isfinite(flat_data))
+        )
+        print(f"    Found {np.sum(pixel_mask_bool)} bad pixels (Ratio < {local_low_thresh:.2f} or > {local_high_thresh:.2f}).")
+
+    except Exception as e:
+        print(f"  WARNING: Local pixel thresholding failed: {e}. Skipping.")
+        pixel_mask_bool.fill(False)
+
+    # --- 2. Derivative-Based Column Detection ---
+    if config.get('col_enable', True):
+        print("  Detecting bad columns via horizontal derivatives...")
         try:
-            # Calculate global statistics again if needed (median_flat might be 1.0 from above)
+            # A completely dead column will have zero variance and low median,
+            # but a partially bad column will just cause a sharp jump.
+            # We take the derivative across columns (axis 1) of the column medians.
+
             with warnings.catch_warnings():
                 warnings.simplefilter("ignore", category=RuntimeWarning)
-                global_flat_median = np.nanmedian(flat_data)
-                global_flat_var = np.nanvar(flat_data)
+                column_medians = np.nanmedian(flat_data, axis=0)
 
-            if not np.isfinite(global_flat_median) or not np.isfinite(global_flat_var):
-                 warnings.warn("Could not determine valid global flat median/variance. Skipping column detection.", RuntimeWarning)
-            else:
-                # Calculate column statistics (ignoring NaNs)
-                with warnings.catch_warnings():
-                    warnings.simplefilter("ignore", category=RuntimeWarning) # Ignore warnings from all-NaN columns
-                    column_medians = np.nanmedian(flat_data, axis=0)
-                    column_vars = np.nanvar(flat_data, axis=0)
+            # Mask entirely NaN/Inf columns immediately
+            invalid_cols = ~np.isfinite(column_medians)
+            column_mask_bool[:, invalid_cols] = True
+            num_invalid = np.sum(invalid_cols)
 
-                # Get thresholds from config or use defaults
-                low_var_factor = config.get('col_low_var_factor', 0.05) # Factor of global variance
-                median_dev_factor = config.get('col_median_dev_factor', 0.1) # Factor of global median
+            if num_invalid < len(column_medians):
+                # Calculate horizontal derivative (difference between adjacent columns)
+                valid_medians = column_medians.copy()
+                valid_medians[invalid_cols] = np.nanmedian(valid_medians) # Patch for diff
+                
+                col_diffs = np.abs(np.diff(valid_medians, prepend=valid_medians[0]))
+                
+                # Robust statistics of the differences
+                med_diff = np.nanmedian(col_diffs)
+                mad_diff = np.nanmedian(np.abs(col_diffs - med_diff)) * 1.4826
+                if mad_diff == 0: mad_diff = np.nanstd(col_diffs)
 
-                # Thresholds
-                var_threshold = low_var_factor * global_flat_var
-                median_deviation_threshold = median_dev_factor * abs(global_flat_median) # Use abs for safety
+                sigma_thresh = config.get('col_deriv_sigma', 10.0)
+                thresh = med_diff + sigma_thresh * mad_diff
 
-                # Identify bad columns
-                # Condition 1: Column variance is significantly lower than global variance (potential dead column)
-                # Condition 2: Column median deviates significantly from global median
-                # Condition 3: Column median or variance calculation failed (all NaNs in column)
-                bad_cols_idx = np.where(
-                    (column_vars < var_threshold) |
-                    (np.abs(column_medians - global_flat_median) > median_deviation_threshold) |
-                    (~np.isfinite(column_medians)) |
-                    (~np.isfinite(column_vars))
-                )[0]
+                # Columns where the jump from the neighbor is huge
+                jump_cols_idx = np.where(col_diffs > thresh)[0]
+                
+                # Also catch columns that are completely dead (very close to 0)
+                dead_thresh = config.get('col_dead_thresh', 0.1) * global_med
+                dead_cols_idx = np.where(valid_medians < dead_thresh)[0]
 
-                if len(bad_cols_idx) > 0:
-                    column_mask_bool[:, bad_cols_idx] = True
-                    print(f"    Found {len(bad_cols_idx)} bad columns (Var<{var_threshold:.3g}, MedDev>{median_deviation_threshold:.3g}).")
+                bad_cols_combined = np.unique(np.concatenate([jump_cols_idx, dead_cols_idx]))
+
+                if len(bad_cols_combined) > 0:
+                    column_mask_bool[:, bad_cols_combined] = True
+                    print(f"    Found {len(bad_cols_combined)} bad columns (Deriv > {thresh:.3g} or Med < {dead_thresh:.3g})")
+                    if num_invalid > 0:
+                        print(f"    Plus {num_invalid} columns masked due to being mostly NaNs/Infs.")
                 else:
                     print("    No bad columns detected.")
 
         except Exception as e:
+             import traceback
              print(f"  WARNING: Bad column detection failed: {e}. Skipping.")
-             # No need to reset column_mask_bool, it's already False
+             print(traceback.format_exc())
 
-    elif not config.get('col_enable', True):
+    else:
         print("  Bad column detection disabled in config.")
 
     # --- 3. Combine Masks ---

@@ -110,6 +110,64 @@ def _calculate_inverse_variance_theoretical(sky_map, flat_map, gain, read_noise_
     return inv_variance.astype(np.float32)
 
 
+def _rescale_variance_robust(inv_variance, sci_data, sky_map, obj_mask, epsilon):
+    """
+    Internal: Robustly rescale variance so that SNR standard deviation is 1.
+    Mimics LSST ScaleVarianceTask.
+    """
+    if inv_variance is None or sci_data is None or obj_mask is None:
+        return inv_variance
+
+    # SNR = (data - sky) * sqrt(inv_variance)
+    # Background should have SNR stdev of 1.0
+    data_sub = sci_data - sky_map
+    snr = data_sub[~obj_mask] * np.sqrt(inv_variance[~obj_mask])
+    
+    # Filter out non-finite SNRs
+    snr = snr[np.isfinite(snr)]
+    if snr.size < 100:
+        return inv_variance
+
+    # Use Interquartile Range for robust stdev
+    q1, q3 = np.percentile(snr, (25, 75))
+    robust_stdev = 0.7413 * (q3 - q1)
+    
+    if robust_stdev > 0:
+        scale_factor = 1.0 / (robust_stdev**2)
+        print(f"    Rescaling variance plane by factor {scale_factor:.3f} (SNR robust stdev was {robust_stdev:.3f})")
+        return inv_variance * scale_factor
+    
+    return inv_variance
+
+
+def _unbias_variance(inv_variance, sci_data, sky_map, gain, epsilon):
+    """
+    Internal: Remove signal-dependent Poisson noise to get background-only variance.
+    Mimics LSST remove_signal_from_variance.
+    """
+    if inv_variance is None or gain <= 0:
+        return inv_variance
+    
+    # Var_total = Var_bg + Signal/Gain
+    # 1/InvVar_total = 1/InvVar_bg + Signal/Gain
+    # 1/InvVar_bg = 1/InvVar_total - Signal/Gain
+    
+    # Signal is (sci_data - sky_map)
+    signal = np.maximum(sci_data - sky_map, 0.0)
+    
+    # Work in variance space
+    with np.errstate(divide='ignore', invalid='ignore'):
+        var_total = 1.0 / inv_variance
+        var_bg = var_total - (signal / gain)
+        
+        # Ensure positivity
+        var_bg = np.maximum(var_bg, 1e-6) # Floor at tiny noise
+        new_inv_variance = 1.0 / var_bg
+        
+    new_inv_variance[~np.isfinite(new_inv_variance)] = 0.0
+    return new_inv_variance.astype(np.float32)
+
+
 def _calculate_inverse_variance_rms(bkg_rms_map, epsilon):
     """
     Internal: Calculate inverse variance based on SEP's background RMS map.
@@ -148,6 +206,7 @@ def calculate_inverse_variance(variance_cfg, sky_map, flat_map, bkg_rms_map, sci
     gain = variance_cfg.get('gain', 1.0)
     read_noise_e = variance_cfg.get('read_noise', 0.0)
 
+    inv_var = None
     if method == 'empirical_fit':
         if sci_data is None or obj_mask is None:
             warnings.warn("Empirical fit method requires science data and object mask.", RuntimeWarning)
@@ -160,21 +219,32 @@ def calculate_inverse_variance(variance_cfg, sky_map, flat_map, bkg_rms_map, sci
         
         if emp_gain is None or emp_rn_e is None:
             print("  WARNING: Empirical fit failed. Falling back to theoretical method with default/header values.")
-            # Fallback to theoretical with default/header values
-            return _calculate_inverse_variance_theoretical(sky_map, flat_map, gain, read_noise_e, epsilon)
+            inv_var = _calculate_inverse_variance_theoretical(sky_map, flat_map, gain, read_noise_e, epsilon)
         else:
-            # Use empirically derived parameters for theoretical calculation
-            return _calculate_inverse_variance_theoretical(sky_map, flat_map, emp_gain, emp_rn_e, epsilon)
+            inv_var = _calculate_inverse_variance_theoretical(sky_map, flat_map, emp_gain, emp_rn_e, epsilon)
+            gain = emp_gain # For unbiasing below
 
     elif method == 'theoretical':
         if flat_map is None or sky_map is None:
             warnings.warn("Theoretical method requires flat and sky maps.", RuntimeWarning)
             return None
-        return _calculate_inverse_variance_theoretical(sky_map, flat_map, gain, read_noise_e, epsilon)
+        inv_var = _calculate_inverse_variance_theoretical(sky_map, flat_map, gain, read_noise_e, epsilon)
 
     elif method == 'rms_map':
-        return _calculate_inverse_variance_rms(bkg_rms_map, epsilon)
+        inv_var = _calculate_inverse_variance_rms(bkg_rms_map, epsilon)
 
     else:
         warnings.warn(f"Invalid variance calculation method '{method}'.", RuntimeWarning)
         return None
+
+    # Post-processing: Rescaling and Unbiasing
+    if inv_var is not None:
+        # 1. Option to rescale variance to match observed noise (SNR=1 check)
+        if variance_cfg.get('rescale_variance', False) and sci_data is not None and obj_mask is not None:
+            inv_var = _rescale_variance_robust(inv_var, sci_data, sky_map, obj_mask, epsilon)
+            
+        # 2. Option to unbias variance (remove Poisson contribution of objects)
+        if variance_cfg.get('unbias_variance', False) and sci_data is not None:
+            inv_var = _unbias_variance(inv_var, sci_data, sky_map, gain, epsilon)
+
+    return inv_var

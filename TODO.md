@@ -56,8 +56,8 @@ This table focuses on physical artifacts or characteristics that might remain af
 | effect             | algorithms / process                      | implemented algorithm  | existing implementations            |
 | :----------------- | :---------------------------------------- | :--------------------------------- | :---------------------------------------------- |
 | **cosmic rays** | masking via morphological detection | lacosmic algorithm | `astroscrappy`, `ccdproc.cosmicray_lacosmic`, `MaxiMask`, ` cosmic-conn`, |
-| **blooming/bleeding**| masking        | masking (core only via SAT)        | `SEP` bleed trail detection, `astro-source-subtraction` |
-| **linear streaks** | masking via line detection (hough, radon) | hough (skimage), dilation        | `MaxiMask`, `DOI: 10.1093/mnras/stab3563`, `acstools.satdet`  |
+| **blooming/bleeding**| masking        | SAT mask with vertical column dilation | `SEP` bleed trail detection, `astro-source-subtraction` |
+| **linear streaks** | masking via line detection (hough, radon) | Frangi ridge filter, hysteresis thresholding | `MaxiMask`, `DOI: 10.1093/mnras/stab3563`, `acstools.satdet`  |
 | **persistence** | modeling & subtraction(X), masking(X)   | -                                  | HST/WFC3 persistence pipeline, JWST pipeline, `tshirt.pipeline`  |
 | **CTI trails** | correction models(X)                      | -                                  | HST/ACS CTI correction, JWST/MIRI tools, `ctisim`  |
 | **IPC effect** | kernel deconvolution(X), PSF modeling(X)  | -                                  | JWST NIRCam IPC correction, `spaceKLIP` |

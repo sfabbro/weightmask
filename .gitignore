@@ -172,3 +172,7 @@ cython_debug/
 
 # sandbox
 sandbox/
+
+# Local test outputs and debug scripts
+test_outputs/
+debug_*.py

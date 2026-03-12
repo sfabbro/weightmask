@@ -1,147 +1,105 @@
 import numpy as np
 import warnings
 
-def estimate_saturation_from_histogram_stable_peak(data, min_adu=None, max_adu=None, num_iterations=20):
+import scipy.signal
+import scipy.ndimage
+
+def estimate_saturation_robust_clump(data, min_adu=None, max_adu=None):
     """
-    Estimates saturation level from histogram by finding a stable peak below the max,
-    inspired by the logic in fitssatur.c.
+    Robust Detrended Saturation Detection.
+    Finds smeared saturation limits without causing artificial saturation on empty fields.
+    Uses 1D peak finding on the extreme right tail of the intensity distribution.
+    If no isolated clump is found (i.e. smooth exponential drop-off), returns None.
 
     Args:
         data (ndarray): Image data array (should be float).
-        min_adu (float, optional): Lower bound ADU value for histogram analysis. If None, auto-determined.
-        max_adu (float, optional): Upper bound ADU value for histogram analysis. If None, auto-determined.
-        num_iterations (int): Number of iterations for zeroing out histogram top end.
+        min_adu (float, optional): Lower bound ADU value for analysis. If None, auto-determined.
+        max_adu (float, optional): Upper bound ADU value for analysis. If None, auto-determined.
 
     Returns:
-        float or None: Estimated saturation level, or None if not found
+        float or None: Estimated saturation level, or None if no saturation is present.
     """
     try:
-        # Filter out infinities and NaNs for percentile/max calculations
+        # Filter out infinities and NaNs
         finite_data = data[np.isfinite(data)]
         if finite_data.size == 0:
-            print("  Histogram (Stable Peak): No finite data found.")
+            print("  Robust Clump: No finite data found.")
             return None
 
         p_max = np.max(finite_data)
 
         # Auto-determine min_adu and max_adu if not provided
         if min_adu is None or max_adu is None:
-            # Use percentiles to set a reasonable range, avoiding extreme outliers influencing max_adu too much
-            p95 = np.percentile(finite_data, 95)
+            # We want to exclude the vast majority of normal sky/star pixels.
+            # Start analysis above the 99th percentile, but ensure we don't start too high 
+            # if the field is sparse.
+            p99 = np.percentile(finite_data, 99)
             p99_9 = np.percentile(finite_data, 99.9)
 
-            auto_min_adu = p95 * 0.8 # Start below the main distribution tail
-            auto_max_adu = min(p_max * 1.01, p99_9 * 1.2) # Cap near max value or slightly above 99.9th
+            # Heuristic: start halfway between the 99th percentile and max, 
+            # or 80% of the 99.9th percentile, whichever is more conservative.
+            auto_min_adu = min(p99 + (p_max - p99) * 0.3, p99_9 * 0.8)
+            auto_max_adu = min(p_max * 1.01, p99_9 * 1.5) # Allow some room above 99.9th
 
             min_adu = min_adu if min_adu is not None else auto_min_adu
             max_adu = max_adu if max_adu is not None else auto_max_adu
+            
+            # Absolute sanity check: if max is small, we shouldn't be looking for saturation
+            if p_max < 10000:
+                print(f"  Robust Clump: Max ADU ({p_max:.1f}) is very low. Assuming no saturation.")
+                return None
 
-            # Ensure max_adu is slightly larger than min_adu
             if max_adu <= min_adu:
-                max_adu = min_adu + 100 # Add a small buffer
-            print(f"  Auto-determined histogram range: [{min_adu:.1f},{max_adu:.1f}] ADU")
+                max_adu = min_adu + 100.0
 
-    except Exception as e:
-        print(f"  Parameter auto-determination failed: {e}")
-        # Fall back to reasonable defaults if auto-determination fails
-        min_adu = min_adu if min_adu is not None else 30000.0
-        max_adu = max_adu if max_adu is not None else 65535.0
-        if max_adu <= min_adu: max_adu = min_adu + 100.0
+            print(f"  Auto-determined histogram range: [{min_adu:.1f}, {max_adu:.1f}] ADU")
 
+        print(f"  Attempting robust clump analysis: range=[{min_adu:.1f}, {max_adu:.1f}]")
 
-    print(f"  Attempting histogram analysis (Stable Peak): range=[{min_adu:.1f},{max_adu:.1f}]")
-
-    try:
-        # Use integer bins for direct comparison
-        bins = np.arange(int(np.floor(min_adu)), int(np.ceil(max_adu)) + 2)
+        # Bin the extreme tail into ~100 bins. 
+        # This prevents the histogram from dissolving into noise for smeared clumps.
+        bins = np.linspace(min_adu, max_adu, 100)
         counts, bin_edges = np.histogram(finite_data, bins=bins)
+        bin_centers = (bin_edges[:-1] + bin_edges[1:]) / 2
 
-        if np.sum(counts) < 10: # Need some minimum number of pixels in range
-            print("  Histogram (Stable Peak): Not enough pixels in analysis range.")
+        if np.sum(counts) < 20: 
+            print("  Robust Clump: Not enough pixels in extreme tail (empty field). No saturation detected.")
             return None
 
-        # Find the initial peak (highest bin with counts)
-        valid_counts_indices = np.where(counts > 0)[0]
-        if len(valid_counts_indices) == 0:
-             print("  Histogram (Stable Peak): No counts found in analysis range.")
-             return None
-        initial_peak_idx = valid_counts_indices[np.argmax(counts[valid_counts_indices])]
-        initial_peak_val = bin_edges[initial_peak_idx]
-        print(f"  Initial histogram peak value: {initial_peak_val:.1f} ADU (counts: {counts[initial_peak_idx]})")
+        # Smooth the histogram heavily to find the macro-structure (the clump)
+        smoothed_counts = scipy.ndimage.gaussian_filter1d(counts.astype(float), sigma=2.0)
 
-        # Iteratively zero out top bins and find the peak, looking for stability
-        longest_stable_run = 0
-        stable_run_start_idx = -1
-        current_stable_run = 0
-        last_peak_idx = -1
+        # Find peaks. 
+        # Expected prominence is at least a few percent of the max smoothed count in this tail.
+        min_prominence = max(2.0, np.max(smoothed_counts) * 0.05) 
+        
+        peaks, properties = scipy.signal.find_peaks(smoothed_counts, prominence=min_prominence)
 
-        # Start zeroing from just below max_adu down towards the initial peak value
-        # This avoids issues if the initial peak *is* the saturation level
-        zero_start_val = max_adu
-
-        for i in range(num_iterations):
-            # Calculate the value to zero above for this iteration
-            # Linearly decrease the zeroing threshold from max_adu towards initial_peak_val
-            zero_above_val = zero_start_val - (zero_start_val - initial_peak_val) * (i + 1) / num_iterations
-
-            # Ensure zero_above_val doesn't go below the start of our bins
-            zero_above_val = max(zero_above_val, bin_edges[0])
-
-            temp_counts = counts.copy()
-            zero_above_idx = np.searchsorted(bin_edges, zero_above_val, side='left')
-            if zero_above_idx < len(temp_counts):
-                 temp_counts[zero_above_idx:] = 0
-            # Also ensure the initial peak itself isn't considered in stability check unless it persists
-            # temp_counts[initial_peak_idx] = 0 # Optional: Force check below initial peak
-
-            valid_indices = np.where(temp_counts > 0)[0]
-            if len(valid_indices) == 0:
-                # print(f"  Iter {i+1}: No peak found after zeroing above {zero_above_val:.1f}")
-                break # Stop if histogram becomes empty
-
-            current_peak_idx = valid_indices[np.argmax(temp_counts[valid_indices])]
-
-            # Check stability (ignoring the absolute initial peak unless it's the only one left)
-            if current_peak_idx == last_peak_idx and current_peak_idx != initial_peak_idx:
-                current_stable_run += 1
-            else:
-                # New peak or first iteration
-                if current_stable_run > longest_stable_run:
-                    longest_stable_run = current_stable_run
-                    stable_run_start_idx = last_peak_idx # Store the start index of the longest run
-
-                # Reset for the new peak
-                current_stable_run = 1
-                last_peak_idx = current_peak_idx
-
-            # print(f"  Iter {i+1}: Zeroed above {zero_above_val:.1f}, Peak Idx: {current_peak_idx} (Val: {bin_edges[current_peak_idx]:.1f}), Counts: {temp_counts[current_peak_idx]}, Stable run: {current_stable_run}")
-
-
-        # Check if the last run was the longest
-        if current_stable_run > longest_stable_run and last_peak_idx != initial_peak_idx:
-            longest_stable_run = current_stable_run
-            stable_run_start_idx = last_peak_idx
-
-        # Require a minimum run length to be considered stable (e.g., 3 iterations)
-        min_stable_run = 3
-        if longest_stable_run >= min_stable_run and stable_run_start_idx != -1:
-            estimated_level = bin_edges[stable_run_start_idx] # The start value of the stable plateau
-            print(f"  Histogram (Stable Peak): Found stable plateau at {estimated_level:.1f} ADU (run length {longest_stable_run}).")
-            # Add a small buffer (e.g., half a bin width)
-            return float(estimated_level + 0.5 * np.mean(np.diff(bin_edges)))
-        elif initial_peak_idx != -1:
-             # Fallback if no stable run found: return the initial peak value.
-             # This might happen if saturation is very sharp or data is noisy.
-             estimated_level = bin_edges[initial_peak_idx]
-             print(f"  Histogram (Stable Peak): No stable plateau found (longest run {longest_stable_run}). Falling back to initial peak: {estimated_level:.1f} ADU.")
-             return float(estimated_level + 0.5 * np.mean(np.diff(bin_edges)))
-        else:
-            print("  Histogram (Stable Peak): Could not identify a stable peak.")
+        if len(peaks) == 0:
+            print("  Robust Clump: Smooth intensity tail with no anomalous clumps. No saturation detected.")
             return None
+
+        # The saturation clump is usually the most prominent peak in this extreme tail
+        best_peak_idx = peaks[np.argmax(properties['prominences'])]
+        peak_adu = bin_centers[best_peak_idx]
+
+        # The saturation threshold should be set at the START of the clump, 
+        # which is approximated by the left base of the peak.
+        left_base_idx = properties['left_bases'][np.argmax(properties['prominences'])]
+        
+        estimated_level = bin_centers[left_base_idx]
+        
+        # Sanity check: don't let it fall all the way back to min_adu if the base is poorly defined
+        estimated_level = max(estimated_level, min_adu + (peak_adu - min_adu) * 0.2)
+        
+        print(f"  Robust Clump: Found anomalous clump at ~{peak_adu:.1f} ADU.")
+        print(f"  Robust Clump: Setting threshold near the base of the clump: {estimated_level:.1f} ADU.")
+        
+        return float(estimated_level)
 
     except Exception as e:
         import traceback
-        print(f"  Histogram (Stable Peak) analysis failed with error: {e}")
+        print(f"  Robust Clump analysis failed with error: {e}")
         print(traceback.format_exc())
         return None
 
@@ -171,22 +129,21 @@ def detect_saturated_pixels(sci_data, sci_hdr, config):
         sci_data = sci_data.astype(np.float32)
 
     if config.get('method', 'histogram') == 'histogram':
-        print("Attempting saturation detection via histogram (Stable Peak method)...")
+        print("Attempting robust detrended saturation detection (Clump method)...")
         # Pass specific histogram parameters if they exist in the config
-        saturation_level = estimate_saturation_from_histogram_stable_peak(
+        saturation_level = estimate_saturation_robust_clump(
             sci_data,
             min_adu=hist_params.get('hist_min_adu'), # Use .get for safety
-            max_adu=hist_params.get('hist_max_adu'),
-            num_iterations=hist_params.get('hist_iterations', 20) # Add num_iterations to config?
+            max_adu=hist_params.get('hist_max_adu')
         )
 
         if saturation_level is not None:
-            sat_method_used = 'histogram (stable peak)'
+            sat_method_used = 'histogram (robust clump)'
         else:
-            print("  Histogram (Stable Peak) failed. Trying header fallback...")
+            print("  Robust Clump detection yielded no saturation. Trying header fallback...")
             # Fallback to header keyword
             header_keyword = config.get('keyword')
-            if header_keyword and header_keyword in sci_hdr:
+            if header_keyword and sci_hdr is not None and header_keyword in sci_hdr:
                 try:
                     saturation_level = float(sci_hdr[header_keyword])
                     sat_method_used = 'header (fallback)'
@@ -221,11 +178,79 @@ def detect_saturated_pixels(sci_data, sci_hdr, config):
     # Ensure saturation_level is a float before comparison
     saturation_level = float(saturation_level)
 
-    # Create the boolean mask
+    # Create the boolean mask for core saturated pixels
     # Handle potential NaNs/Infs in input data safely
     with np.errstate(invalid='ignore'): # Suppress warnings from comparing with NaN/Inf
         sat_mask_bool = (sci_data >= saturation_level) & np.isfinite(sci_data)
 
     print(f"  Final saturation level used: {saturation_level:.1f} ADU (Method: {sat_method_used})")
-
+    
     return saturation_level, sat_method_used, sat_mask_bool
+
+
+def grow_bleed_trails(sci_data, sat_mask, sky_map, bkg_rms_map, config):
+    """
+    Grow saturated regions vertically to mask bleed trails (blooming).
+    Uses a region-growing algorithm that stops when flux hits the background level.
+    
+    Args:
+        sci_data (ndarray): Science image data.
+        sat_mask (ndarray): Boolean mask of saturated cores.
+        sky_map (ndarray): Background sky map.
+        bkg_rms_map (ndarray): Background RMS map.
+        config (dict): Configuration for bleed masking.
+        
+    Returns:
+        ndarray: Boolean mask with expanded bleed trails.
+    """
+    if not config.get('mask_bleed_trails', True):
+        return sat_mask
+        
+    print("  Growing bleed trails based on local flux levels...")
+    h, w = sci_data.shape
+    new_mask = sat_mask.copy()
+    
+    # Threshold for stopping the growth: background + N * sigma
+    thresh_sigma = config.get('bleed_thresh_sigma', 1.0)
+    
+    # Identify columns with saturation
+    sat_cols = np.where(np.any(sat_mask, axis=0))[0]
+    
+    for x in sat_cols:
+        col_sat = sat_mask[:, x]
+        # Find contiguous segments of saturated pixels in this column
+        labeled_segments, num_segments = scipy.ndimage.label(col_sat)
+        
+        for s in range(1, num_segments + 1):
+            segment_indices = np.where(labeled_segments == s)[0]
+            y_min, y_max = segment_indices.min(), segment_indices.max()
+            
+            # Get background levels for this column
+            col_bkg = sky_map[:, x] if sky_map is not None else np.zeros(h)
+            col_rms = bkg_rms_map[:, x] if bkg_rms_map is not None else np.full(h, 10.0)
+            
+            # Use a conservative threshold (e.g. 5 sigma) to prevent over-growing into noise
+            stop_thresh = col_bkg + config.get('bleed_thresh_sigma', 5.0) * col_rms
+            
+            # Grow up
+            for y in range(y_min - 1, -1, -1):
+                if sci_data[y, x] > stop_thresh[y]:
+                    new_mask[y, x] = True
+                else:
+                    break
+            
+            # Grow down
+            for y in range(y_max + 1, h):
+                if sci_data[y, x] > stop_thresh[y]:
+                    new_mask[y, x] = True
+                else:
+                    break
+                    
+    # Horizontal dilation for safety (optional)
+    h_dilation = config.get('bleed_grow_horizontal', 2)
+    if h_dilation > 0:
+        selem = np.ones((1, 2 * h_dilation + 1), dtype=bool)
+        new_mask = scipy.ndimage.binary_dilation(new_mask, structure=selem)
+        
+    print(f"    Bleed trail growth added {np.sum(new_mask & ~sat_mask)} pixels.")
+    return new_mask

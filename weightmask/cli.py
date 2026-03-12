@@ -129,15 +129,30 @@ def process_hdu(hdu_sci, hdu_flat, config: dict, hdu_index: int, tile_size: int 
     # --- Full Image Processing Steps ---
     interim_mask_bool = (final_mask_int > 0)
 
+    # Calculate preliminary background RMS for CR and Bleed masking
+    print("  Calculating preliminary background RMS...")
+    _, prelim_bkg_rms = estimate_background(sci_data_full, interim_mask_bool, config.get('sep_background', {}))
+
+    # --- 1.5 Bleed Trail (Blooming) Masking ---
+    # Now that we have a preliminary background RMS, we can grow the saturated cores 
+    # vertically into trails much more robustly than with a fixed dilation.
+    sat_cfg = config.get('saturation', {})
+    if sat_cfg.get('mask_bleed_trails', True):
+        print("  (1.5/7) Growing Bleed Trails for saturated stars...")
+        sat_mask_full = grow_bleed_trails(sci_data_full, sat_mask, prelim_bkg_rms * 0, prelim_bkg_rms, sat_cfg)
+        # Update masks
+        new_bleed_pixels = (sat_mask_full & ~sat_mask)
+        sat_mask |= new_bleed_pixels
+        final_mask_int[new_bleed_pixels] |= MASK_BITS['SAT']
+        interim_mask_bool |= new_bleed_pixels
+        print(f"      Added {np.sum(new_bleed_pixels)} bleed trail pixels.")
+
     # --- 2. First-Pass Cosmic Ray Detection ---
     print("  (2/7) Running first-pass Cosmic Ray detection...")
     cosmic_cfg = config.get('cosmic_ray', {})
     variance_cfg = config.get('variance', {})
     gain = sci_hdr.get(variance_cfg.get('gain_keyword','GAIN'), variance_cfg.get('default_gain', 1.0))
     read_noise_e = sci_hdr.get(variance_cfg.get('rdnoise_keyword','RDNOISE'), variance_cfg.get('default_rdnoise', 0.0))
-    
-    # CR detection needs a preliminary background RMS map
-    _, prelim_bkg_rms = estimate_background(sci_data_full, interim_mask_bool, config.get('sep_background', {}))
     
     cr_add_mask = detect_cosmic_rays(sci_data_full, interim_mask_bool, saturation_level, gain, read_noise_e, cosmic_cfg, bkg_rms_map=prelim_bkg_rms)
     cr_mask |= cr_add_mask

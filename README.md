@@ -15,10 +15,10 @@ Python toolkit for generating weight maps, confidence maps, and masks for astron
   - Sky background maps
 - Automatic detection of:
   - Bad pixels from flat fields
-  - Saturated pixels
+  - Saturated pixels and blooming bleed trails
   - Cosmic rays (using astroscrappy)
-  - Astronomical objects
-  - Satellite streaks (using Hough transform)
+  - Astronomical objects with dynamic halo scaling
+  - Satellite streaks using multi-scale Frangi ridge filtering
 - Compatible with Multi-Extension FITS (MEF) files
 - Configurable via YAML files
 - SWarp and casutools compatible weight map outputs

@@ -1,6 +1,20 @@
 import numpy as np
 from astroscrappy import detect_cosmics
 import warnings
+from scipy.ndimage import convolve
+
+def _get_psf_peakiness(fwhm):
+    """
+    Calculate the expected peakiness (ratio of central pixel to total 3x3 flux)
+    of a 2D Gaussian PSF.
+    """
+    sigma = fwhm / 2.355
+    # Create 3x3 Gaussian kernel
+    x, y = np.mgrid[-1:2, -1:2]
+    kernel = np.exp(-(x**2 + y**2) / (2 * sigma**2))
+    kernel /= kernel.sum()
+    # Peakiness is the central value
+    return kernel[1, 1]
 
 def detect_cosmic_rays(sci_data, existing_mask, saturation_level, gain, read_noise, config, bkg_rms_map=None):
     """
@@ -49,8 +63,60 @@ def detect_cosmic_rays(sci_data, existing_mask, saturation_level, gain, read_noi
             verbose=False
         )
 
+        # LSST-inspired PSF protection:
+        # If a detected CR is actually "fuzzy" enough to be a star according to the PSF,
+        # we might want to unmask it to prevent over-flagging star cores.
+        if config.get('psf_aware', True):
+            psf_fwhm = config.get('psf_fwhm_guess', 3.0)
+            print(f"    Applying PSF-aware protection (FWHM guess: {psf_fwhm:.1f} pix)")
+            
+            # We MUST subtract background to get true PSF peakiness
+            # Estimate local background using a simple median or just a global mode
+            # For robustness, we'll use a local 5x5 median filter or subtract the global mode
+            sky_est = np.median(sci_data) # Global fallback
+            sci_sub = np.maximum(sci_data - sky_est, 0.0)
+            
+            # Calculate peakiness of every pixel: I(x,y) / sum(I_3x3)
+            # We use a 3x3 uniform filter for the sum
+            uniform_3x3 = np.ones((3, 3), dtype=np.float32)
+            local_flux_sum = convolve(sci_sub, uniform_3x3, mode='constant', cval=0.0)
+            
+            with np.errstate(divide='ignore', invalid='ignore'):
+                # Peakiness of the SIGNAL, not the raw counts
+                peakiness = sci_sub / local_flux_sum
+            
+            # Expected peakiness for a star
+            psf_peak_thresh = _get_psf_peakiness(psf_fwhm)
+            # Add a safety margin (e.g. 10%)
+            cr_thresh = psf_peak_thresh * 1.1
+            
+            # If a pixel in the CR mask is LESS peaky than cr_thresh, 
+            # and it is reasonably bright, we unmask it as a potential star core.
+            # Use SNR threshold for protection to avoid saving noise blobs
+            star_protection_mask = (peakiness < cr_thresh) & (sci_sub > 10 * read_noise / gain)
+            
+            protected_count = np.sum(crmask_bool.astype(bool) & star_protection_mask)
+            if protected_count > 0:
+                print(f"    PSF protection: Saved {protected_count} pixels (likely star cores) from CR flagging.")
+                crmask_bool = crmask_bool.astype(bool) & (~star_protection_mask)
+
+        # Apply morphological dilation to catch the wings of the cosmic rays
+        if config.get('dilate_cr', True):
+            print("    Applying morphological dilation to cosmic ray mask...")
+            from skimage.morphology import binary_dilation, disk
+            dilation_radius = config.get('dilation_radius', 1)
+            
+            selem = disk(dilation_radius)
+            if selem.size > 0:
+                crmask_bool = binary_dilation(crmask_bool, footprint=selem)
+
         # Only return newly detected pixels (not already in existing_mask)
         cr_add_mask = crmask_bool & (~existing_mask)
+        
+        num_new_pixels = np.sum(cr_add_mask)
+        if num_new_pixels > 0:
+             print(f"  Detected {num_new_pixels} new cosmic ray pixels.")
+        
         return cr_add_mask
 
     except Exception as e:
