@@ -80,6 +80,10 @@ streak_masking:
 
   # Parameters specific to the Frangi method
   frangi_params:
+    # Block processing parameters for large images (e.g., > 2k x 2k)
+    # This drastically speeds up execution on empty sky regions.
+    block_size: 1024
+    block_pad: 32
     # 1. Background / Star Removal
     tophat_radius: 10      # Size of morphological white top-hat. Must be wider than typical streaks
     

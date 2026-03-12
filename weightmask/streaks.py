@@ -63,11 +63,41 @@ def _detect_streaks_frangi(data_sub, bkg_rms_map, existing_mask, config):
             safe_rms = np.where(bkg_rms_map <= 0, 1.0, bkg_rms_map)
             tophat_img = tophat_img / safe_rms
             
-        # Step 2: Frangi Ridge Filter
+        # Step 2: Frangi Ridge Filter (Block Processing for large images)
         print(f"    Applying Frangi Filter (sigmas={sigmas})...")
-        with warnings.catch_warnings():
-            warnings.simplefilter("ignore")
-            ridge_map = frangi(tophat_img, sigmas=sigmas, black_ridges=black_ridges)
+        ridge_map = np.zeros_like(tophat_img)
+        
+        block_size = cfg.get('block_size', 1024)
+        pad = cfg.get('block_pad', 32)
+        
+        # Determine if we should block-process
+        if img_rows > block_size or img_cols > block_size:
+            print(f"    Image is large ({img_rows}x{img_cols}). Using block processing (size={block_size}, pad={pad}).")
+            for r in range(0, img_rows, block_size):
+                for c in range(0, img_cols, block_size):
+                    r_start_pad = max(0, r - pad)
+                    r_end_pad = min(img_rows, r + block_size + pad)
+                    c_start_pad = max(0, c - pad)
+                    c_end_pad = min(img_cols, c + block_size + pad)
+                    
+                    block = tophat_img[r_start_pad:r_end_pad, c_start_pad:c_end_pad]
+                    
+                    with warnings.catch_warnings():
+                        warnings.simplefilter("ignore")
+                        block_ridge = frangi(block, sigmas=sigmas, black_ridges=black_ridges)
+                    
+                    # Calculate valid interior indices to paste back
+                    valid_r_start = r - r_start_pad
+                    valid_r_end = valid_r_start + min(block_size, img_rows - r)
+                    valid_c_start = c - c_start_pad
+                    valid_c_end = valid_c_start + min(block_size, img_cols - c)
+                    
+                    ridge_map[r:r + valid_r_end - valid_r_start, c:c + valid_c_end - valid_c_start] = \
+                        block_ridge[valid_r_start:valid_r_end, valid_c_start:valid_c_end]
+        else:
+            with warnings.catch_warnings():
+                warnings.simplefilter("ignore")
+                ridge_map = frangi(tophat_img, sigmas=sigmas, black_ridges=black_ridges)
              
         # Step 3: Hysteresis Thresholding
         # Since the input to the Frangi filter is normalized by the local background RMS, 
@@ -79,9 +109,6 @@ def _detect_streaks_frangi(data_sub, bkg_rms_map, existing_mask, config):
         if high_thresh is None or low_thresh is None:
             # Fallback to MAD-based thresholding if absolute ones aren't provided
             high_threshold_sig = cfg.get('high_threshold_sig', 3.0)
-            if existing_mask is not None:
-              # We no longer zero out ridges on masked pixels to allow tracing through halos
-              pass
             low_threshold_sig = cfg.get('low_threshold_sig', 1.0)
             
             # Isolate background pixels (less than 1-sigma and not already masked)
@@ -95,10 +122,14 @@ def _detect_streaks_frangi(data_sub, bkg_rms_map, existing_mask, config):
                 bkg_mask = np.ones_like(tophat_img, dtype=bool) # Fallback if entirely crowded
                 
             bkg_ridge = ridge_map[bkg_mask]
-            ridge_median = np.median(bkg_ridge)
-            ridge_mad = np.median(np.abs(bkg_ridge - ridge_median)) * 1.4826  # roughly std dev
-            if ridge_mad == 0:
-                ridge_mad = np.std(bkg_ridge) + 1e-9 # fallback
+            if len(bkg_ridge) > 0:
+                ridge_median = np.median(bkg_ridge)
+                ridge_mad = np.median(np.abs(bkg_ridge - ridge_median)) * 1.4826  # roughly std dev
+                if ridge_mad == 0:
+                    ridge_mad = np.std(bkg_ridge) + 1e-9 # fallback
+            else:
+                ridge_median = 0
+                ridge_mad = 1e-9
                 
             high_thresh = ridge_median + high_threshold_sig * ridge_mad
             low_thresh = ridge_median + low_threshold_sig * ridge_mad
