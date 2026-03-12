@@ -232,17 +232,23 @@ def grow_bleed_trails(sci_data, sat_mask, sky_map, bkg_rms_map, config):
             # Use a conservative threshold (e.g. 5 sigma) to prevent over-growing into noise
             stop_thresh = col_bkg + config.get('bleed_thresh_sigma', 5.0) * col_rms
             
+            max_grow = config.get('bleed_grow_vertical', 50)
+            
             # Grow up
+            grown = 0
             for y in range(y_min - 1, -1, -1):
-                if sci_data[y, x] > stop_thresh[y]:
+                if sci_data[y, x] > stop_thresh[y] and grown < max_grow:
                     new_mask[y, x] = True
+                    grown += 1
                 else:
                     break
             
             # Grow down
+            grown = 0
             for y in range(y_max + 1, h):
-                if sci_data[y, x] > stop_thresh[y]:
+                if sci_data[y, x] > stop_thresh[y] and grown < max_grow:
                     new_mask[y, x] = True
+                    grown += 1
                 else:
                     break
                     

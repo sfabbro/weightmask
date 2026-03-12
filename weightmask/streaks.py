@@ -253,8 +253,13 @@ def _detect_trails_ransac(data_sub, bkg_rms_map, existing_mask, config):
             
             length = np.sqrt(np.sum((p1 - p0)**2))
             
-            if length > cfg.get('min_length', 100):
-                print(f"    RANSAC found trail: length={length:.1f} pix, inliers={np.sum(inliers)}")
+            if length > 0:
+                density = np.sum(inliers) / length
+            else:
+                density = 0.0
+                
+            if length > cfg.get('min_length', 100) and density > 0.2: # At least 1 inlier per 5 pixels
+                print(f"    RANSAC found trail: length={length:.1f} pix, inliers={np.sum(inliers)}, density={density:.3f}")
                 # Draw the line in the mask
                 from skimage.draw import line
                 y0, x0 = p0.astype(int)

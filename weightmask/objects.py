@@ -60,6 +60,14 @@ def detect_objects(data_sub, bkg_rms_map, existing_mask, config):
             segmentation_map=False
         )
         
+        # Filter highly elongated objects so the streak detector can find them later
+        if len(objects) > 0:
+            max_elongation = float(clean_config.get('max_elongation', 5.0))
+            with np.errstate(divide='ignore', invalid='ignore'):
+                elongation = objects['a'] / np.maximum(objects['b'], 1e-9)
+            valid_obj = elongation < max_elongation
+            objects = objects[valid_obj]
+            
         print(f"  Detected {len(objects)} objects (thresh={extract_thresh:.1f} sigma).")
         
         if len(objects) > 0:

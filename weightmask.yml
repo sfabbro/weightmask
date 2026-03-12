@@ -37,8 +37,8 @@ sep_background:
 
 # Astroscrappy Cosmic Ray Detection
 cosmic_ray:
-  sigclip: 7.0       # sigma threshold - higher to reduce false positives
-  objlim: 10.0       # contrast limit - higher to be more conservative
+  sigclip: 8.5       # sigma threshold - higher to reduce false positives
+  objlim: 15.0       # contrast limit - higher to be more conservative
   dynamic_sigclip: false  # disable dynamic adjustment
   
   # --- Morphological Dilation ---
@@ -53,7 +53,7 @@ sep_objects:
   
   # --- Dynamic Halo Masking ---
   dynamic_halo_scaling: True  # Scale mask radius based on object brightness
-  halo_scale_factor: 0.5      # Strength of the logarithmic scaling. 0.0 means no scaling.
+  halo_scale_factor: 0.2      # Strength of the logarithmic scaling. 0.0 means no scaling.
 
   # --- Diffraction Spike Masking ---
   spike_enable: True          # Enable cross-hair masking for very bright stars
