@@ -92,8 +92,13 @@ def detect_cosmic_rays(sci_data, existing_mask, saturation_level, gain, read_noi
             
             # If a pixel in the CR mask is LESS peaky than cr_thresh, 
             # and it is reasonably bright, we unmask it as a potential star core.
-            # Use SNR threshold for protection to avoid saving noise blobs
-            star_protection_mask = (peakiness < cr_thresh) & (sci_sub > 10 * read_noise / gain)
+            # Use SNR threshold for protection to avoid saving noise blobs.
+            # If bkg_rms_map is available, use it for local SNR threshold.
+            if bkg_rms_map is not None:
+                snr_map = sci_sub / (bkg_rms_map / gain)
+                star_protection_mask = (peakiness < cr_thresh) & (snr_map > 5.0)
+            else:
+                star_protection_mask = (peakiness < cr_thresh) & (sci_sub > 5.0 * read_noise / gain)
             
             protected_count = np.sum(crmask_bool.astype(bool) & star_protection_mask)
             if protected_count > 0:
