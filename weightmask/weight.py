@@ -1,6 +1,5 @@
 # weight.py
 import numpy as np
-import warnings
 
 # Import MASK_BITS from the main package level if possible,
 # otherwise define them here. Assuming they might be accessible via __init__.py
