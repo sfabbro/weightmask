@@ -1,5 +1,6 @@
 import numpy as np
 import unittest
+from unittest.mock import patch
 from weightmask.variance import calculate_inverse_variance
 
 
@@ -84,6 +85,55 @@ class TestVariance(unittest.TestCase):
         
         # Should return None for invalid method
         self.assertIsNone(inv_variance)
+
+    @patch('weightmask.variance._calculate_empirical_noise_params')
+    def test_calculate_inverse_variance_empirical_fit_fallback(self, mock_emp_noise):
+        """Test empirical fit fallback to theoretical method."""
+        # Setup mock to fail
+        mock_emp_noise.return_value = (None, None)
+
+        # Create test data
+        sky_map = np.full((10, 10), 100.0, dtype=np.float32)
+        flat_map = np.ones((10, 10), dtype=np.float32)
+        sci_data = np.full((10, 10), 110.0, dtype=np.float32)
+        obj_mask = np.zeros((10, 10), dtype=bool)
+
+        gain = 1.5
+        read_noise_e = 5.0
+        epsilon = 1e-9
+
+        variance_cfg = {
+            'method': 'empirical_fit',
+            'epsilon': epsilon,
+            'gain': gain,
+            'read_noise': read_noise_e,
+            'empirical_patch_size': 128,
+            'empirical_clip_sigma': 3.0
+        }
+
+        # Calculate inverse variance
+        inv_variance = calculate_inverse_variance(
+            variance_cfg=variance_cfg,
+            sky_map=sky_map,
+            flat_map=flat_map,
+            bkg_rms_map=None,
+            sci_data=sci_data,
+            obj_mask=obj_mask
+        )
+
+        # Check that we got a result
+        self.assertIsNotNone(inv_variance)
+
+        # Expected theoretical calculation:
+        # variance_e = (sky / flat) * gain + read_noise_e**2
+        # variance_e = (100.0 / 1.0) * 1.5 + 5.0**2 = 150 + 25 = 175
+        # inv_variance = gain**2 / variance_e = 1.5**2 / 175 = 2.25 / 175
+        expected_val = (gain**2) / ((100.0 / 1.0) * gain + read_noise_e**2)
+
+        np.testing.assert_allclose(inv_variance, expected_val, rtol=1e-5)
+
+        # Verify that the mock was called
+        mock_emp_noise.assert_called_once_with(sci_data, obj_mask, 128, 3.0)
 
 
 if __name__ == "__main__":
