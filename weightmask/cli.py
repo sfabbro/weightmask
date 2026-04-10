@@ -33,30 +33,29 @@ def validate_fits_file(file_path: str) -> bool:
                 print(f"ERROR: FITS file {file_path} appears to be empty.")
                 return False
             return True
-    except Exception as e:
+    except OSError as e:
         print(f"ERROR: Cannot open FITS file {file_path}: {e}")
         return False
 
 
 def validate_config(config: dict) -> bool:
     """Validate configuration parameters."""
-    try:
-        required_sections = ['flat_masking', 'saturation', 'sep_background', 
-                           'cosmic_ray', 'sep_objects', 'streak_masking', 
-                           'variance', 'confidence_params', 'output_params']
-        for section in required_sections:
-            if section not in config:
-                print(f"WARNING: Required configuration section '{section}' missing.")
-        
-        if 'variance' in config:
-            var_method = config['variance'].get('method', 'theoretical')
-            if var_method not in ['theoretical', 'rms_map', 'empirical_fit']:
-                print(f"ERROR: Invalid variance method '{var_method}'.")
-                return False
-        return True
-    except Exception as e:
-        print(f"ERROR: Configuration validation failed: {e}")
-        return False
+    required_sections = ['flat_masking', 'saturation', 'sep_background',
+                       'cosmic_ray', 'sep_objects', 'streak_masking',
+                       'variance', 'confidence_params', 'output_params']
+    for section in required_sections:
+        if section not in config:
+            print(f"WARNING: Required configuration section '{section}' missing.")
+
+    if 'variance' in config:
+        if not isinstance(config['variance'], dict):
+            print("ERROR: 'variance' section must be a dictionary.")
+            return False
+        var_method = config['variance'].get('method', 'theoretical')
+        if var_method not in ['theoretical', 'rms_map', 'empirical_fit']:
+            print(f"ERROR: Invalid variance method '{var_method}'.")
+            return False
+    return True
 
 
 def process_hdu(hdu_sci, hdu_flat, config: dict, hdu_index: int, tile_size: int = 1024) -> Tuple[Optional[np.ndarray], Optional[np.ndarray], Optional[np.ndarray], Optional[np.ndarray], Optional[np.ndarray], Optional[dict]]:
@@ -69,7 +68,7 @@ def process_hdu(hdu_sci, hdu_flat, config: dict, hdu_index: int, tile_size: int 
     try:
         sci_data_full = np.ascontiguousarray(hdu_sci.read().astype(np.float32))
         sci_hdr = hdu_sci.read_header()
-    except Exception as e:
+    except OSError as e:
         print(f"Skipping HDU: Cannot read science data: {e}")
         return None, None, None, None, None, None
     
@@ -84,7 +83,7 @@ def process_hdu(hdu_sci, hdu_flat, config: dict, hdu_index: int, tile_size: int 
             if flat_data_full.shape != sci_shape:
                 print("Skipping HDU: Flat data shape mismatch.")
                 return None, None, None, None, None, None
-        except Exception as e:
+        except OSError as e:
             print(f"Skipping HDU: Cannot read flat data: {e}")
             return None, None, None, None, None, None
     else:
@@ -258,24 +257,16 @@ def run_pipeline() -> int:
         print(f"ERROR: Input file not found: {args.input_file}")
         return 1
     
-    try:
-        if not validate_fits_file(args.input_file):
-            print(f"ERROR: Input file validation failed: {args.input_file}")
-            return 1
-    except Exception as e:
-        print(f"ERROR: Input file validation error: {e}")
+    if not validate_fits_file(args.input_file):
+        print(f"ERROR: Input file validation failed: {args.input_file}")
         return 1
         
     if args.flat_image:
         if not os.path.exists(args.flat_image):
             print(f"ERROR: Flat field file not found: {args.flat_image}")
             return 1
-        try:
-            if not validate_fits_file(args.flat_image):
-                print(f"ERROR: Flat field file validation failed: {args.flat_image}")
-                return 1
-        except Exception as e:
-            print(f"ERROR: Flat field validation error: {e}")
+        if not validate_fits_file(args.flat_image):
+            print(f"ERROR: Flat field file validation failed: {args.flat_image}")
             return 1
 
     # --- Handle Configuration File ---
@@ -296,19 +287,24 @@ def run_pipeline() -> int:
     try:
         with open(config_path, 'r') as f:
             config = yaml.safe_load(f)
-        if 'output_params' not in config: config['output_params'] = {}
-        if 'confidence_params' not in config: config['confidence_params'] = {}
-        if 'output_map_format' not in config['output_params']:
-            config['output_params']['output_map_format'] = 'weight'
-        try:
-            if not validate_config(config):
-                print("ERROR: Configuration validation failed.")
-                return 1
-        except Exception as e:
-            print(f"ERROR: Configuration validation error: {e}")
-            return 1
-    except Exception as e:
-        print(f"ERROR: Failed to load or parse config file '{config_path}': {e}")
+    except OSError as e:
+        print(f"ERROR: Failed to read config file '{config_path}': {e}")
+        return 1
+    except yaml.YAMLError as e:
+        print(f"ERROR: Failed to parse config file '{config_path}': {e}")
+        return 1
+
+    if not isinstance(config, dict):
+        print(f"ERROR: Config file '{config_path}' must be a YAML dictionary.")
+        return 1
+
+    if 'output_params' not in config: config['output_params'] = {}
+    if 'confidence_params' not in config: config['confidence_params'] = {}
+    if 'output_map_format' not in config['output_params']:
+        config['output_params']['output_map_format'] = 'weight'
+
+    if not validate_config(config):
+        print("ERROR: Configuration validation failed.")
         return 1
 
     # --- Parse Input/Flat Files and HDU ---
@@ -345,7 +341,9 @@ def run_pipeline() -> int:
     try:
         hdul_input = fitsio.FITS(input_path, 'r')
         hdul_flat = fitsio.FITS(flat_path, 'r') if flat_path else None
-    except Exception as e: print(f"ERROR: Could not open input files: {e}"); return 1
+    except OSError as e:
+        print(f"ERROR: Could not open input files: {e}")
+        return 1
 
     # --- Handle HDU Selection ---
     hdus_to_process = []
@@ -583,7 +581,7 @@ def run_pipeline() -> int:
                                                extname=mask_info['name'])
                         print(f"  {mask_type.capitalize()} mask file written: {mask_path}")
 
-        except Exception as e:
+        except OSError as e:
             print(f"ERROR: Failed to write output files: {e}")
             import traceback
             traceback.print_exc()
