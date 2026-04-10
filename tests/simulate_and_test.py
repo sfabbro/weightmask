@@ -275,8 +275,9 @@ def run_masking_test(config_path, args, save_fits=True):
     metrics['Cosmics'] = evaluate_mask(cr_mask, gt['cr'], "Cosmics", pre_mask=initial_mask)
     if save_fits: fitsio.write(os.path.join(output_dir, "mask_cr.fits"), cr_mask.astype(np.uint8), clobber=True)
     
-    # DEBUG: Check if CR mask is eating the stars
-    overlap = np.sum(cr_mask & gt['stars'])
+    # Check if CR mask is eating the stars
+    overlap = int(np.sum(cr_mask & gt['stars']))
+    metrics['CR_Star_Overlap'] = overlap
     if overlap > 0:
         print(f"  WARNING: Cosmic Ray mask overlaps with {overlap} Ground Truth Star pixels!")
         
@@ -352,20 +353,22 @@ def run_auto_sweep(report_file=None):
     print("  FINAL BENCHMARK SUMMARY")
     print("="*50)
     for name, metrics in results.items():
-        print(f"{name:30s} | Streaks Precision: {metrics['Streaks'][0]:.3f}, Recall: {metrics['Streaks'][1]:.3f}")
+        cr_overlap = metrics.get('CR_Star_Overlap', 0)
+        print(f"{name:30s} | Streaks P/R: {metrics['Streaks'][0]:.3f}/{metrics['Streaks'][1]:.3f} | CR-Star Overlap: {cr_overlap}")
 
     if report_file:
         print(f"\nGenerating Markdown report: {report_file}")
         with open(report_file, 'w') as f:
             f.write("# Weightmask Benchmark Report\n\n")
-            f.write("| Regime | Saturation P | Saturation R | Cosmics P | Cosmics R | Objects P | Objects R | Streaks P | Streaks R |\n")
-            f.write("|---|---|---|---|---|---|---|---|---|\n")
+            f.write("| Regime | Saturation P/R | Cosmics P/R | Objects P/R | Streaks P/R | CR-Star Overlap |\n")
+            f.write("|---|---|---|---|---|---|\n")
             for name, metrics in results.items():
                 sat_p, sat_r = metrics.get('Saturation', (0, 0))
                 cr_p, cr_r = metrics.get('Cosmics', (0, 0))
                 obj_p, obj_r = metrics.get('Objects', (0, 0))
                 streak_p, streak_r = metrics.get('Streaks', (0, 0))
-                f.write(f"| {name} | {sat_p:.3f} | {sat_r:.3f} | {cr_p:.3f} | {cr_r:.3f} | {obj_p:.3f} | {obj_r:.3f} | {streak_p:.3f} | {streak_r:.3f} |\n")
+                cr_overlap = metrics.get('CR_Star_Overlap', 0)
+                f.write(f"| {name} | {sat_p:.3f}/{sat_r:.3f} | {cr_p:.3f}/{cr_r:.3f} | {obj_p:.3f}/{obj_r:.3f} | {streak_p:.3f}/{streak_r:.3f} | {cr_overlap} |\n")
 
 
 if __name__ == "__main__":
