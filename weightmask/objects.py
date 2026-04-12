@@ -104,24 +104,39 @@ def detect_objects(data_sub, bkg_rms_map, existing_mask, config):
             scaled_a = objects['a'] * scale_multiplier
             scaled_b = objects['b'] * scale_multiplier
             
-            # Manual ellipse drawing for maximum robustness
-            from skimage.draw import ellipse
-            h, w = object_mask_ui8.shape
-            for i in range(len(objects)):
-                if scaled_a[i] > 0 and scaled_b[i] > 0:
-                    try:
-                        # skimage.draw.ellipse(r, c, ...) - r=row(y), c=col(x)
-                        cy, cx = objects['y'][i], objects['x'][i]
-                        ry, rx = scaled_b[i] * base_k, scaled_a[i] * base_k
-                        
-                        rr, cc = ellipse(
-                            int(cy + 0.5), int(cx + 0.5), 
-                            ry, rx, 
-                            shape=(h, w), rotation=-objects['theta'][i]
-                        )
-                        object_mask_ui8[rr, cc] = 1
-                    except Exception:
-                        continue
+            # Use SEP's C-accelerated ellipse masking (much faster than a Python loop)
+            # Ensure array is C-contiguous for sep
+            if not object_mask_ui8.flags['C_CONTIGUOUS']:
+                object_mask_ui8 = np.ascontiguousarray(object_mask_ui8)
+
+            try:
+                sep.mask_ellipse(
+                    object_mask_ui8,
+                    objects['x'],
+                    objects['y'],
+                    scaled_a,
+                    scaled_b,
+                    objects['theta'],
+                    r=base_k
+                )
+            except Exception as e:
+                print(f"    Warning: Fast ellipse masking failed ({e}). Falling back to slow loop.")
+                # Fallback to manual ellipse drawing if SEP fails
+                from skimage.draw import ellipse
+                h, w = object_mask_ui8.shape
+                for i in range(len(objects)):
+                    if scaled_a[i] > 0 and scaled_b[i] > 0:
+                        try:
+                            cy, cx = objects['y'][i], objects['x'][i]
+                            ry, rx = scaled_b[i] * base_k, scaled_a[i] * base_k
+                            rr, cc = ellipse(
+                                int(cy + 0.5), int(cx + 0.5),
+                                ry, rx,
+                                shape=(h, w), rotation=-objects['theta'][i]
+                            )
+                            object_mask_ui8[rr, cc] = 1
+                        except Exception:
+                            continue
             
             if clean_config.get('dynamic_halo_scaling', True):
                 print(f"    Halo scaling multiplier range: 1.0x to {np.max(scale_multiplier):.2f}x")
