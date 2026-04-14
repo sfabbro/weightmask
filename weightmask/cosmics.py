@@ -38,8 +38,11 @@ def detect_cosmic_rays(sci_data, existing_mask, saturation_level, gain, read_noi
     # Dynamically adjust sigclip based on background noise if enabled
     if config.get('dynamic_sigclip', True) and bkg_rms_map is not None:
         try:
-            # Use the median of the background RMS as a robust noise indicator
-            median_rms = np.median(bkg_rms_map[bkg_rms_map > 0])
+            # Use the median of the background RMS as a robust noise indicator.
+            # Subsample for speed since this is a global statistic.
+            valid_rms = bkg_rms_map[bkg_rms_map > 0]
+            step = max(1, len(valid_rms) // 100000)
+            median_rms = np.median(valid_rms[::step]) if len(valid_rms) > 0 else 0.0
             if np.isfinite(median_rms) and median_rms > 0.1:
                 # Heuristic: Lower sigclip for noisier images to increase sensitivity,
                 # but don't go below a reasonable floor (3.0) or above ceiling (8.0)
@@ -73,7 +76,8 @@ def detect_cosmic_rays(sci_data, existing_mask, saturation_level, gain, read_noi
             # We MUST subtract background to get true PSF peakiness
             # Estimate local background using a simple median or just a global mode
             # For robustness, we'll use a local 5x5 median filter or subtract the global mode
-            sky_est = np.median(sci_data) # Global fallback
+            # Subsample for a much faster global fallback median
+            sky_est = np.median(sci_data[::10, ::10]) # Global fallback
             sci_sub = np.maximum(sci_data - sky_est, 0.0)
             
             # Calculate peakiness of every pixel: I(x,y) / sum(I_3x3)
