@@ -1,7 +1,12 @@
 import numpy as np
 import unittest
 from unittest.mock import patch
-from weightmask.variance import calculate_inverse_variance, _calculate_inverse_variance_theoretical
+
+from weightmask.variance import (
+    _calculate_inverse_variance_theoretical,
+    _unbias_variance,
+    calculate_inverse_variance,
+)
 
 
 class TestVariance(unittest.TestCase):
@@ -211,6 +216,29 @@ class TestVariance(unittest.TestCase):
 
         # Verify that the mock was called
         mock_emp_noise.assert_called_once_with(sci_data, obj_mask, 128, 3.0)
+
+    def test_unbias_variance_none_inv_variance(self):
+        """Test _unbias_variance with inv_variance=None."""
+        sci_data = np.ones((10, 10))
+        sky_map = np.ones((10, 10))
+        result = _unbias_variance(None, sci_data, sky_map, gain=1.0, epsilon=1e-9)
+        self.assertIsNone(result)
+
+    def test_unbias_variance_zero_gain(self):
+        """Test _unbias_variance with gain=0."""
+        inv_variance = np.ones((10, 10))
+        sci_data = np.ones((10, 10))
+        sky_map = np.ones((10, 10))
+        result = _unbias_variance(inv_variance, sci_data, sky_map, gain=0.0, epsilon=1e-9)
+        np.testing.assert_array_equal(result, inv_variance)
+
+    def test_unbias_variance_negative_gain(self):
+        """Test _unbias_variance with negative gain."""
+        inv_variance = np.ones((10, 10))
+        sci_data = np.ones((10, 10))
+        sky_map = np.ones((10, 10))
+        result = _unbias_variance(inv_variance, sci_data, sky_map, gain=-1.0, epsilon=1e-9)
+        np.testing.assert_array_equal(result, inv_variance)
 
 
 
