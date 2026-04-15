@@ -10,3 +10,7 @@
 ## 2026-04-14 - Subsampling for robust statistics
 **Learning:** Calculating `np.median` or `np.percentile` on full high-resolution image arrays (e.g., 4000x4000) for global background or MAD estimates can introduce significant delays (>0.3s per call) without yielding more accurate global statistics.
 **Action:** Always subsample large arrays (e.g., `data[::10, ::10]` or `data.ravel()[::step]`) when calculating global robust statistics like median or MAD to achieve massive speedups.
+
+## 2024-05-18 - [Vectorize region growing]
+**Learning:** Pixel-by-pixel Python `for` loops in image processing algorithms like bleed trail growth cause massive performance bottlenecks.
+**Action:** Replace sequential boundary limit checks with NumPy vectorized operations (slicing and `np.argmin` on boolean arrays) to determine termination points instantly. Reverse slicing can be elegantly handled using a `-1` end index condition to capture the 0th array element cleanly.
