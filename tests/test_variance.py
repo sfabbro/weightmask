@@ -136,5 +136,123 @@ class TestVariance(unittest.TestCase):
         mock_emp_noise.assert_called_once_with(sci_data, obj_mask, 128, 3.0)
 
 
+
+
+    def test_calculate_empirical_noise_params_success(self):
+        """Test successful calculation of empirical noise parameters."""
+        from weightmask.variance import _calculate_empirical_noise_params
+
+        # Set up a random seed for reproducibility
+        np.random.seed(42)
+
+        # True parameters
+        true_gain = 2.0
+        true_rn_e = 5.0
+        true_rn_adu = true_rn_e / true_gain
+
+        shape = (1024, 1024)
+        patch_size = 64
+        sci_data = np.zeros(shape, dtype=np.float32)
+        obj_mask = np.zeros(shape, dtype=bool)
+
+        # Generate synthetic data
+        for y in range(0, shape[0], patch_size):
+            for x in range(0, shape[1], patch_size):
+                median_signal = np.random.uniform(50, 1000)
+                var_adu = true_rn_adu**2 + median_signal / true_gain
+                std_adu = np.sqrt(var_adu)
+
+                noise = np.random.normal(loc=0, scale=std_adu, size=(patch_size, patch_size))
+                patch_data = median_signal + noise
+                sci_data[y:y+patch_size, x:x+patch_size] = patch_data
+
+        emp_gain, emp_rn_e = _calculate_empirical_noise_params(sci_data, obj_mask, patch_size, robust_sigma_clip=3.0)
+
+        # Verify that we got a result
+        self.assertIsNotNone(emp_gain)
+        self.assertIsNotNone(emp_rn_e)
+
+        # Check if the calculated values are close to the true values
+        # Tolerance is relatively large because it's an empirical fit on random data
+        self.assertAlmostEqual(emp_gain, true_gain, delta=0.2)
+        self.assertAlmostEqual(emp_rn_e, true_rn_e, delta=0.5)
+
+    def test_calculate_empirical_noise_params_not_enough_pixels(self):
+        """Test empirical calculation when mostly masked."""
+        from weightmask.variance import _calculate_empirical_noise_params
+
+        shape = (256, 256)
+        patch_size = 64
+        sci_data = np.random.normal(100, 10, shape).astype(np.float32)
+
+        # Mask almost everything so valid_pixels.size < 100
+        obj_mask = np.ones(shape, dtype=bool)
+
+        emp_gain, emp_rn_e = _calculate_empirical_noise_params(sci_data, obj_mask, patch_size, robust_sigma_clip=3.0)
+
+        self.assertIsNone(emp_gain)
+        self.assertIsNone(emp_rn_e)
+
+    def test_calculate_empirical_noise_params_not_enough_patches(self):
+        """Test empirical calculation with too few patches."""
+        from weightmask.variance import _calculate_empirical_noise_params
+
+        # Shape 128x128 with patch size 64 -> only 4 patches (needs 10)
+        shape = (128, 128)
+        patch_size = 64
+        sci_data = np.random.normal(100, 10, shape).astype(np.float32)
+        obj_mask = np.zeros(shape, dtype=bool)
+
+        emp_gain, emp_rn_e = _calculate_empirical_noise_params(sci_data, obj_mask, patch_size, robust_sigma_clip=3.0)
+
+        self.assertIsNone(emp_gain)
+        self.assertIsNone(emp_rn_e)
+
+    def test_calculate_empirical_noise_params_zero_variance(self):
+        """Test empirical calculation when patches have zero variance."""
+        from weightmask.variance import _calculate_empirical_noise_params
+
+        shape = (512, 512)
+        patch_size = 64
+        # Constant data, variance is 0
+        sci_data = np.ones(shape, dtype=np.float32) * 100.0
+        obj_mask = np.zeros(shape, dtype=bool)
+
+        emp_gain, emp_rn_e = _calculate_empirical_noise_params(sci_data, obj_mask, patch_size, robust_sigma_clip=3.0)
+
+        self.assertIsNone(emp_gain)
+        self.assertIsNone(emp_rn_e)
+
+    def test_calculate_empirical_noise_params_linear_regression_failure(self):
+        """Test empirical calculation when linear regression fails (invalid slope/intercept)."""
+        from weightmask.variance import _calculate_empirical_noise_params
+
+        # Set up a random seed
+        np.random.seed(42)
+
+        shape = (1024, 1024)
+        patch_size = 64
+        sci_data = np.zeros(shape, dtype=np.float32)
+        obj_mask = np.zeros(shape, dtype=bool)
+
+        # Create patches such that variance decreases as median increases
+        # This will result in a negative slope, triggering the invalid slope error.
+
+        for y in range(0, shape[0], patch_size):
+            for x in range(0, shape[1], patch_size):
+                median_signal = np.random.uniform(50, 1000)
+                # Intentionally make variance negatively correlated with signal
+                var_adu = 1000.0 / median_signal
+                std_adu = np.sqrt(var_adu)
+
+                noise = np.random.normal(loc=0, scale=std_adu, size=(patch_size, patch_size))
+                patch_data = median_signal + noise
+                sci_data[y:y+patch_size, x:x+patch_size] = patch_data
+
+        emp_gain, emp_rn_e = _calculate_empirical_noise_params(sci_data, obj_mask, patch_size, robust_sigma_clip=3.0)
+
+        self.assertIsNone(emp_gain)
+        self.assertIsNone(emp_rn_e)
+
 if __name__ == "__main__":
     unittest.main()
