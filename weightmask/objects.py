@@ -58,7 +58,7 @@ def detect_objects(data_sub, bkg_rms_map, existing_mask, config):
         valid_data = data_sub[valid_mask]
         
         if len(valid_data) > 1000:
-            # Subsample for faster robust statistics calculation
+            # ⚡ Bolt: Subsample large arrays before calculating global robust statistics
             step = max(1, len(valid_data) // 100000)
             sampled_data = valid_data[::step]
             p50, p99 = np.percentile(sampled_data, [50, 99])
