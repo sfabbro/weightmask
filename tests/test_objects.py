@@ -148,6 +148,29 @@ class TestObjects(unittest.TestCase):
         # But pixels around it should be in the new mask
         self.assertTrue(obj_mask[50, 51] or obj_mask[51, 50])
 
+    def test_detect_objects_exception_handling(self):
+        """Return empty mask when SEP raises (e.g. 1D arrays)."""
+        data_sub = np.ones(10, dtype=np.float32)
+        bkg_rms_map = np.ones(10, dtype=np.float32)
+
+        mask = detect_objects(data_sub, bkg_rms_map, None, {})
+
+        self.assertEqual(mask.shape, data_sub.shape)
+        self.assertFalse(np.any(mask))
+        self.assertEqual(mask.dtype, bool)
+
+    def test_detect_objects_happy_path_smoke(self):
+        """Minimal happy-path smoke alongside PR #11 suite."""
+        data_sub = np.zeros((100, 100), dtype=np.float32)
+        bkg_rms_map = np.ones((100, 100), dtype=np.float32)
+        data_sub[45:55, 45:55] = 100.0
+
+        mask = detect_objects(data_sub, bkg_rms_map, None, {"extract_thresh": 3.0})
+
+        self.assertEqual(mask.shape, data_sub.shape)
+        self.assertTrue(np.any(mask))
+        self.assertEqual(mask.dtype, bool)
+
 
 if __name__ == "__main__":
     unittest.main()
