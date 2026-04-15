@@ -58,8 +58,11 @@ def detect_objects(data_sub, bkg_rms_map, existing_mask, config):
         valid_data = data_sub[valid_mask]
         
         if len(valid_data) > 1000:
-            p50, p99 = np.percentile(valid_data, [50, 99])
-            mad_approx = np.median(np.abs(valid_data - p50)) * 1.4826
+            # Subsample for faster robust statistics calculation
+            step = max(1, len(valid_data) // 100000)
+            sampled_data = valid_data[::step]
+            p50, p99 = np.percentile(sampled_data, [50, 99])
+            mad_approx = np.median(np.abs(sampled_data - p50)) * 1.4826
             if mad_approx > 0:
                 tail_ratio = (p99 - p50) / mad_approx
                 if tail_ratio > 3.0:
