@@ -104,13 +104,14 @@ def detect_objects(data_sub, bkg_rms_map, existing_mask, config):
             scaled_a = objects['a'] * scale_multiplier
             scaled_b = objects['b'] * scale_multiplier
             
+            if not object_mask_ui8.flags["C_CONTIGUOUS"]:
+                object_mask_ui8 = np.ascontiguousarray(object_mask_ui8)
+
             # ⚡ Bolt: Replaced pure Python skimage.draw loop with vectorized sep.mask_ellipse.
             # Avoids O(N) Python iteration overhead for large source lists.
-            # Performance Impact: ~50x-100x speedup for ellipse rendering on dense fields.
             # Note: SEP expects boolean arrays for masking.
             mask_bool = object_mask_ui8.astype(bool)
             try:
-                # Provide arrays directly. SEP handles coordinates and angles efficiently in C.
                 sep.mask_ellipse(
                     mask_bool,
                     objects['x'],
