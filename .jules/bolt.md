@@ -22,3 +22,7 @@
 ## 2024-05-18 - Pre-clean Configuration Dicts
 **Learning:** Parsing numeric and boolean values out of a configuration dictionary (e.g. from YAML strings) inside a frequently called function (`detect_objects`) introduces unnecessary overhead. For dictionaries with 10 keys, this repeated casting took ~0.94 seconds for 100k calls, compared to ~0.0067 seconds when pre-cleaned.
 **Action:** Always parse and clean configurations at the entry point of the application (e.g. `cli.py` immediately after file load) using a recursive utility function. Do not perform dictionary type-casting inside performance-critical processing pipelines.
+
+## 2024-05-18 - [CLI Config Fallback Testing]
+**Learning:** Learned that `cli.py` has a fallback logic for config paths. Need to test each fallback path with mocks ensuring testing without filesystem side effects.
+**Action:** Use `unittest.mock.patch('os.path.exists')` and mock `sys.argv` to effectively verify fallback logics.
