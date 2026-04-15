@@ -18,27 +18,7 @@ def detect_objects(data_sub, bkg_rms_map, existing_mask, config):
     object_mask_ui8 = np.zeros(data_sub.shape, dtype=np.uint8)
     
     try:
-        # Create a deep copy of config and clean all numeric values
-        # This handles cases where YAML or CLI might pass numbers as strings
-        clean_config = {}
-        if config:
-            for k, v in config.items():
-                if isinstance(v, (str, bytes)):
-                    try:
-                        # Try int first for flags/counts, then float
-                        if v.lower() in ('true', 'yes', 'on'): clean_config[k] = True
-                        elif v.lower() in ('false', 'no', 'off'): clean_config[k] = False
-                        else:
-                            try:
-                                if '.' in v: clean_config[k] = float(v)
-                                else: clean_config[k] = int(v)
-                            except ValueError:
-                                clean_config[k] = float(v)
-                    except (ValueError, TypeError):
-                        clean_config[k] = v
-                else:
-                    clean_config[k] = v
-
+        clean_config = config or {}
         base_extract_thresh = float(clean_config.get('extract_thresh', 3.0))
         min_area = int(clean_config.get('min_area', 10))
         

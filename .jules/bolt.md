@@ -18,3 +18,7 @@
 ## 2024-05-18 - Mocking Context Managers with Dunder Methods
 **Learning:** When mocking `fitsio.FITS` used as a context manager (e.g. `with fitsio.FITS(...) as f`), it is necessary to mock both the `__enter__` return value and any specific dunder methods used within the block (like `__len__` for checking file length).
 **Action:** Use `mock_fits.return_value.__enter__.return_value = mock_fits_instance` and `mock_fits_instance.__len__.return_value = ...` to properly simulate different FITS file states (empty vs. non-empty).
+
+## 2024-05-18 - Pre-clean Configuration Dicts
+**Learning:** Parsing numeric and boolean values out of a configuration dictionary (e.g. from YAML strings) inside a frequently called function (`detect_objects`) introduces unnecessary overhead. For dictionaries with 10 keys, this repeated casting took ~0.94 seconds for 100k calls, compared to ~0.0067 seconds when pre-cleaned.
+**Action:** Always parse and clean configurations at the entry point of the application (e.g. `cli.py` immediately after file load) using a recursive utility function. Do not perform dictionary type-casting inside performance-critical processing pipelines.

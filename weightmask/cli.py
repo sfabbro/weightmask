@@ -21,7 +21,7 @@ from .background import estimate_background
 from .variance import calculate_inverse_variance
 from .weight import generate_weight_and_confidence
 from .objects import detect_objects
-from .utils import extract_hdu_spec, create_binary_mask
+from .utils import extract_hdu_spec, create_binary_mask, clean_config_dict
 from . import MASK_BITS, MASK_DTYPE # Import from __init__.py
 
 
@@ -287,6 +287,7 @@ def run_pipeline() -> int:
     try:
         with open(config_path, 'r') as f:
             config = yaml.safe_load(f)
+            config = clean_config_dict(config)
     except OSError as e:
         print(f"ERROR: Failed to read config file '{config_path}': {e}")
         return 1
