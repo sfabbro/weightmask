@@ -210,9 +210,6 @@ def grow_bleed_trails(sci_data, sat_mask, sky_map, bkg_rms_map, config):
     h, w = sci_data.shape
     new_mask = sat_mask.copy()
     
-    # Threshold for stopping the growth: background + N * sigma
-    thresh_sigma = config.get('bleed_thresh_sigma', 1.0)
-    
     # Identify columns with saturation
     sat_cols = np.where(np.any(sat_mask, axis=0))[0]
     
@@ -235,22 +232,46 @@ def grow_bleed_trails(sci_data, sat_mask, sky_map, bkg_rms_map, config):
             max_grow = config.get('bleed_grow_vertical', 50)
             
             # Grow up
-            grown = 0
-            for y in range(y_min - 1, -1, -1):
-                if sci_data[y, x] > stop_thresh[y] and grown < max_grow:
-                    new_mask[y, x] = True
-                    grown += 1
+            if y_min > 0:
+                start_idx = y_min - 1
+                end_idx = max(-1, start_idx - max_grow)
+
+                if end_idx == -1:
+                    sci_slice = sci_data[start_idx::-1, x]
+                    thresh_slice = stop_thresh[start_idx::-1]
                 else:
-                    break
-            
+                    sci_slice = sci_data[start_idx:end_idx:-1, x]
+                    thresh_slice = stop_thresh[start_idx:end_idx:-1]
+
+                cond = sci_slice > thresh_slice
+                if not np.all(cond):
+                    grown = np.argmin(cond)
+                else:
+                    grown = len(cond)
+
+                if grown > 0:
+                    end_mask = start_idx - grown
+                    if end_mask == -1:
+                        new_mask[start_idx::-1, x] = True
+                    else:
+                        new_mask[start_idx:end_mask:-1, x] = True
+
             # Grow down
-            grown = 0
-            for y in range(y_max + 1, h):
-                if sci_data[y, x] > stop_thresh[y] and grown < max_grow:
-                    new_mask[y, x] = True
-                    grown += 1
+            if y_max < h - 1:
+                start_idx = y_max + 1
+                end_idx = min(h, start_idx + max_grow)
+
+                sci_slice = sci_data[start_idx:end_idx, x]
+                thresh_slice = stop_thresh[start_idx:end_idx]
+
+                cond = sci_slice > thresh_slice
+                if not np.all(cond):
+                    grown = np.argmin(cond)
                 else:
-                    break
+                    grown = len(cond)
+
+                if grown > 0:
+                    new_mask[start_idx:start_idx + grown, x] = True
                     
     # Horizontal dilation for safety (optional)
     h_dilation = config.get('bleed_grow_horizontal', 2)
