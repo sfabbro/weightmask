@@ -3,7 +3,6 @@ from unittest.mock import MagicMock, patch
 import numpy as np
 
 from weightmask.cli import process_hdu
-import time
 
 
 class TestProcessHDU(unittest.TestCase):
@@ -52,7 +51,6 @@ class TestProcessHDU(unittest.TestCase):
         mock_est_bkg.return_value = (np.zeros((100, 100), dtype=np.float32),
                                      np.ones((100, 100), dtype=np.float32))
 
-        mock_detect_crs.return_value = np.zeros((100, 100), dtype=bool)
         mock_detect_objs.return_value = np.zeros((100, 100), dtype=bool)
 
         # calculate_inverse_variance returns (inv_var_map, final_method)
@@ -130,7 +128,6 @@ class TestProcessHDU(unittest.TestCase):
         mock_detect_crs.return_value = np.zeros((100, 100), dtype=bool)
         mock_est_bkg.return_value = (np.zeros((100, 100), dtype=np.float32),
                                      np.ones((100, 100), dtype=np.float32))
-        mock_detect_crs.return_value = np.zeros((100, 100), dtype=bool)
         mock_detect_objs.return_value = np.zeros((100, 100), dtype=bool)
         mock_calc_inv_var.return_value = np.ones((100, 100), dtype=np.float32)
         mock_generate_weight.return_value = (np.ones((100, 100), dtype=np.float32),
@@ -171,7 +168,6 @@ class TestProcessHDU(unittest.TestCase):
         mock_detect_crs.return_value = np.zeros((100, 100), dtype=bool)
         mock_est_bkg.return_value = (np.zeros((100, 100), dtype=np.float32),
                                      np.ones((100, 100), dtype=np.float32))
-        mock_detect_crs.return_value = np.zeros((100, 100), dtype=bool)
         mock_detect_objs.return_value = np.zeros((100, 100), dtype=bool)
         mock_calc_inv_var.return_value = np.ones((100, 100), dtype=np.float32)
         mock_detect_streaks.return_value = np.zeros((100, 100), dtype=bool)
@@ -207,7 +203,6 @@ class TestProcessHDU(unittest.TestCase):
         mock_detect_crs.return_value = np.zeros((100, 100), dtype=bool)
         mock_est_bkg.return_value = (np.zeros((100, 100), dtype=np.float32),
                                      np.ones((100, 100), dtype=np.float32))
-        mock_detect_crs.return_value = np.zeros((100, 100), dtype=bool)
         mock_detect_objs.return_value = np.zeros((100, 100), dtype=bool)
         mock_calc_inv_var.return_value = np.ones((100, 100), dtype=np.float32)
         mock_grow_bleed.return_value = np.zeros((100, 100), dtype=bool)
