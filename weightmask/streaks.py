@@ -1,6 +1,7 @@
 import numpy as np
 import time
 import warnings
+import concurrent.futures
 from scipy.ndimage import median_filter
 from skimage.measure import label, regionprops, ransac, LineModelND
 from skimage.morphology import binary_dilation, disk, white_tophat
@@ -72,28 +73,41 @@ def _detect_streaks_frangi(data_sub, bkg_rms_map, existing_mask, config):
         
         # Determine if we should block-process
         if img_rows > block_size or img_cols > block_size:
-            print(f"    Image is large ({img_rows}x{img_cols}). Using block processing (size={block_size}, pad={pad}).")
-            for r in range(0, img_rows, block_size):
-                for c in range(0, img_cols, block_size):
-                    r_start_pad = max(0, r - pad)
-                    r_end_pad = min(img_rows, r + block_size + pad)
-                    c_start_pad = max(0, c - pad)
-                    c_end_pad = min(img_cols, c + block_size + pad)
-                    
-                    block = tophat_img[r_start_pad:r_end_pad, c_start_pad:c_end_pad]
-                    
-                    with warnings.catch_warnings():
-                        warnings.simplefilter("ignore")
-                        block_ridge = frangi(block, sigmas=sigmas, black_ridges=black_ridges)
-                    
-                    # Calculate valid interior indices to paste back
-                    valid_r_start = r - r_start_pad
-                    valid_r_end = valid_r_start + min(block_size, img_rows - r)
-                    valid_c_start = c - c_start_pad
-                    valid_c_end = valid_c_start + min(block_size, img_cols - c)
-                    
-                    ridge_map[r:r + valid_r_end - valid_r_start, c:c + valid_c_end - valid_c_start] = \
-                        block_ridge[valid_r_start:valid_r_end, valid_c_start:valid_c_end]
+            print(f"    Image is large ({img_rows}x{img_cols}). Using parallel block processing (size={block_size}, pad={pad}).")
+
+            def process_block(r, c):
+                r_start_pad = max(0, r - pad)
+                r_end_pad = min(img_rows, r + block_size + pad)
+                c_start_pad = max(0, c - pad)
+                c_end_pad = min(img_cols, c + block_size + pad)
+
+                block = tophat_img[r_start_pad:r_end_pad, c_start_pad:c_end_pad]
+
+                with warnings.catch_warnings():
+                    warnings.simplefilter("ignore")
+                    block_ridge = frangi(block, sigmas=sigmas, black_ridges=black_ridges)
+
+                # Calculate valid interior indices to paste back
+                valid_r_start = r - r_start_pad
+                valid_r_end = valid_r_start + min(block_size, img_rows - r)
+                valid_c_start = c - c_start_pad
+                valid_c_end = valid_c_start + min(block_size, img_cols - c)
+
+                h = valid_r_end - valid_r_start
+                w = valid_c_end - valid_c_start
+                interior = block_ridge[valid_r_start:valid_r_end, valid_c_start:valid_c_end]
+
+                return r, c, h, w, interior
+
+            futures = []
+            with concurrent.futures.ThreadPoolExecutor() as executor:
+                for r in range(0, img_rows, block_size):
+                    for c in range(0, img_cols, block_size):
+                        futures.append(executor.submit(process_block, r, c))
+
+                for f in concurrent.futures.as_completed(futures):
+                    r, c, h, w, interior = f.result()
+                    ridge_map[r:r+h, c:c+w] = interior
         else:
             with warnings.catch_warnings():
                 warnings.simplefilter("ignore")

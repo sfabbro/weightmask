@@ -30,3 +30,7 @@
 ## 2024-05-19 - Replace pure Python loops with NumPy 2D array slicing
 **Learning:** Pure Python iteration to assign array elements row by row or column by column within a bounding box introduces noticeable overhead. Native C-level NumPy 2D slicing can directly assign values to subarrays, achieving ~2x speedups.
 **Action:** Always prefer 2D NumPy array slicing over manual Python `for` loops when assigning values to regular geometric regions like rectangles or lines within an image/mask.
+
+## 2023-10-25 - Parallelizing heavy skimage operations
+**Learning:** Nested loops on image blocks mapping sequentially to expensive skimage functions (like `skimage.filters.frangi`) can be a significant bottleneck. Python's `concurrent.futures.ThreadPoolExecutor` handles block parallelization very efficiently here, dropping the filter time significantly (e.g. 4x speedup).
+**Action:** Always parallelize block processing on image data using `ThreadPoolExecutor` or `ProcessPoolExecutor` where operations on blocks are independent.
