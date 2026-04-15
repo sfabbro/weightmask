@@ -143,17 +143,15 @@ def detect_objects(data_sub, bkg_rms_map, existing_mask, config):
                         s_len = int(spike_length_base * (1.0 + 0.2 * np.log10(obj['flux'] / spike_thresh)))
                         xc, yc = int(obj['x'] + 0.5), int(obj['y'] + 0.5)
                         
+                        hw = spike_width // 2
+
                         # Horizontal spike
                         xstart, xend = max(0, xc - s_len), min(w - 1, xc + s_len)
-                        for dw in range(-(spike_width//2), spike_width//2 + 1):
-                            if 0 <= yc + dw < h:
-                                object_mask_ui8[yc + dw, xstart:xend+1] = 1
+                        object_mask_ui8[max(0, yc - hw):min(h, yc + hw + 1), xstart:xend+1] = 1
                                 
                         # Vertical spike
                         ystart, yend = max(0, yc - s_len), min(h - 1, yc + s_len)
-                        for dw in range(-(spike_width//2), spike_width//2 + 1):
-                            if 0 <= xc + dw < w:
-                                object_mask_ui8[ystart:yend+1, xc + dw] = 1
+                        object_mask_ui8[ystart:yend+1, max(0, xc - hw):min(w, xc + hw + 1)] = 1
             
             # Convert back to boolean for returning
             object_mask_bool = object_mask_ui8.astype(bool)

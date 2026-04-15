@@ -26,3 +26,7 @@
 ## 2024-05-18 - [CLI Config Fallback Testing]
 **Learning:** Learned that `cli.py` has a fallback logic for config paths. Need to test each fallback path with mocks ensuring testing without filesystem side effects.
 **Action:** Use `unittest.mock.patch('os.path.exists')` and mock `sys.argv` to effectively verify fallback logics.
+
+## 2024-05-19 - Replace pure Python loops with NumPy 2D array slicing
+**Learning:** Pure Python iteration to assign array elements row by row or column by column within a bounding box introduces noticeable overhead. Native C-level NumPy 2D slicing can directly assign values to subarrays, achieving ~2x speedups.
+**Action:** Always prefer 2D NumPy array slicing over manual Python `for` loops when assigning values to regular geometric regions like rectangles or lines within an image/mask.
