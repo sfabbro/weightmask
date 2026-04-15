@@ -272,15 +272,15 @@ def run_pipeline() -> int:
     # --- Handle Configuration File ---
     config_path = args.config
     if config_path is None:
-        script_dir = os.path.dirname(__file__)
-        possible_paths = ['weightmask.yml', os.path.join(script_dir, '../..', 'weightmask.yml')]
-        for p in possible_paths:
-            if os.path.exists(p):
-                config_path = p
+        # Try to find a default config
+        default_configs = ["weightmask.yml", "config.yml", ".weightmask.yml"]
+        for cfg in default_configs:
+            if os.path.exists(cfg):
+                config_path = cfg
                 print(f"Using default config file found at: {config_path}")
                 break
         if config_path is None:
-             print("ERROR: Config file not specified and no default 'weightmask.yml' found.")
+             print("ERROR: Config file not specified and no default found.")
              return 1
 
     # --- Load Configuration ---
