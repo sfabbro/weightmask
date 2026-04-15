@@ -1,0 +1,1 @@
+sed -i 's/mock_detect_sat.return_value = (65000.0, .mock., np.zeros((100, 100), dtype=bool))/mock_detect_sat.return_value = (65000.0, "mock", np.zeros((100, 100), dtype=bool))\n        mock_detect_crs.return_value = np.zeros((100, 100), dtype=bool)/g' tests/test_cli_process_hdu.py
