@@ -33,8 +33,13 @@ def estimate_saturation_robust_clump(data, min_adu=None, max_adu=None):
             # We want to exclude the vast majority of normal sky/star pixels.
             # Start analysis above the 99th percentile, but ensure we don't start too high 
             # if the field is sparse.
-            p99 = np.percentile(finite_data, 99)
-            p99_9 = np.percentile(finite_data, 99.9)
+
+            # ⚡ Bolt: Subsample large arrays before calculating global robust statistics
+            step = max(1, finite_data.size // 100000)
+            sampled_data = finite_data[::step]
+
+            p99 = np.percentile(sampled_data, 99)
+            p99_9 = np.percentile(sampled_data, 99.9)
 
             # Heuristic: start halfway between the 99th percentile and max, 
             # or 80% of the 99.9th percentile, whichever is more conservative.

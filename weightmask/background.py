@@ -100,11 +100,15 @@ def estimate_background(sci_data, mask, config):
                 bkg_map = median_filter(sci_data, size=kernel_size)
             else:
                 # Global robust median
-                bkg_val = np.median(sci_data[~mask]) if np.any(~mask) else np.median(sci_data)
+                valid_data = sci_data[~mask] if np.any(~mask) else sci_data
+                step = max(1, valid_data.size // 100000)
+                bkg_val = np.median(valid_data.ravel()[::step])
                 bkg_map = np.full(sci_data.shape, bkg_val, dtype=np.float32)
             
             data_sub = sci_data - bkg_map
-            global_rms = mad_std(data_sub[~mask], ignore_nan=True) if np.any(~mask) else mad_std(data_sub)
+            valid_sub = data_sub[~mask] if np.any(~mask) else data_sub
+            step_sub = max(1, valid_sub.size // 100000)
+            global_rms = mad_std(valid_sub.ravel()[::step_sub], ignore_nan=True)
             bkg_rms_map = np.full(sci_data.shape, global_rms, dtype=np.float32)
             print(f"    Final RMS (mad_std): {global_rms:.3f}")
 

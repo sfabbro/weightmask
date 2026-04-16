@@ -44,7 +44,12 @@ def detect_bad_pixels(flat_data, config, using_unit_flat=False):
             # Create a heavily smoothed version of the flat to serve as the "true" illumination model.
             # Replace NaNs/Infs with median so they don't corrupt the filter
             clean_flat = flat_data.copy()
-            global_med = np.nanmedian(clean_flat[clean_flat > 0])
+
+            # ⚡ Bolt: Subsample large arrays before calculating global robust statistics
+            valid_flat = clean_flat[clean_flat > 0]
+            step = max(1, valid_flat.size // 100000)
+            global_med = np.nanmedian(valid_flat[::step]) if valid_flat.size > 0 else 1.0
+
             if not np.isfinite(global_med): global_med = 1.0
             clean_flat[~np.isfinite(clean_flat)] = global_med
 

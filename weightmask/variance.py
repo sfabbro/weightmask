@@ -128,8 +128,11 @@ def _rescale_variance_robust(inv_variance, sci_data, sky_map, obj_mask, epsilon)
     if snr.size < 100:
         return inv_variance
 
+    # ⚡ Bolt: Subsample large arrays before calculating global robust statistics
+    step = max(1, snr.size // 100000)
+
     # Use Interquartile Range for robust stdev
-    q1, q3 = np.percentile(snr, (25, 75))
+    q1, q3 = np.percentile(snr[::step], (25, 75))
     robust_stdev = 0.7413 * (q3 - q1)
     
     if robust_stdev > 0:
