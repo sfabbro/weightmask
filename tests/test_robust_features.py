@@ -122,7 +122,9 @@ class TestRobustFeatures(unittest.TestCase):
             'ransac_params': {
                 'min_inliers': 5,
                 'min_length': 50,
-                'detect_thresh_sig': 5.0
+                'detect_thresh_sig': 5.0,
+                # Sparse dotted trails: inlier count / endpoint span is ~0.04 for this fixture
+                'min_line_density': 0.03,
             },
             'dilation_radius': 1
         }
