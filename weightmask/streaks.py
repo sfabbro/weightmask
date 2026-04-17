@@ -2,7 +2,6 @@ import numpy as np
 import time
 import warnings
 import concurrent.futures
-from scipy.ndimage import median_filter
 from skimage.measure import label, regionprops, ransac, LineModelND
 from skimage.morphology import binary_dilation, disk, white_tophat
 from skimage.filters import frangi, apply_hysteresis_threshold
@@ -33,7 +32,7 @@ def _detect_streaks_frangi(data_sub, bkg_rms_map, existing_mask, config):
     
     # 4. Region limits
     min_area = cfg.get('min_area', 50)
-    min_elongation = cfg.get('min_elongation', 5.0)
+
     
     # 5. Dilation
     dilation_radius = config.get('dilation_radius', 3)
@@ -261,6 +260,8 @@ def _detect_trails_ransac(data_sub, bkg_rms_map, existing_mask, config):
         else:
             thresh = detect_thresh_sig * bkg_rms_map
     else:
+        from astropy.stats import mad_std
+
         thresh = detect_thresh_sig * mad_std(data_sub)
         
     candidate_mask = (data_sub > thresh) & (~existing_mask)

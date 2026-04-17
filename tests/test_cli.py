@@ -222,7 +222,9 @@ class TestCLIConfigFallback(unittest.TestCase):
     @patch("os.path.exists")
     @patch("builtins.open")
     @patch.object(sys, "argv", ["weightmask", "dummy.fits"])
-    def test_first_fallback_config_found(self, mock_open, mock_exists, mock_validate_fits):
+    def test_first_fallback_config_found(
+        self, mock_open, mock_exists, mock_validate_fits
+    ):
         def exists_side_effect(path):
             if path == "dummy.fits":
                 return True
@@ -245,7 +247,9 @@ class TestCLIConfigFallback(unittest.TestCase):
     @patch("os.path.exists")
     @patch("builtins.open")
     @patch.object(sys, "argv", ["weightmask", "dummy.fits"])
-    def test_second_fallback_config_found(self, mock_open, mock_exists, mock_validate_fits):
+    def test_second_fallback_config_found(
+        self, mock_open, mock_exists, mock_validate_fits
+    ):
         def exists_side_effect(path):
             if path == "dummy.fits":
                 return True
@@ -266,7 +270,9 @@ class TestCLIConfigFallback(unittest.TestCase):
     @patch("os.path.exists")
     @patch("builtins.open")
     @patch.object(sys, "argv", ["weightmask", "dummy.fits"])
-    def test_third_fallback_config_found(self, mock_open, mock_exists, mock_validate_fits):
+    def test_third_fallback_config_found(
+        self, mock_open, mock_exists, mock_validate_fits
+    ):
         def exists_side_effect(path):
             if path == "dummy.fits":
                 return True

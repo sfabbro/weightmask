@@ -10,7 +10,6 @@ from weightmask.variance import (
 
 
 class TestVariance(unittest.TestCase):
-    
     def test_calculate_inverse_variance_theoretical(self):
         """Test theoretical inverse variance calculation."""
         # Create test data
@@ -20,30 +19,35 @@ class TestVariance(unittest.TestCase):
         read_noise_e = 5.0
         bkg_rms_map = None  # Not used for theoretical method
         epsilon = 1e-9
-        
+
         inv_variance = calculate_inverse_variance(
-            variance_cfg={'method': 'theoretical', 'epsilon': epsilon, 'gain': gain, 'read_noise': read_noise_e},
+            variance_cfg={
+                "method": "theoretical",
+                "epsilon": epsilon,
+                "gain": gain,
+                "read_noise": read_noise_e,
+            },
             sky_map=sky_map,
             flat_map=flat_map,
             bkg_rms_map=bkg_rms_map,
             sci_data=None,
-            obj_mask=None
+            obj_mask=None,
         )
-        
+
         # Check that we got a result
         self.assertIsNotNone(inv_variance)
-        
+
         # If we got a result, check its properties
         if inv_variance is not None:
             # Check that result has correct shape
             self.assertEqual(inv_variance.shape, sky_map.shape)
-            
+
             # Check that result is finite
             self.assertTrue(np.isfinite(inv_variance).all())
-            
+
             # Check that values are positive
             self.assertTrue(np.all(inv_variance >= 0))
-    
+
     def test__calculate_inverse_variance_theoretical_happy_path(self):
         """Test internal theoretical inverse variance logic with normal values."""
         sky_map = np.array([[100.0, 100.0], [100.0, 100.0]], dtype=np.float32)
@@ -57,24 +61,27 @@ class TestVariance(unittest.TestCase):
             flat_map=flat_map,
             gain=gain,
             read_noise_e=read_noise_e,
-            epsilon=epsilon
+            epsilon=epsilon,
         )
 
         # Calculate expected values manually
         # Top-left: sky=100, flat=1. variance_e = (100/1)*2 + 4^2 = 200 + 16 = 216. inv_var = 2^2 / 216 = 4/216 = 1/54
         # Top-right: sky=100, flat=0.5. variance_e = (100/0.5)*2 + 4^2 = 200*2 + 16 = 416. inv_var = 4 / 416 = 1/104
         # Bottom-left/right: same as Top-left
-        expected_inv_var = np.array([
-            [4.0 / 216.0, 4.0 / 416.0],
-            [4.0 / 216.0, 4.0 / 216.0]
-        ], dtype=np.float32)
+        expected_inv_var = np.array(
+            [[4.0 / 216.0, 4.0 / 416.0], [4.0 / 216.0, 4.0 / 216.0]], dtype=np.float32
+        )
 
         np.testing.assert_allclose(inv_var, expected_inv_var, rtol=1e-5)
 
     def test__calculate_inverse_variance_theoretical_edge_cases(self):
         """Test internal theoretical inverse variance logic with edge cases like negative sky and zero flat."""
-        sky_map = np.array([[100.0, -50.0], [100.0, 100.0]], dtype=np.float32) # Negative sky
-        flat_map = np.array([[1.0, 1.0], [1e-10, -1.0]], dtype=np.float32) # Flat <= epsilon and negative flat
+        sky_map = np.array(
+            [[100.0, -50.0], [100.0, 100.0]], dtype=np.float32
+        )  # Negative sky
+        flat_map = np.array(
+            [[1.0, 1.0], [1e-10, -1.0]], dtype=np.float32
+        )  # Flat <= epsilon and negative flat
         gain = 2.0
         read_noise_e = 4.0
         epsilon = 1e-9
@@ -84,7 +91,7 @@ class TestVariance(unittest.TestCase):
             flat_map=flat_map,
             gain=gain,
             read_noise_e=read_noise_e,
-            epsilon=epsilon
+            epsilon=epsilon,
         )
 
         # Expected calculations
@@ -93,10 +100,7 @@ class TestVariance(unittest.TestCase):
         # Bottom-left: flat=1e-10 (<= epsilon). Should be masked to 0.0.
         # Bottom-right: flat=-1.0 (<= epsilon). Should be masked to 0.0.
 
-        expected_inv_var = np.array([
-            [4.0 / 216.0, 0.25],
-            [0.0, 0.0]
-        ], dtype=np.float32)
+        expected_inv_var = np.array([[4.0 / 216.0, 0.25], [0.0, 0.0]], dtype=np.float32)
 
         np.testing.assert_allclose(inv_var, expected_inv_var, rtol=1e-5)
         self.assertEqual(inv_var.dtype, np.float32)
@@ -114,7 +118,7 @@ class TestVariance(unittest.TestCase):
             flat_map=flat_map,
             gain=gain,
             read_noise_e=read_noise_e,
-            epsilon=epsilon
+            epsilon=epsilon,
         )
 
         # variance_e = (100/1)*2 + 0 = 200. inv_var = 4 / 200 = 0.02
@@ -130,45 +134,55 @@ class TestVariance(unittest.TestCase):
         read_noise_e = 5.0  # Not used for rms_map method
         bkg_rms_map = np.full((100, 100), 10.0, dtype=np.float32)
         epsilon = 1e-9
-        
+
         inv_variance = calculate_inverse_variance(
-            variance_cfg={'method': 'rms_map', 'epsilon': epsilon, 'gain': gain, 'read_noise': read_noise_e},
+            variance_cfg={
+                "method": "rms_map",
+                "epsilon": epsilon,
+                "gain": gain,
+                "read_noise": read_noise_e,
+            },
             sky_map=sky_map,
             flat_map=flat_map,
             bkg_rms_map=bkg_rms_map,
             sci_data=None,
-            obj_mask=None
+            obj_mask=None,
         )
-        
+
         # Check that we got a result
         self.assertIsNotNone(inv_variance)
-        
+
         # If we got a result, check its properties
         if inv_variance is not None:
             # Check that result has correct shape
             self.assertEqual(inv_variance.shape, bkg_rms_map.shape)
-            
+
             # Check that result is finite
             self.assertTrue(np.isfinite(inv_variance).all())
-            
+
             # Check that values are positive
             self.assertTrue(np.all(inv_variance >= 0))
-    
+
     def test_calculate_inverse_variance_invalid_method(self):
         """Test inverse variance calculation with invalid method."""
         inv_variance = calculate_inverse_variance(
-            variance_cfg={'method': 'invalid', 'epsilon': 1e-9, 'gain': 1.5, 'read_noise': 5.0},
+            variance_cfg={
+                "method": "invalid",
+                "epsilon": 1e-9,
+                "gain": 1.5,
+                "read_noise": 5.0,
+            },
             sky_map=None,
             flat_map=None,
             bkg_rms_map=None,
             sci_data=None,
-            obj_mask=None
+            obj_mask=None,
         )
-        
+
         # Should return None for invalid method
         self.assertIsNone(inv_variance)
 
-    @patch('weightmask.variance._calculate_empirical_noise_params')
+    @patch("weightmask.variance._calculate_empirical_noise_params")
     def test_calculate_inverse_variance_empirical_fit_fallback(self, mock_emp_noise):
         """Test empirical fit fallback to theoretical method."""
         # Setup mock to fail
@@ -185,12 +199,12 @@ class TestVariance(unittest.TestCase):
         epsilon = 1e-9
 
         variance_cfg = {
-            'method': 'empirical_fit',
-            'epsilon': epsilon,
-            'gain': gain,
-            'read_noise': read_noise_e,
-            'empirical_patch_size': 128,
-            'empirical_clip_sigma': 3.0
+            "method": "empirical_fit",
+            "epsilon": epsilon,
+            "gain": gain,
+            "read_noise": read_noise_e,
+            "empirical_patch_size": 128,
+            "empirical_clip_sigma": 3.0,
         }
 
         # Calculate inverse variance
@@ -200,7 +214,7 @@ class TestVariance(unittest.TestCase):
             flat_map=flat_map,
             bkg_rms_map=None,
             sci_data=sci_data,
-            obj_mask=obj_mask
+            obj_mask=obj_mask,
         )
 
         # Check that we got a result
@@ -229,7 +243,9 @@ class TestVariance(unittest.TestCase):
         inv_variance = np.ones((10, 10))
         sci_data = np.ones((10, 10))
         sky_map = np.ones((10, 10))
-        result = _unbias_variance(inv_variance, sci_data, sky_map, gain=0.0, epsilon=1e-9)
+        result = _unbias_variance(
+            inv_variance, sci_data, sky_map, gain=0.0, epsilon=1e-9
+        )
         np.testing.assert_array_equal(result, inv_variance)
 
     def test_unbias_variance_negative_gain(self):
@@ -237,11 +253,10 @@ class TestVariance(unittest.TestCase):
         inv_variance = np.ones((10, 10))
         sci_data = np.ones((10, 10))
         sky_map = np.ones((10, 10))
-        result = _unbias_variance(inv_variance, sci_data, sky_map, gain=-1.0, epsilon=1e-9)
+        result = _unbias_variance(
+            inv_variance, sci_data, sky_map, gain=-1.0, epsilon=1e-9
+        )
         np.testing.assert_array_equal(result, inv_variance)
-
-
-
 
     def test_calculate_empirical_noise_params_success(self):
         """Test successful calculation of empirical noise parameters."""
@@ -267,11 +282,15 @@ class TestVariance(unittest.TestCase):
                 var_adu = true_rn_adu**2 + median_signal / true_gain
                 std_adu = np.sqrt(var_adu)
 
-                noise = np.random.normal(loc=0, scale=std_adu, size=(patch_size, patch_size))
+                noise = np.random.normal(
+                    loc=0, scale=std_adu, size=(patch_size, patch_size)
+                )
                 patch_data = median_signal + noise
-                sci_data[y:y+patch_size, x:x+patch_size] = patch_data
+                sci_data[y : y + patch_size, x : x + patch_size] = patch_data
 
-        emp_gain, emp_rn_e = _calculate_empirical_noise_params(sci_data, obj_mask, patch_size, robust_sigma_clip=3.0)
+        emp_gain, emp_rn_e = _calculate_empirical_noise_params(
+            sci_data, obj_mask, patch_size, robust_sigma_clip=3.0
+        )
 
         # Verify that we got a result
         self.assertIsNotNone(emp_gain)
@@ -293,7 +312,9 @@ class TestVariance(unittest.TestCase):
         # Mask almost everything so valid_pixels.size < 100
         obj_mask = np.ones(shape, dtype=bool)
 
-        emp_gain, emp_rn_e = _calculate_empirical_noise_params(sci_data, obj_mask, patch_size, robust_sigma_clip=3.0)
+        emp_gain, emp_rn_e = _calculate_empirical_noise_params(
+            sci_data, obj_mask, patch_size, robust_sigma_clip=3.0
+        )
 
         self.assertIsNone(emp_gain)
         self.assertIsNone(emp_rn_e)
@@ -308,7 +329,9 @@ class TestVariance(unittest.TestCase):
         sci_data = np.random.normal(100, 10, shape).astype(np.float32)
         obj_mask = np.zeros(shape, dtype=bool)
 
-        emp_gain, emp_rn_e = _calculate_empirical_noise_params(sci_data, obj_mask, patch_size, robust_sigma_clip=3.0)
+        emp_gain, emp_rn_e = _calculate_empirical_noise_params(
+            sci_data, obj_mask, patch_size, robust_sigma_clip=3.0
+        )
 
         self.assertIsNone(emp_gain)
         self.assertIsNone(emp_rn_e)
@@ -323,7 +346,9 @@ class TestVariance(unittest.TestCase):
         sci_data = np.ones(shape, dtype=np.float32) * 100.0
         obj_mask = np.zeros(shape, dtype=bool)
 
-        emp_gain, emp_rn_e = _calculate_empirical_noise_params(sci_data, obj_mask, patch_size, robust_sigma_clip=3.0)
+        emp_gain, emp_rn_e = _calculate_empirical_noise_params(
+            sci_data, obj_mask, patch_size, robust_sigma_clip=3.0
+        )
 
         self.assertIsNone(emp_gain)
         self.assertIsNone(emp_rn_e)
@@ -350,14 +375,19 @@ class TestVariance(unittest.TestCase):
                 var_adu = 1000.0 / median_signal
                 std_adu = np.sqrt(var_adu)
 
-                noise = np.random.normal(loc=0, scale=std_adu, size=(patch_size, patch_size))
+                noise = np.random.normal(
+                    loc=0, scale=std_adu, size=(patch_size, patch_size)
+                )
                 patch_data = median_signal + noise
-                sci_data[y:y+patch_size, x:x+patch_size] = patch_data
+                sci_data[y : y + patch_size, x : x + patch_size] = patch_data
 
-        emp_gain, emp_rn_e = _calculate_empirical_noise_params(sci_data, obj_mask, patch_size, robust_sigma_clip=3.0)
+        emp_gain, emp_rn_e = _calculate_empirical_noise_params(
+            sci_data, obj_mask, patch_size, robust_sigma_clip=3.0
+        )
 
         self.assertIsNone(emp_gain)
         self.assertIsNone(emp_rn_e)
+
 
 if __name__ == "__main__":
     unittest.main()

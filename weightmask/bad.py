@@ -1,6 +1,7 @@
 import numpy as np
 import warnings
 
+
 def detect_bad_pixels(flat_data, config, using_unit_flat=False):
     """
     Detect bad pixels and columns in the flat field using local structural analysis.
@@ -19,7 +20,9 @@ def detect_bad_pixels(flat_data, config, using_unit_flat=False):
         ndarray: Boolean mask of bad pixels and columns (True = bad).
     """
     if not np.isfinite(flat_data).any():
-        warnings.warn("Flat data contains no finite values. Returning empty mask.", RuntimeWarning)
+        warnings.warn(
+            "Flat data contains no finite values. Returning empty mask.", RuntimeWarning
+        )
         return np.zeros(flat_data.shape, dtype=bool)
 
     pixel_mask_bool = np.zeros(flat_data.shape, dtype=bool)
@@ -34,13 +37,13 @@ def detect_bad_pixels(flat_data, config, using_unit_flat=False):
     try:
         from scipy.ndimage import median_filter
 
-        filter_size = config.get('local_filter_size', 15)
-        local_low_thresh = config.get('local_low_thresh', 0.5)
-        local_high_thresh = config.get('local_high_thresh', 2.0)
+        filter_size = config.get("local_filter_size", 15)
+        local_low_thresh = config.get("local_low_thresh", 0.5)
+        local_high_thresh = config.get("local_high_thresh", 2.0)
 
         with warnings.catch_warnings():
             warnings.simplefilter("ignore", category=RuntimeWarning)
-            
+
             # Create a heavily smoothed version of the flat to serve as the "true" illumination model.
             # Replace NaNs/Infs with median so they don't corrupt the filter
             clean_flat = flat_data.copy()
@@ -48,34 +51,39 @@ def detect_bad_pixels(flat_data, config, using_unit_flat=False):
             # ⚡ Bolt: Subsample large arrays before calculating global robust statistics
             valid_flat = clean_flat[clean_flat > 0]
             step = max(1, valid_flat.size // 100000)
-            global_med = np.nanmedian(valid_flat[::step]) if valid_flat.size > 0 else 1.0
+            global_med = (
+                np.nanmedian(valid_flat[::step]) if valid_flat.size > 0 else 1.0
+            )
 
-            if not np.isfinite(global_med): global_med = 1.0
+            if not np.isfinite(global_med):
+                global_med = 1.0
             clean_flat[~np.isfinite(clean_flat)] = global_med
 
             smoothed_flat = median_filter(clean_flat, size=filter_size)
-            
+
             # Avoid division by zero
             smoothed_flat[smoothed_flat <= 0] = 1e-6
-            
+
             # Calculate the ratio between the raw flat and the local smoothed model
             ratio = flat_data / smoothed_flat
 
         # Flag pixels where the ratio is outside the acceptable bounds
         pixel_mask_bool = (
-            (ratio <= local_low_thresh) |
-            (ratio >= local_high_thresh) |
-            (flat_data <= 0) |
-            (~np.isfinite(flat_data))
+            (ratio <= local_low_thresh)
+            | (ratio >= local_high_thresh)
+            | (flat_data <= 0)
+            | (~np.isfinite(flat_data))
         )
-        print(f"    Found {np.sum(pixel_mask_bool)} bad pixels (Ratio < {local_low_thresh:.2f} or > {local_high_thresh:.2f}).")
+        print(
+            f"    Found {np.sum(pixel_mask_bool)} bad pixels (Ratio < {local_low_thresh:.2f} or > {local_high_thresh:.2f})."
+        )
 
     except Exception as e:
         print(f"  WARNING: Local pixel thresholding failed: {e}. Skipping.")
         pixel_mask_bool.fill(False)
 
     # --- 2. Derivative-Based Column Detection ---
-    if config.get('col_enable', True):
+    if config.get("col_enable", True):
         print("  Detecting bad columns via horizontal derivatives...")
         try:
             # A completely dead column will have zero variance and low median,
@@ -94,39 +102,49 @@ def detect_bad_pixels(flat_data, config, using_unit_flat=False):
             if num_invalid < len(column_medians):
                 # Calculate horizontal derivative (difference between adjacent columns)
                 valid_medians = column_medians.copy()
-                valid_medians[invalid_cols] = np.nanmedian(valid_medians) # Patch for diff
-                
+                valid_medians[invalid_cols] = np.nanmedian(
+                    valid_medians
+                )  # Patch for diff
+
                 col_diffs = np.abs(np.diff(valid_medians, prepend=valid_medians[0]))
-                
+
                 # Robust statistics of the differences
                 med_diff = np.nanmedian(col_diffs)
                 mad_diff = np.nanmedian(np.abs(col_diffs - med_diff)) * 1.4826
-                if mad_diff == 0: mad_diff = np.nanstd(col_diffs)
+                if mad_diff == 0:
+                    mad_diff = np.nanstd(col_diffs)
 
-                sigma_thresh = config.get('col_deriv_sigma', 10.0)
+                sigma_thresh = config.get("col_deriv_sigma", 10.0)
                 thresh = med_diff + sigma_thresh * mad_diff
 
                 # Columns where the jump from the neighbor is huge
                 jump_cols_idx = np.where(col_diffs > thresh)[0]
-                
+
                 # Also catch columns that are completely dead (very close to 0)
-                dead_thresh = config.get('col_dead_thresh', 0.1) * global_med
+                dead_thresh = config.get("col_dead_thresh", 0.1) * global_med
                 dead_cols_idx = np.where(valid_medians < dead_thresh)[0]
 
-                bad_cols_combined = np.unique(np.concatenate([jump_cols_idx, dead_cols_idx]))
+                bad_cols_combined = np.unique(
+                    np.concatenate([jump_cols_idx, dead_cols_idx])
+                )
 
                 if len(bad_cols_combined) > 0:
                     column_mask_bool[:, bad_cols_combined] = True
-                    print(f"    Found {len(bad_cols_combined)} bad columns (Deriv > {thresh:.3g} or Med < {dead_thresh:.3g})")
+                    print(
+                        f"    Found {len(bad_cols_combined)} bad columns (Deriv > {thresh:.3g} or Med < {dead_thresh:.3g})"
+                    )
                     if num_invalid > 0:
-                        print(f"    Plus {num_invalid} columns masked due to being mostly NaNs/Infs.")
+                        print(
+                            f"    Plus {num_invalid} columns masked due to being mostly NaNs/Infs."
+                        )
                 else:
                     print("    No bad columns detected.")
 
         except Exception as e:
-             import traceback
-             print(f"  WARNING: Bad column detection failed: {e}. Skipping.")
-             print(traceback.format_exc())
+            import traceback
+
+            print(f"  WARNING: Bad column detection failed: {e}. Skipping.")
+            print(traceback.format_exc())
 
     else:
         print("  Bad column detection disabled in config.")

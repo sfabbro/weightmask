@@ -2,8 +2,8 @@ import numpy as np
 import unittest
 from weightmask.objects import detect_objects
 
-class TestObjects(unittest.TestCase):
 
+class TestObjects(unittest.TestCase):
     def setUp(self):
         # Create a small synthetic image
         self.shape = (100, 100)
@@ -14,8 +14,8 @@ class TestObjects(unittest.TestCase):
 
     def add_star(self, data, y, x, flux, radius):
         """Add a simple 2D Gaussian star."""
-        Y, X = np.ogrid[:data.shape[0], :data.shape[1]]
-        dist_sq = (X - x)**2 + (Y - y)**2
+        Y, X = np.ogrid[: data.shape[0], : data.shape[1]]
+        dist_sq = (X - x) ** 2 + (Y - y) ** 2
         # Use simple gaussian profile
         star = flux * np.exp(-dist_sq / (2.0 * radius**2))
         data += star
@@ -26,13 +26,15 @@ class TestObjects(unittest.TestCase):
         self.add_star(self.data_sub, 50, 50, flux=100.0, radius=2.0)
 
         config = {
-            'extract_thresh': 3.0,
-            'min_area': 5,
-            'dynamic_halo_scaling': False,
-            'spike_enable': False
+            "extract_thresh": 3.0,
+            "min_area": 5,
+            "dynamic_halo_scaling": False,
+            "spike_enable": False,
         }
 
-        obj_mask = detect_objects(self.data_sub, self.bkg_rms_map, self.existing_mask, config)
+        obj_mask = detect_objects(
+            self.data_sub, self.bkg_rms_map, self.existing_mask, config
+        )
 
         # Check that objects were detected
         self.assertTrue(np.sum(obj_mask) > 0)
@@ -47,16 +49,18 @@ class TestObjects(unittest.TestCase):
         self.add_star(self.data_sub, 50, 50, flux=200000.0, radius=3.0)
 
         config = {
-            'extract_thresh': 3.0,
-            'min_area': 5,
-            'dynamic_halo_scaling': False,
-            'spike_enable': True,
-            'spike_flux_thresh': 1e4,  # Lower threshold to ensure our star triggers it
-            'spike_length_base': 20,
-            'spike_width': 3
+            "extract_thresh": 3.0,
+            "min_area": 5,
+            "dynamic_halo_scaling": False,
+            "spike_enable": True,
+            "spike_flux_thresh": 1e4,  # Lower threshold to ensure our star triggers it
+            "spike_length_base": 20,
+            "spike_width": 3,
         }
 
-        obj_mask = detect_objects(self.data_sub, self.bkg_rms_map, self.existing_mask, config)
+        obj_mask = detect_objects(
+            self.data_sub, self.bkg_rms_map, self.existing_mask, config
+        )
 
         self.assertTrue(np.sum(obj_mask) > 0)
         self.assertTrue(obj_mask[50, 50])
@@ -76,14 +80,16 @@ class TestObjects(unittest.TestCase):
         self.add_star(self.data_sub, 75, 75, flux=20.0, radius=2.0)
 
         config = {
-            'extract_thresh': 3.0,
-            'min_area': 5,
-            'dynamic_halo_scaling': True,
-            'halo_scale_factor': 0.5,
-            'spike_enable': False
+            "extract_thresh": 3.0,
+            "min_area": 5,
+            "dynamic_halo_scaling": True,
+            "halo_scale_factor": 0.5,
+            "spike_enable": False,
         }
 
-        obj_mask = detect_objects(self.data_sub, self.bkg_rms_map, self.existing_mask, config)
+        obj_mask = detect_objects(
+            self.data_sub, self.bkg_rms_map, self.existing_mask, config
+        )
 
         self.assertTrue(np.sum(obj_mask) > 0)
         self.assertTrue(obj_mask[25, 25])
@@ -102,8 +108,8 @@ class TestObjects(unittest.TestCase):
         bkg_rms = np.ones((150, 150), dtype=np.float32)
 
         config = {
-            'extract_thresh': 3.0,
-            'min_area': 5,
+            "extract_thresh": 3.0,
+            "min_area": 5,
         }
 
         # This should trigger the "Clutter penalty" print statement
@@ -118,11 +124,13 @@ class TestObjects(unittest.TestCase):
         """Test behavior with no objects detected."""
         # Very high threshold, no stars
         config = {
-            'extract_thresh': 100.0,
-            'min_area': 5,
+            "extract_thresh": 100.0,
+            "min_area": 5,
         }
 
-        obj_mask = detect_objects(self.data_sub, self.bkg_rms_map, self.existing_mask, config)
+        obj_mask = detect_objects(
+            self.data_sub, self.bkg_rms_map, self.existing_mask, config
+        )
 
         self.assertIsInstance(obj_mask, np.ndarray)
         self.assertEqual(obj_mask.dtype, bool)
@@ -133,15 +141,17 @@ class TestObjects(unittest.TestCase):
         self.add_star(self.data_sub, 50, 50, flux=100.0, radius=2.0)
 
         config = {
-            'extract_thresh': 3.0,
-            'min_area': 5,
+            "extract_thresh": 3.0,
+            "min_area": 5,
         }
 
         # Mask the center pixel manually beforehand
         existing_mask = np.zeros(self.shape, dtype=bool)
         existing_mask[50, 50] = True
 
-        obj_mask = detect_objects(self.data_sub, self.bkg_rms_map, existing_mask, config)
+        obj_mask = detect_objects(
+            self.data_sub, self.bkg_rms_map, existing_mask, config
+        )
 
         # The star is detected, but the center pixel shouldn't be in the *new* mask
         self.assertFalse(obj_mask[50, 50])
