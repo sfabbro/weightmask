@@ -24,5 +24,3 @@ MASK_BITS = {
 }
 
 MASK_DTYPE = "uint32"  # Data type for the bitmask
-
-

@@ -5,6 +5,7 @@ from weightmask.cosmics import detect_cosmic_rays
 
 # Try to find astroscrappy
 from importlib.util import find_spec
+
 ASTROSCRAPPY_AVAILABLE = find_spec("astroscrappy") is not None
 
 
