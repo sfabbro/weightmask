@@ -77,7 +77,9 @@ def generate_weight_and_confidence(inv_variance_map, final_mask_int, config):
     if valid_weights.size > 0:
         # Determine normalization factor
         if 0 < normalize_percentile <= 100:
-             norm_factor = np.percentile(valid_weights, normalize_percentile)
+             # ⚡ Bolt: Subsample large arrays before calculating global robust statistics
+             step = max(1, valid_weights.size // 100000)
+             norm_factor = np.percentile(valid_weights[::step], normalize_percentile)
              print(f"    Normalizing using {normalize_percentile:.1f}th percentile weight: {norm_factor:.4g}")
         else:
              norm_factor = np.max(valid_weights)
