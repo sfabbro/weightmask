@@ -244,19 +244,9 @@ def _detect_streaks_frangi(data_sub, bkg_rms_map, existing_mask, config):
     return streak_mask_final_bool
 
 
-def _detect_trails_ransac(data_sub, bkg_rms_map, existing_mask, config):
-    """
-    Internal function for sparse trail detection using RANSAC line fitting.
-    Ideal for faint "glint" trails (dotted lines of point sources).
-    """
-    cfg = config.get("ransac_params", {})
-    base_detect_thresh_sig = cfg.get("detect_thresh_sig", 5.0)
-    base_min_inliers = cfg.get("min_inliers", 10)
-    residual_threshold = cfg.get("residual_threshold", 2.0)
-
-    detect_thresh_sig = base_detect_thresh_sig
-    min_inliers = base_min_inliers
-
+def _calculate_adaptive_thresholds(
+    data_sub, bkg_rms_map, existing_mask, detect_thresh_sig, min_inliers
+):
     # --- Adaptive RANSAC Thresholds (Density/Clutter Scaling) ---
     # We inspect the global background to see how 'cluttered' or heavy-tailed the noise is.
     # A purely Gaussian background has a P99 around 2.3 sigma.
@@ -285,7 +275,10 @@ def _detect_trails_ransac(data_sub, bkg_rms_map, existing_mask, config):
                 print(
                     f"    [Adaptive RANSAC] Clutter penalty {clutter_penalty:.2f}x applied (tail ratio {tail_ratio:.1f}). New thresholds: sig={detect_thresh_sig:.1f}, min_inliers={min_inliers}"
                 )
+    return detect_thresh_sig, min_inliers
 
+
+def _get_candidate_mask(data_sub, bkg_rms_map, existing_mask, detect_thresh_sig):
     # 1. Candidate points: Bright points above noise floor
     if bkg_rms_map is not None:
         median_rms = np.median(bkg_rms_map)
@@ -302,30 +295,18 @@ def _detect_trails_ransac(data_sub, bkg_rms_map, existing_mask, config):
 
         thresh = detect_thresh_sig * mad_std(data_sub)
 
-    candidate_mask = (data_sub > thresh) & (~existing_mask)
-
-    # Optional: Filter tiny noise spikes before RANSAC to improve performance
-    # but be careful not to kill thin streaks.
-    # Instead of opening, we can use a minimum clump size filter if needed.
-    # For now, let's keep it raw but increase the coordinate limit more aggressively.
-
-    coords = np.argwhere(candidate_mask)  # (N, 2) array of [y, x]
-
-    # Optional: if points are overwhelmingly noise (e.g. >30% of image), give up RANSAC
-    if len(coords) > 0.3 * data_sub.size:
-        print(
-            f"    WARNING: Too many points for RANSAC ({len(coords)}). Skipping RANSAC."
-        )
-        return np.zeros(data_sub.shape, dtype=bool)
-
-    if len(coords) < min_inliers:
-        return np.zeros(data_sub.shape, dtype=bool)
-
-    print(
-        f"--> Using RANSAC Method for Sparse Trail Detection ({len(coords)} candidate points)"
+    candidate_mask = (data_sub > thresh) & (
+        ~existing_mask
+        if existing_mask is not None
+        else np.ones(data_sub.shape, dtype=bool)
     )
-    trail_mask = np.zeros(data_sub.shape, dtype=bool)
+    return candidate_mask
 
+
+def _extract_and_draw_ransac_trail(
+    data_sub, coords, min_inliers, residual_threshold, cfg, config
+):
+    trail_mask = np.zeros(data_sub.shape, dtype=bool)
     try:
         # We might have multiple trails. Try to find the dominant one.
         # For now, just find one dominant trail per call.
@@ -362,6 +343,8 @@ def _detect_trails_ransac(data_sub, bkg_rms_map, existing_mask, config):
                 )
                 # Draw the line in the mask
                 from skimage.draw import line
+                from skimage.morphology import disk
+                from skimage.morphology import binary_dilation as binary_dilation_func
 
                 y0, x0 = p0.astype(int)
                 y1, x1 = p1.astype(int)
@@ -376,12 +359,51 @@ def _detect_trails_ransac(data_sub, bkg_rms_map, existing_mask, config):
                 # Dilate the thin line
                 dilation_radius = config.get("dilation_radius", 3)
                 selem = disk(dilation_radius)
-                trail_mask = binary_dilation(trail_mask, footprint=selem)
+                trail_mask = binary_dilation_func(trail_mask, footprint=selem)
 
     except Exception as e:
         print(f"    RANSAC trail detection failed: {e}")
 
     return trail_mask
+
+
+def _detect_trails_ransac(data_sub, bkg_rms_map, existing_mask, config):
+    """
+    Internal function for sparse trail detection using RANSAC line fitting.
+    Ideal for faint "glint" trails (dotted lines of point sources).
+    """
+    cfg = config.get("ransac_params", {})
+    base_detect_thresh_sig = cfg.get("detect_thresh_sig", 5.0)
+    base_min_inliers = cfg.get("min_inliers", 10)
+    residual_threshold = cfg.get("residual_threshold", 2.0)
+
+    detect_thresh_sig, min_inliers = _calculate_adaptive_thresholds(
+        data_sub, bkg_rms_map, existing_mask, base_detect_thresh_sig, base_min_inliers
+    )
+
+    candidate_mask = _get_candidate_mask(
+        data_sub, bkg_rms_map, existing_mask, detect_thresh_sig
+    )
+
+    coords = np.argwhere(candidate_mask)  # (N, 2) array of [y, x]
+
+    # Optional: if points are overwhelmingly noise (e.g. >30% of image), give up RANSAC
+    if len(coords) > 0.3 * data_sub.size:
+        print(
+            f"    WARNING: Too many points for RANSAC ({len(coords)}). Skipping RANSAC."
+        )
+        return np.zeros(data_sub.shape, dtype=bool)
+
+    if len(coords) < min_inliers:
+        return np.zeros(data_sub.shape, dtype=bool)
+
+    print(
+        f"--> Using RANSAC Method for Sparse Trail Detection ({len(coords)} candidate points)"
+    )
+
+    return _extract_and_draw_ransac_trail(
+        data_sub, coords, min_inliers, residual_threshold, cfg, config
+    )
 
 
 # --- Main Detection Function ---
