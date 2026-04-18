@@ -1,6 +1,5 @@
 import os
 import urllib.request
-import urllib.error
 from astroquery.cadc import Cadc
 
 
