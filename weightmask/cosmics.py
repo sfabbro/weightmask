@@ -18,6 +18,84 @@ def _get_psf_peakiness(fwhm):
     return kernel[1, 1]
 
 
+def _adjust_dynamic_sigclip(config, bkg_rms_map, default_sigclip):
+    """Dynamically adjust sigclip based on background noise."""
+    sigclip = default_sigclip
+    if not config.get("dynamic_sigclip", True) or bkg_rms_map is None:
+        return sigclip
+
+    try:
+        valid_rms = bkg_rms_map[bkg_rms_map > 0]
+        step = max(1, len(valid_rms) // 100000)
+        median_rms = np.median(valid_rms[::step]) if len(valid_rms) > 0 else 0.0
+        if np.isfinite(median_rms) and median_rms > 0.1:
+            dynamic_clip = 4.5 * (10.0 / (median_rms + 1.0))
+            sigclip = np.clip(dynamic_clip, 3.0, 8.0)
+            print(
+                f"    Dynamically adjusted sigclip to {sigclip:.2f} "
+                f"based on background RMS of {median_rms:.2f}"
+            )
+    except Exception as e:
+        warnings.warn(f"Dynamic sigclip adjustment failed: {e}", RuntimeWarning)
+
+    return float(sigclip)
+
+
+def _apply_psf_protection(crmask_bool, sci_data, config, gain, read_noise, bkg_rms_map):
+    """Apply PSF-aware protection to prevent over-flagging star cores."""
+    if not config.get("psf_aware", True):
+        return crmask_bool
+
+    psf_fwhm = config.get("psf_fwhm_guess", 3.0)
+    print(f"    Applying PSF-aware protection (FWHM guess: {psf_fwhm:.1f} pix)")
+
+    sky_est = np.median(sci_data[::10, ::10])
+    sci_sub = np.maximum(sci_data - sky_est, 0.0)
+
+    uniform_3x3 = np.ones((3, 3), dtype=np.float32)
+    local_flux_sum = convolve(sci_sub, uniform_3x3, mode="constant", cval=0.0)
+
+    with np.errstate(divide="ignore", invalid="ignore"):
+        peakiness = sci_sub / local_flux_sum
+
+    psf_peak_thresh = _get_psf_peakiness(psf_fwhm)
+    cr_thresh = psf_peak_thresh * 1.1
+
+    if bkg_rms_map is not None:
+        snr_map = sci_sub / (bkg_rms_map / gain)
+        star_protection_mask = (peakiness < cr_thresh) & (snr_map > 5.0)
+    else:
+        star_protection_mask = (peakiness < cr_thresh) & (
+            sci_sub > 5.0 * read_noise / gain
+        )
+
+    protected_count = np.sum(crmask_bool.astype(bool) & star_protection_mask)
+    if protected_count > 0:
+        print(
+            f"    PSF protection: Saved {protected_count} pixels "
+            "(likely star cores) from CR flagging."
+        )
+        crmask_bool = crmask_bool.astype(bool) & (~star_protection_mask)
+
+    return crmask_bool
+
+
+def _apply_morphological_dilation(crmask_bool, config):
+    """Apply morphological dilation to catch the wings of the cosmic rays."""
+    if not config.get("dilate_cr", True):
+        return crmask_bool
+
+    print("    Applying morphological dilation to cosmic ray mask...")
+    from skimage.morphology import binary_dilation, disk
+
+    dilation_radius = config.get("dilation_radius", 1)
+    selem = disk(dilation_radius)
+    if selem.size > 0:
+        crmask_bool = binary_dilation(crmask_bool, footprint=selem)
+
+    return crmask_bool
+
+
 def detect_cosmic_rays(
     sci_data,
     existing_mask,
@@ -42,28 +120,10 @@ def detect_cosmic_rays(
     Returns:
         ndarray: Boolean mask of newly detected cosmic ray pixels
     """
-    sigclip = config.get("sigclip", 4.5)
+    sigclip = _adjust_dynamic_sigclip(
+        config, bkg_rms_map, default_sigclip=config.get("sigclip", 4.5)
+    )
     objlim = config.get("objlim", 5.0)
-
-    # Dynamically adjust sigclip based on background noise if enabled
-    if config.get("dynamic_sigclip", True) and bkg_rms_map is not None:
-        try:
-            # Use the median of the background RMS as a robust noise indicator.
-            # Subsample for speed since this is a global statistic.
-            valid_rms = bkg_rms_map[bkg_rms_map > 0]
-            step = max(1, len(valid_rms) // 100000)
-            median_rms = np.median(valid_rms[::step]) if len(valid_rms) > 0 else 0.0
-            if np.isfinite(median_rms) and median_rms > 0.1:
-                # Heuristic: Lower sigclip for noisier images to increase sensitivity,
-                # but don't go below a reasonable floor (3.0) or above ceiling (8.0)
-                # Scaling factors: base=4.5, noise_scale=10.0, offset=1.0
-                dynamic_clip = 4.5 * (10.0 / (median_rms + 1.0))
-                sigclip = np.clip(dynamic_clip, 3.0, 8.0)  # Bound between 3.0-8.0 sigma
-                print(
-                    f"    Dynamically adjusted sigclip to {sigclip:.2f} based on background RMS of {median_rms:.2f}"
-                )
-        except Exception as e:
-            warnings.warn(f"Dynamic sigclip adjustment failed: {e}", RuntimeWarning)
 
     try:
         # Use astroscrappy to detect cosmic rays
@@ -78,63 +138,11 @@ def detect_cosmic_rays(
             verbose=False,
         )
 
-        # LSST-inspired PSF protection:
-        # If a detected CR is actually "fuzzy" enough to be a star according to the PSF,
-        # we might want to unmask it to prevent over-flagging star cores.
-        if config.get("psf_aware", True):
-            psf_fwhm = config.get("psf_fwhm_guess", 3.0)
-            print(f"    Applying PSF-aware protection (FWHM guess: {psf_fwhm:.1f} pix)")
+        crmask_bool = _apply_psf_protection(
+            crmask_bool, sci_data, config, gain, read_noise, bkg_rms_map
+        )
 
-            # We MUST subtract background to get true PSF peakiness
-            # Estimate local background using a simple median or just a global mode
-            # For robustness, we'll use a local 5x5 median filter or subtract the global mode
-            # Subsample for a much faster global fallback median
-            sky_est = np.median(sci_data[::10, ::10])  # Global fallback
-            sci_sub = np.maximum(sci_data - sky_est, 0.0)
-
-            # Calculate peakiness of every pixel: I(x,y) / sum(I_3x3)
-            # We use a 3x3 uniform filter for the sum
-            uniform_3x3 = np.ones((3, 3), dtype=np.float32)
-            local_flux_sum = convolve(sci_sub, uniform_3x3, mode="constant", cval=0.0)
-
-            with np.errstate(divide="ignore", invalid="ignore"):
-                # Peakiness of the SIGNAL, not the raw counts
-                peakiness = sci_sub / local_flux_sum
-
-            # Expected peakiness for a star
-            psf_peak_thresh = _get_psf_peakiness(psf_fwhm)
-            # Add a safety margin (e.g. 10%)
-            cr_thresh = psf_peak_thresh * 1.1
-
-            # If a pixel in the CR mask is LESS peaky than cr_thresh,
-            # and it is reasonably bright, we unmask it as a potential star core.
-            # Use SNR threshold for protection to avoid saving noise blobs.
-            # If bkg_rms_map is available, use it for local SNR threshold.
-            if bkg_rms_map is not None:
-                snr_map = sci_sub / (bkg_rms_map / gain)
-                star_protection_mask = (peakiness < cr_thresh) & (snr_map > 5.0)
-            else:
-                star_protection_mask = (peakiness < cr_thresh) & (
-                    sci_sub > 5.0 * read_noise / gain
-                )
-
-            protected_count = np.sum(crmask_bool.astype(bool) & star_protection_mask)
-            if protected_count > 0:
-                print(
-                    f"    PSF protection: Saved {protected_count} pixels (likely star cores) from CR flagging."
-                )
-                crmask_bool = crmask_bool.astype(bool) & (~star_protection_mask)
-
-        # Apply morphological dilation to catch the wings of the cosmic rays
-        if config.get("dilate_cr", True):
-            print("    Applying morphological dilation to cosmic ray mask...")
-            from skimage.morphology import binary_dilation, disk
-
-            dilation_radius = config.get("dilation_radius", 1)
-
-            selem = disk(dilation_radius)
-            if selem.size > 0:
-                crmask_bool = binary_dilation(crmask_bool, footprint=selem)
+        crmask_bool = _apply_morphological_dilation(crmask_bool, config)
 
         # Only return newly detected pixels (not already in existing_mask)
         cr_add_mask = crmask_bool & (~existing_mask)
