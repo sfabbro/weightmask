@@ -238,6 +238,56 @@ def detect_saturated_pixels(sci_data, sci_hdr, config):
     return saturation_level, sat_method_used, sat_mask_bool
 
 
+def _grow_bleed_up(sci_data, stop_thresh, x, y_min, max_grow, new_mask):
+    """Helper to grow bleed trail upward from a saturated segment."""
+    if y_min <= 0:
+        return
+
+    start_idx = y_min - 1
+    end_idx = max(-1, start_idx - max_grow)
+
+    if end_idx == -1:
+        sci_slice = sci_data[start_idx::-1, x]
+        thresh_slice = stop_thresh[start_idx::-1]
+    else:
+        sci_slice = sci_data[start_idx:end_idx:-1, x]
+        thresh_slice = stop_thresh[start_idx:end_idx:-1]
+
+    cond = sci_slice > thresh_slice
+    if not np.all(cond):
+        grown = np.argmin(cond)
+    else:
+        grown = len(cond)
+
+    if grown > 0:
+        end_mask = start_idx - grown
+        if end_mask == -1:
+            new_mask[start_idx::-1, x] = True
+        else:
+            new_mask[start_idx:end_mask:-1, x] = True
+
+
+def _grow_bleed_down(sci_data, stop_thresh, h, x, y_max, max_grow, new_mask):
+    """Helper to grow bleed trail downward from a saturated segment."""
+    if y_max >= h - 1:
+        return
+
+    start_idx = y_max + 1
+    end_idx = min(h, start_idx + max_grow)
+
+    sci_slice = sci_data[start_idx:end_idx, x]
+    thresh_slice = stop_thresh[start_idx:end_idx]
+
+    cond = sci_slice > thresh_slice
+    if not np.all(cond):
+        grown = np.argmin(cond)
+    else:
+        grown = len(cond)
+
+    if grown > 0:
+        new_mask[start_idx : start_idx + grown, x] = True
+
+
 def grow_bleed_trails(sci_data, sat_mask, sky_map, bkg_rms_map, config):
     """
     Grow saturated regions vertically to mask bleed trails (blooming).
@@ -281,47 +331,8 @@ def grow_bleed_trails(sci_data, sat_mask, sky_map, bkg_rms_map, config):
 
             max_grow = config.get("bleed_grow_vertical", 50)
 
-            # Grow up
-            if y_min > 0:
-                start_idx = y_min - 1
-                end_idx = max(-1, start_idx - max_grow)
-
-                if end_idx == -1:
-                    sci_slice = sci_data[start_idx::-1, x]
-                    thresh_slice = stop_thresh[start_idx::-1]
-                else:
-                    sci_slice = sci_data[start_idx:end_idx:-1, x]
-                    thresh_slice = stop_thresh[start_idx:end_idx:-1]
-
-                cond = sci_slice > thresh_slice
-                if not np.all(cond):
-                    grown = np.argmin(cond)
-                else:
-                    grown = len(cond)
-
-                if grown > 0:
-                    end_mask = start_idx - grown
-                    if end_mask == -1:
-                        new_mask[start_idx::-1, x] = True
-                    else:
-                        new_mask[start_idx:end_mask:-1, x] = True
-
-            # Grow down
-            if y_max < h - 1:
-                start_idx = y_max + 1
-                end_idx = min(h, start_idx + max_grow)
-
-                sci_slice = sci_data[start_idx:end_idx, x]
-                thresh_slice = stop_thresh[start_idx:end_idx]
-
-                cond = sci_slice > thresh_slice
-                if not np.all(cond):
-                    grown = np.argmin(cond)
-                else:
-                    grown = len(cond)
-
-                if grown > 0:
-                    new_mask[start_idx : start_idx + grown, x] = True
+            _grow_bleed_up(sci_data, stop_thresh, x, y_min, max_grow, new_mask)
+            _grow_bleed_down(sci_data, stop_thresh, h, x, y_max, max_grow, new_mask)
 
     # Horizontal dilation for safety (optional)
     h_dilation = config.get("bleed_grow_horizontal", 2)
