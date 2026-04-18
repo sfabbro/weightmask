@@ -116,5 +116,77 @@ class TestSaturation(unittest.TestCase):
         self.assertEqual(np.sum(mask), 0)
 
 
+
+    def test_robust_clump_happy_path(self):
+        """Test successful detection of a saturation clump."""
+        np.random.seed(42)
+        # To make the clump prominent enough for scipy.signal.find_peaks,
+        # we need a larger ratio of saturated pixels in the tail.
+        data = np.random.normal(100, 10, 1000000)
+        data = np.append(data, np.random.normal(65000, 50, 50000))
+
+        from weightmask.satur import estimate_saturation_robust_clump
+        level = estimate_saturation_robust_clump(data)
+
+        self.assertIsNotNone(level)
+        # Should be near the base of the 65000 peak (e.g. 64000-65000)
+        self.assertTrue(60000 < level < 65000)
+
+    def test_robust_clump_no_saturation(self):
+        """Test that an image without saturation returns None."""
+        np.random.seed(42)
+        # Just background + normal stars, no clump at the top
+        data = np.random.normal(100, 10, 100000)
+        data = np.append(data, np.random.normal(50000, 1000, 100))
+
+        from weightmask.satur import estimate_saturation_robust_clump
+        level = estimate_saturation_robust_clump(data)
+
+        self.assertIsNone(level)
+
+    def test_robust_clump_empty_or_nan(self):
+        """Test handling of empty arrays and all NaNs."""
+        from weightmask.satur import estimate_saturation_robust_clump
+
+        self.assertIsNone(estimate_saturation_robust_clump(np.array([])))
+        self.assertIsNone(estimate_saturation_robust_clump(np.array([np.nan, np.inf])))
+
+    def test_robust_clump_low_max_adu(self):
+        """Test handling when the max value is below the 10000 ADU heuristic."""
+        np.random.seed(42)
+        data = np.random.normal(100, 10, 10000)
+        # Max is around 150
+        from weightmask.satur import estimate_saturation_robust_clump
+
+        level = estimate_saturation_robust_clump(data)
+        self.assertIsNone(level)
+
+    def test_robust_clump_explicit_bounds(self):
+        """Test that explicitly providing min_adu and max_adu works."""
+        np.random.seed(42)
+        data = np.random.normal(100, 10, 100000)
+        data = np.append(data, np.random.normal(65000, 50, 500))
+
+        from weightmask.satur import estimate_saturation_robust_clump
+        # Pass bounds that tightly frame the clump
+        level = estimate_saturation_robust_clump(data, min_adu=60000, max_adu=70000)
+
+        self.assertIsNotNone(level)
+        self.assertTrue(60000 < level < 65000)
+
+    def test_robust_clump_exception_handling(self):
+        """Test the try-except block by mocking a failure."""
+        from weightmask.satur import estimate_saturation_robust_clump
+        import unittest.mock as mock
+
+        # Patch scipy.signal.find_peaks to raise an Exception
+        with mock.patch('scipy.signal.find_peaks', side_effect=Exception("Mocked failure")):
+            np.random.seed(42)
+            data = np.random.normal(100, 10, 100000)
+            data = np.append(data, np.random.normal(65000, 50, 500))
+            level = estimate_saturation_robust_clump(data)
+
+            self.assertIsNone(level)
+
 if __name__ == "__main__":
     unittest.main()
