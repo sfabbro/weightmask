@@ -34,3 +34,6 @@
 ## 2023-10-25 - Parallelizing heavy skimage operations
 **Learning:** Nested loops on image blocks mapping sequentially to expensive skimage functions (like `skimage.filters.frangi`) can be a significant bottleneck. Python's `concurrent.futures.ThreadPoolExecutor` handles block parallelization very efficiently here, dropping the filter time significantly (e.g. 4x speedup).
 **Action:** Always parallelize block processing on image data using `ThreadPoolExecutor` or `ProcessPoolExecutor` where operations on blocks are independent.
+## 2024-05-24 - Vectorize spatial patch processing with NaN functions
+**Learning:** Nested Python coordinate loops for processing spatial image patches are exceptionally slow on large arrays (e.g. 10000x10000 pixels).
+**Action:** When calculating patch statistics (like median or MAD), truncate dimensions to perfectly fit the patch size, reshape and transpose the arrays into `(num_patches, patch_size * patch_size)`, replace masked pixels with `np.nan` using `np.where`, and apply vectorized functions like `np.nanmedian` along the axis. Process any remaining non-divisible edge patches using a minimal fallback loop.
