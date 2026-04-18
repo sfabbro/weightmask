@@ -37,6 +37,30 @@ def create_binary_mask(mask_data, bit_flag):
     return np.where((mask_data & bit_flag) > 0, 1, 0).astype(np.uint8)
 
 
+def _parse_config_value(val):
+    """
+    Parse a single configuration value, converting strings to
+    bool/int/float if applicable.
+    """
+    if not isinstance(val, (str, bytes)):
+        return val
+    try:
+        if val.lower() in ("true", "yes", "on"):
+            return True
+        elif val.lower() in ("false", "no", "off"):
+            return False
+        else:
+            try:
+                if "." in val:
+                    return float(val)
+                else:
+                    return int(val)
+            except ValueError:
+                return float(val)
+    except (ValueError, TypeError):
+        return val
+
+
 def clean_config_dict(config: dict) -> dict:
     """
     Recursively clean a configuration dictionary, converting numeric strings
@@ -54,41 +78,9 @@ def clean_config_dict(config: dict) -> dict:
             for item in v:
                 if isinstance(item, dict):
                     clean_list.append(clean_config_dict(item))
-                elif isinstance(item, (str, bytes)):
-                    try:
-                        if item.lower() in ("true", "yes", "on"):
-                            clean_list.append(True)
-                        elif item.lower() in ("false", "no", "off"):
-                            clean_list.append(False)
-                        else:
-                            try:
-                                if "." in item:
-                                    clean_list.append(float(item))
-                                else:
-                                    clean_list.append(int(item))
-                            except ValueError:
-                                clean_list.append(float(item))
-                    except (ValueError, TypeError):
-                        clean_list.append(item)
                 else:
-                    clean_list.append(item)
+                    clean_list.append(_parse_config_value(item))
             clean_dict[k] = clean_list
-        elif isinstance(v, (str, bytes)):
-            try:
-                if v.lower() in ("true", "yes", "on"):
-                    clean_dict[k] = True
-                elif v.lower() in ("false", "no", "off"):
-                    clean_dict[k] = False
-                else:
-                    try:
-                        if "." in v:
-                            clean_dict[k] = float(v)
-                        else:
-                            clean_dict[k] = int(v)
-                    except ValueError:
-                        clean_dict[k] = float(v)
-            except (ValueError, TypeError):
-                clean_dict[k] = v
         else:
-            clean_dict[k] = v
+            clean_dict[k] = _parse_config_value(v)
     return clean_dict
