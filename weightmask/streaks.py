@@ -110,14 +110,16 @@ def _detect_streaks_frangi(data_sub, bkg_rms_map, existing_mask, config):
 
                 return r, c, h, w, interior
 
-            futures = []
-            with concurrent.futures.ThreadPoolExecutor() as executor:
-                for r in range(0, img_rows, block_size):
-                    for c in range(0, img_cols, block_size):
-                        futures.append(executor.submit(process_block, r, c))
+            r_coords = []
+            c_coords = []
+            for r in range(0, img_rows, block_size):
+                for c in range(0, img_cols, block_size):
+                    r_coords.append(r)
+                    c_coords.append(c)
 
-                for f in concurrent.futures.as_completed(futures):
-                    r, c, h, w, interior = f.result()
+            with concurrent.futures.ThreadPoolExecutor() as executor:
+                results = executor.map(process_block, r_coords, c_coords)
+                for r, c, h, w, interior in results:
                     ridge_map[r : r + h, c : c + w] = interior
         else:
             with warnings.catch_warnings():
