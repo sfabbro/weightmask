@@ -15,8 +15,8 @@ def detect_objects(data_sub, bkg_rms_map, existing_mask, config):
     Returns:
         ndarray: Boolean mask of newly detected object pixels
     """
-    # Use uint8 for SEP compatibility, convert to bool at the end
-    object_mask_ui8 = np.zeros(data_sub.shape, dtype=np.uint8)
+    # Use bool directly for the mask
+    object_mask = np.zeros(data_sub.shape, dtype=bool)
 
     try:
         clean_config = config or {}
@@ -90,16 +90,14 @@ def detect_objects(data_sub, bkg_rms_map, existing_mask, config):
             scaled_a = objects["a"] * scale_multiplier
             scaled_b = objects["b"] * scale_multiplier
 
-            if not object_mask_ui8.flags["C_CONTIGUOUS"]:
-                object_mask_ui8 = np.ascontiguousarray(object_mask_ui8)
+            if not object_mask.flags["C_CONTIGUOUS"]:
+                object_mask = np.ascontiguousarray(object_mask)
 
-            # ⚡ Bolt: Replaced pure Python skimage.draw loop with vectorized sep.mask_ellipse.
+            # ⚡ Bolt: Use vectorized sep.mask_ellipse directly on the boolean mask.
             # Avoids O(N) Python iteration overhead for large source lists.
-            # Note: SEP expects boolean arrays for masking.
-            mask_bool = object_mask_ui8.astype(bool)
             try:
                 sep.mask_ellipse(
-                    mask_bool,
+                    object_mask,
                     objects["x"],
                     objects["y"],
                     scaled_a,
@@ -107,29 +105,41 @@ def detect_objects(data_sub, bkg_rms_map, existing_mask, config):
                     objects["theta"],
                     r=base_k,
                 )
-                object_mask_ui8[mask_bool] = 1
             except Exception as e:
                 print(f"  [Bolt] Error applying vectorized ellipse mask: {e}")
-                # Fallback on the slow method if necessary
+                # Fallback to individual ellipse rendering
                 from skimage.draw import ellipse
 
-                h, w = object_mask_ui8.shape
+                h, w = object_mask.shape
                 for i in range(len(objects)):
                     if scaled_a[i] > 0 and scaled_b[i] > 0:
+                        # Try individual sep.mask_ellipse call first (faster than skimage)
                         try:
-                            cy, cx = objects["y"][i], objects["x"][i]
-                            ry, rx = scaled_b[i] * base_k, scaled_a[i] * base_k
-                            rr, cc = ellipse(
-                                int(cy + 0.5),
-                                int(cx + 0.5),
-                                ry,
-                                rx,
-                                shape=(h, w),
-                                rotation=-objects["theta"][i],
+                            sep.mask_ellipse(
+                                object_mask,
+                                np.array([objects["x"][i]]),
+                                np.array([objects["y"][i]]),
+                                np.array([scaled_a[i]]),
+                                np.array([scaled_b[i]]),
+                                np.array([objects["theta"][i]]),
+                                r=base_k,
                             )
-                            object_mask_ui8[rr, cc] = 1
                         except Exception:
-                            continue
+                            # Final fallback to skimage.draw.ellipse if SEP fails for this source
+                            try:
+                                cy, cx = objects["y"][i], objects["x"][i]
+                                ry, rx = scaled_b[i] * base_k, scaled_a[i] * base_k
+                                rr, cc = ellipse(
+                                    int(cy + 0.5),
+                                    int(cx + 0.5),
+                                    ry,
+                                    rx,
+                                    shape=(h, w),
+                                    rotation=-objects["theta"][i],
+                                )
+                                object_mask[rr, cc] = True
+                            except Exception:
+                                continue
 
             if clean_config.get("dynamic_halo_scaling", True):
                 print(
@@ -148,7 +158,7 @@ def detect_objects(data_sub, bkg_rms_map, existing_mask, config):
                     spike_length_base = int(clean_config.get("spike_length_base", 100))
                     spike_width = int(clean_config.get("spike_width", 3))
 
-                    h, w = object_mask_ui8.shape
+                    h, w = object_mask.shape
                     for obj in objects[bright_mask]:
                         # Scale spike length slightly by flux
                         s_len = int(
@@ -161,27 +171,23 @@ def detect_objects(data_sub, bkg_rms_map, existing_mask, config):
 
                         # Horizontal spike
                         xstart, xend = max(0, xc - s_len), min(w - 1, xc + s_len)
-                        object_mask_ui8[
+                        object_mask[
                             max(0, yc - hw) : min(h, yc + hw + 1), xstart : xend + 1
-                        ] = 1
+                        ] = True
 
                         # Vertical spike
                         ystart, yend = max(0, yc - s_len), min(h - 1, yc + s_len)
-                        object_mask_ui8[
+                        object_mask[
                             ystart : yend + 1, max(0, xc - hw) : min(w, xc + hw + 1)
-                        ] = 1
-
-            # Convert back to boolean for returning
-            object_mask_bool = object_mask_ui8.astype(bool)
+                        ] = True
 
             # Only return newly detected pixels (not already in existing_mask)
-            # Use original boolean cast to avoid bitwise issues
             m_orig = (
                 existing_mask.astype(bool)
                 if existing_mask is not None
-                else np.zeros_like(object_mask_bool)
+                else np.zeros_like(object_mask)
             )
-            obj_add_mask = object_mask_bool & (~m_orig)
+            obj_add_mask = object_mask & (~m_orig)
             return obj_add_mask
 
     except Exception:
