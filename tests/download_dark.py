@@ -1,6 +1,5 @@
 import os
-import urllib.request
-import urllib.error
+from urllib.request import urlretrieve
 from astroquery.cadc import Cadc
 
 
@@ -32,7 +31,7 @@ def download_cadc_dark():
                 out_file = os.path.join("benchmark_data", f"cfht_dark_{pub_id}.fits")
                 print(f"Downloading from {url} ...")
                 try:
-                    urllib.request.urlretrieve(url, out_file)
+                    urlretrieve(url, out_file)
                     print(f"Saved to {out_file}")
                     return
                 except Exception as e:
