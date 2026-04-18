@@ -1,5 +1,5 @@
 import os
-import urllib.request
+from urllib.request import urlretrieve
 
 
 def download_file(url, out_path):
@@ -7,7 +7,7 @@ def download_file(url, out_path):
         print(f"Already downloaded: {out_path}")
         return
     print(f"Downloading {url} ...")
-    urllib.request.urlretrieve(url, out_path)
+    urlretrieve(url, out_path)
     print(f"Saved to {out_path}")
 
 
