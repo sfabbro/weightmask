@@ -389,5 +389,112 @@ class TestVariance(unittest.TestCase):
         self.assertIsNone(emp_rn_e)
 
 
+    def test_rescale_variance_robust_none_inputs(self):
+        """Test _rescale_variance_robust with None inputs."""
+        from weightmask.variance import _rescale_variance_robust
+
+        inv_variance = np.ones((10, 10))
+        sci_data = np.ones((10, 10))
+        sky_map = np.zeros((10, 10))
+        obj_mask = np.zeros((10, 10), dtype=bool)
+
+        # Test None inv_variance
+        res = _rescale_variance_robust(None, sci_data, sky_map, obj_mask, epsilon=1e-9)
+        self.assertIsNone(res)
+
+        # Test None sci_data
+        res = _rescale_variance_robust(inv_variance, None, sky_map, obj_mask, epsilon=1e-9)
+        np.testing.assert_array_equal(res, inv_variance)
+
+        # Test None obj_mask
+        res = _rescale_variance_robust(inv_variance, sci_data, sky_map, None, epsilon=1e-9)
+        np.testing.assert_array_equal(res, inv_variance)
+
+    def test_rescale_variance_robust_few_valid_pixels(self):
+        """Test _rescale_variance_robust when there are fewer than 100 valid pixels."""
+        from weightmask.variance import _rescale_variance_robust
+
+        inv_variance = np.ones((10, 10))
+        sci_data = np.ones((10, 10))
+        sky_map = np.zeros((10, 10))
+        obj_mask = np.ones((10, 10), dtype=bool)  # All masked
+
+        res = _rescale_variance_robust(inv_variance, sci_data, sky_map, obj_mask, epsilon=1e-9)
+        np.testing.assert_array_equal(res, inv_variance)
+
+    def test_rescale_variance_robust_zero_stdev(self):
+        """Test _rescale_variance_robust when robust standard deviation is zero."""
+        from weightmask.variance import _rescale_variance_robust
+
+        # Constant data means variance and stdev is 0
+        inv_variance = np.ones((20, 20))
+        sci_data = np.ones((20, 20)) * 5.0
+        sky_map = np.zeros((20, 20))
+        obj_mask = np.zeros((20, 20), dtype=bool)
+
+        res = _rescale_variance_robust(inv_variance, sci_data, sky_map, obj_mask, epsilon=1e-9)
+        np.testing.assert_array_equal(res, inv_variance)
+
+    def test_rescale_variance_robust_success(self):
+        """Test _rescale_variance_robust happy path where scaling should happen."""
+        from weightmask.variance import _rescale_variance_robust
+
+        np.random.seed(42)
+        shape = (100, 100)
+
+        # We want SNR to have a specific standard deviation.
+        # snr = (sci_data - sky_map) * sqrt(inv_variance)
+        # Let's say sky_map = 0, inv_variance = 1.0 everywhere.
+        # Then snr = sci_data
+        # If we set sci_data to normal(0, target_stdev), the calculated stdev should be target_stdev.
+
+        target_stdev = 2.0
+        sci_data = np.random.normal(loc=0.0, scale=target_stdev, size=shape)
+        sky_map = np.zeros(shape)
+        inv_variance = np.ones(shape)
+        obj_mask = np.zeros(shape, dtype=bool)
+
+        res = _rescale_variance_robust(inv_variance, sci_data, sky_map, obj_mask, epsilon=1e-9)
+
+        # The scale factor should be 1.0 / (robust_stdev**2)
+        # We know robust_stdev ~ 2.0, so scale_factor ~ 1.0 / 4.0 = 0.25
+        # Output should be scaled inv_variance
+
+        self.assertIsNotNone(res)
+
+        # Check that scaling happened (res shouldn't be exactly inv_variance)
+        self.assertFalse(np.allclose(res, inv_variance))
+
+        # Since inv_variance is 1, res should be filled with the scale factor
+        calculated_scale_factor = res[0, 0]
+
+        # Stdev should be close to 2.0, so scale factor close to 0.25
+        self.assertAlmostEqual(calculated_scale_factor, 0.25, delta=0.05)
+
+    def test_rescale_variance_robust_non_finite_snr(self):
+        """Test _rescale_variance_robust with non-finite SNR values."""
+        from weightmask.variance import _rescale_variance_robust
+
+        np.random.seed(42)
+        shape = (20, 20)
+
+        sci_data = np.random.normal(0, 1, shape)
+        sky_map = np.zeros(shape)
+        inv_variance = np.ones(shape)
+        obj_mask = np.zeros(shape, dtype=bool)
+
+        # Inject non-finite values into SNR computation:
+        # Since snr = sci_data * sqrt(inv_variance), we can make inv_variance < 0,
+        # which yields NaN in sqrt.
+        inv_variance[0:5, 0:5] = -1.0
+
+        res = _rescale_variance_robust(inv_variance, sci_data, sky_map, obj_mask, epsilon=1e-9)
+
+        # Should still run successfully and scale using the valid parts
+        self.assertIsNotNone(res)
+        # Check it's not the same as input
+        self.assertFalse(np.allclose(res, inv_variance))
+
+
 if __name__ == "__main__":
     unittest.main()
