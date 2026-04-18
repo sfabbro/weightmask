@@ -129,6 +129,21 @@ def estimate_saturation_robust_clump(data, min_adu=None, max_adu=None):
         return None
 
 
+def _get_saturation_from_header(sci_hdr, header_keyword):
+    """Attempt to extract saturation level from the header."""
+    if not header_keyword or sci_hdr is None or header_keyword not in sci_hdr:
+        print(f"  Header method failed (keyword '{header_keyword}' missing or not specified).")
+        return None
+
+    try:
+        saturation_level = float(sci_hdr[header_keyword])
+        print(f"  Using saturation from header keyword '{header_keyword}': {saturation_level:.1f} ADU.")
+        return saturation_level
+    except (ValueError, TypeError):
+        print(f"  Header method failed (parse error for keyword '{header_keyword}').")
+        return None
+
+
 def detect_saturated_pixels(sci_data, sci_hdr, config):
     """
     Detect saturated pixels in the science data using the configured method.
@@ -158,7 +173,10 @@ def detect_saturated_pixels(sci_data, sci_hdr, config):
         )
         sci_data = sci_data.astype(np.float32)
 
-    if config.get("method", "histogram") == "histogram":
+    method = config.get("method", "histogram")
+    header_keyword = config.get("keyword")
+
+    if method == "histogram":
         print("Attempting robust detrended saturation detection (Clump method)...")
         # Pass specific histogram parameters if they exist in the config
         saturation_level = estimate_saturation_robust_clump(
@@ -173,44 +191,15 @@ def detect_saturated_pixels(sci_data, sci_hdr, config):
             print(
                 "  Robust Clump detection yielded no saturation. Trying header fallback..."
             )
-            # Fallback to header keyword
-            header_keyword = config.get("keyword")
-            if header_keyword and sci_hdr is not None and header_keyword in sci_hdr:
-                try:
-                    saturation_level = float(sci_hdr[header_keyword])
-                    sat_method_used = "header (fallback)"
-                    print(
-                        f"  Using saturation from header keyword '{header_keyword}': {saturation_level:.1f} ADU."
-                    )
-                except (ValueError, TypeError):
-                    print(
-                        f"  Header fallback failed (parse error for keyword '{header_keyword}')."
-                    )
-                    saturation_level = None  # Ensure it's None if parse fails
-            else:
-                print(
-                    f"  Header fallback failed (keyword '{header_keyword}' missing or not specified)."
-                )
+            saturation_level = _get_saturation_from_header(sci_hdr, header_keyword)
+            if saturation_level is not None:
+                sat_method_used = "header (fallback)"
 
-    elif config.get("method") == "header":
+    elif method == "header":
         print("Attempting saturation detection via header keyword...")
-        header_keyword = config.get("keyword")
-        if header_keyword and header_keyword in sci_hdr:
-            try:
-                saturation_level = float(sci_hdr[header_keyword])
-                sat_method_used = "header"
-                print(
-                    f"  Using saturation from header keyword '{header_keyword}': {saturation_level:.1f} ADU."
-                )
-            except (ValueError, TypeError):
-                print(
-                    f"  Header method failed (parse error for keyword '{header_keyword}')."
-                )
-                saturation_level = None
-        else:
-            print(
-                f"  Header method failed (keyword '{header_keyword}' missing or not specified)."
-            )
+        saturation_level = _get_saturation_from_header(sci_hdr, header_keyword)
+        if saturation_level is not None:
+            sat_method_used = "header"
 
     # Final fallback to default value if all methods fail
     if saturation_level is None:
