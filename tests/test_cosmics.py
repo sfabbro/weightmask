@@ -10,6 +10,23 @@ ASTROSCRAPPY_AVAILABLE = find_spec("astroscrappy") is not None
 
 
 class TestCosmics(unittest.TestCase):
+
+    def test_get_psf_peakiness(self):
+        """Test the calculation of PSF peakiness."""
+        from weightmask.cosmics import _get_psf_peakiness
+
+        # Test a standard FWHM value (e.g., FWHM=3.0)
+        peakiness = _get_psf_peakiness(3.0)
+        self.assertAlmostEqual(peakiness, 0.1639546, places=5)
+
+        # Test a very small FWHM (approaches 1.0)
+        peakiness_small = _get_psf_peakiness(0.1)
+        self.assertAlmostEqual(peakiness_small, 1.0, places=5)
+
+        # Test a very large FWHM (approaches 1/9 for 3x3 kernel)
+        peakiness_large = _get_psf_peakiness(1000.0)
+        self.assertAlmostEqual(peakiness_large, 1.0 / 9.0, places=5)
+
     def test_detect_cosmic_rays(self):
         """Test cosmic ray detection."""
         # Create test science data
