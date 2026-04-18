@@ -1,6 +1,5 @@
 import os
-import urllib.request
-import urllib.error
+from urllib.request import urlretrieve
 from astroquery.cadc import Cadc
 
 
@@ -13,11 +12,11 @@ def download_cadc_dark():
     query = """
     SELECT TOP 10
         Plane.publisherID as publisherID, Observation.observationID
-    FROM caom2.Plane AS Plane 
-    JOIN caom2.Observation AS Observation ON Plane.obsID = Observation.obsID 
-    WHERE Observation.collection = 'CFHT' 
-      AND Observation.instrument_name = 'MegaPrime' 
-      AND Observation.type = 'DARK' 
+    FROM caom2.Plane AS Plane
+    JOIN caom2.Observation AS Observation ON Plane.obsID = Observation.obsID
+    WHERE Observation.collection = 'CFHT'
+      AND Observation.instrument_name = 'MegaPrime'
+      AND Observation.type = 'DARK'
       AND Plane.dataRelease < '2010-01-01'
     """
 
@@ -29,10 +28,12 @@ def download_cadc_dark():
             print(f"Found {len(urls)} URLs")
             for url in urls:
                 pub_id = url.split("/")[-1]
-                out_file = os.path.join("benchmark_data", f"cfht_dark_{pub_id}.fits")
+                out_file = os.path.join(
+                    "benchmark_data", f"cfht_dark_{pub_id}.fits"
+                )
                 print(f"Downloading from {url} ...")
                 try:
-                    urllib.request.urlretrieve(url, out_file)
+                    urlretrieve(url, out_file)
                     print(f"Saved to {out_file}")
                     return
                 except Exception as e:
