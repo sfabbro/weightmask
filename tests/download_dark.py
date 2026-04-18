@@ -13,11 +13,11 @@ def download_cadc_dark():
     query = """
     SELECT TOP 10
         Plane.publisherID as publisherID, Observation.observationID
-    FROM caom2.Plane AS Plane 
-    JOIN caom2.Observation AS Observation ON Plane.obsID = Observation.obsID 
-    WHERE Observation.collection = 'CFHT' 
-      AND Observation.instrument_name = 'MegaPrime' 
-      AND Observation.type = 'DARK' 
+    FROM caom2.Plane AS Plane
+    JOIN caom2.Observation AS Observation ON Plane.obsID = Observation.obsID
+    WHERE Observation.collection = 'CFHT'
+      AND Observation.instrument_name = 'MegaPrime'
+      AND Observation.type = 'DARK'
       AND Plane.dataRelease < '2010-01-01'
     """
 
