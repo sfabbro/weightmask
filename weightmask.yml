@@ -7,7 +7,7 @@ flat_masking:
 
 # Saturation Detection
 saturation:
-  # method: 'histogram' or 'header'. 
+  # method: 'histogram' or 'header'.
   # 'histogram' method uses robust clump finding to detect smeared saturation on detrended data.
   method: 'histogram'
   # Keyword used if method is 'header' or as fallback from histogram
@@ -16,12 +16,12 @@ saturation:
   histogram_params:
     hist_min_adu: 30000   # Start analysis above this level (if null, auto-determined above 99th percentile)
     hist_max_adu: null    # End analysis below this level (if null, auto-determined from data max)
-  
+
   # --- Bleed Trail (Blooming) Masking Parameters ---
   mask_bleed_trails: True  # Dilate saturated cores to cover vertical bleed trails
   bleed_grow_vertical: 50  # Number of pixels to grow the mask up and down along columns
   bleed_grow_horizontal: 2 # Number of pixels to grow the mask left and right
-  
+
   # Fallback default level if chosen/fallback methods fail
   fallback_level: 65000.0
 
@@ -40,7 +40,7 @@ cosmic_ray:
   sigclip: 8.5       # sigma threshold - higher to reduce false positives
   objlim: 15.0       # contrast limit - higher to be more conservative
   dynamic_sigclip: false  # disable dynamic adjustment
-  
+
   # --- Morphological Dilation ---
   dilate_cr: False   # Disabled to improve CR precision. Astroscrappy often catches the wings already.
   dilation_radius: 0
@@ -50,7 +50,7 @@ sep_objects:
   extract_thresh: 3.0 # sigma above background RMS - higher to reduce false detections
   min_area: 10      # pixels - larger minimum area
   ellipse_k: 2.5    # base ellipse scaling factor for masking
-  
+
   # --- Dynamic Halo Masking ---
   dynamic_halo_scaling: True  # Scale mask radius based on object brightness
   halo_scale_factor: 0.2      # Strength of the logarithmic scaling. 0.0 means no scaling.
@@ -66,7 +66,7 @@ sep_objects:
 streak_masking:
   enable: True
   method: 'frangi'  # Uses multi-scale Hessian ridge filtering
-  
+
   # --- Sparse Trail Detection (RANSAC) ---
   enable_ransac_trails: True
   ransac_params:
@@ -86,17 +86,17 @@ streak_masking:
     block_pad: 32
     # 1. Background / Star Removal
     tophat_radius: 10      # Size of morphological white top-hat. Must be wider than typical streaks
-    
+
     # 2. Frangi Filter Params
     sigmas: [1, 2, 4]      # Scales to search for ridges. Corresponds roughly to streak widths.
     black_ridges: False    # True if streaks are darker than background (usually False for astronomy)
-    
-    # 3. Hysteresis Thresholding 
+
+    # 3. Hysteresis Thresholding
     high_threshold: null
     low_threshold: null
     high_threshold_sig: 8.0
     low_threshold_sig: 3.0
-    
+
     # 4. Region filtering
     min_area: 25           # Minimum number of pixels in a valid streak
     min_elongation: 5.0    # Minimum ratio of major to minor axis length
@@ -118,11 +118,10 @@ variance:
   unbias_variance: False   # Remove Poisson signal from variance map for "background-only" map
 
 # Flat Masking - Thresholds relative to local structural model
-flat_masking:
   local_filter_size: 15     # Size of median filter for illumination model
   local_low_thresh: 0.5     # Flag if pixel < this * local model
   local_high_thresh: 2.0    # Flag if pixel > this * local model
-  
+
   # Bad Column Detection parameters (derivative based)
   col_enable: True          # Enable/disable bad column detection
   col_deriv_sigma: 10.0     # Flag column if jump from neighbor > this * MAD

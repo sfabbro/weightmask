@@ -5,7 +5,6 @@ WeightMask CLI using fitsio instead of astropy.io.fits for better performance wi
 
 import os
 import time
-import warnings
 import argparse
 import yaml
 import fitsio
@@ -306,8 +305,9 @@ def process_hdu(
 
 
 # --- Main execution function called by entry point ---
-def run_pipeline() -> int:
-    """Main function to parse arguments and run the pipeline."""
+
+
+def parse_arguments() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
         description="Generate Mask and Weight/Confidence Maps for FITS files."
     )
@@ -366,57 +366,65 @@ def run_pipeline() -> int:
         action="store_true",
         help="Output individual mask component files.",
     )
-    args = parser.parse_args()
+    return parser.parse_args()
 
-    print("Starting WeightMask Pipeline...")
-    start_pipeline_time = time.time()
 
-    # --- Validate Input Files ---
+def validate_input_files(args: argparse.Namespace) -> bool:
     if not os.path.exists(args.input_file):
         print(f"ERROR: Input file not found: {args.input_file}")
-        return 1
+        return False
 
     if not validate_fits_file(args.input_file):
         print(f"ERROR: Input file validation failed: {args.input_file}")
-        return 1
+        return False
 
     if args.flat_image:
         if not os.path.exists(args.flat_image):
             print(f"ERROR: Flat field file not found: {args.flat_image}")
-            return 1
+            return False
         if not validate_fits_file(args.flat_image):
             print(f"ERROR: Flat field file validation failed: {args.flat_image}")
-            return 1
+            return False
 
-    # --- Handle Configuration File ---
-    config_path = args.config
-    if config_path is None:
-        # Try to find a default config
-        default_configs = ["weightmask.yml", "config.yml", ".weightmask.yml"]
-        for cfg in default_configs:
-            if os.path.exists(cfg):
-                config_path = cfg
-                print(f"Using default config file found at: {config_path}")
-                break
-        if config_path is None:
-            print("ERROR: Config file not specified and no default found.")
-            return 1
+    return True
 
-    # --- Load Configuration ---
+
+def _find_default_config() -> str:
+    default_configs = ["weightmask.yml", "config.yml", ".weightmask.yml"]
+    for cfg in default_configs:
+        if os.path.exists(cfg):
+            print(f"Using default config file found at: {cfg}")
+            return cfg
+    return None
+
+
+def _read_and_clean_config(config_path: str) -> dict:
     try:
         with open(config_path, "r") as f:
             config = yaml.safe_load(f)
-            config = clean_config_dict(config)
+            return clean_config_dict(config)
     except OSError as e:
         print(f"ERROR: Failed to read config file '{config_path}': {e}")
-        return 1
+        return None
     except yaml.YAMLError as e:
         print(f"ERROR: Failed to parse config file '{config_path}': {e}")
-        return 1
+        return None
+
+
+def load_configuration(config_path: str) -> dict:
+    if config_path is None:
+        config_path = _find_default_config()
+        if config_path is None:
+            print("ERROR: Config file not specified and no default found.")
+            return None
+
+    config = _read_and_clean_config(config_path)
+    if config is None:
+        return None
 
     if not isinstance(config, dict):
         print(f"ERROR: Config file '{config_path}' must be a YAML dictionary.")
-        return 1
+        return None
 
     if "output_params" not in config:
         config["output_params"] = {}
@@ -427,24 +435,19 @@ def run_pipeline() -> int:
 
     if not validate_config(config):
         print("ERROR: Configuration validation failed.")
-        return 1
+        return None
 
-    # --- Parse Input/Flat Files and HDU ---
-    input_path, input_hdu = extract_hdu_spec(args.input_file)
-    flat_path, flat_hdu = (
-        extract_hdu_spec(args.flat_image) if args.flat_image else (None, None)
-    )
-    if args.hdu is not None:
-        input_hdu = args.hdu
+    return config
 
-    # --- Determine Default Output Path if Needed ---
+
+def determine_output_paths(args: argparse.Namespace, input_path: str) -> dict:
     out_map_path = args.output_map
     if out_map_path is None:
         input_basename = os.path.basename(str(input_path))
         if input_basename.endswith(".fits.fz"):
-            base = input_basename[:-8]  # Remove .fits.fz
+            base = input_basename[:-8]
         elif input_basename.endswith(".fits"):
-            base = input_basename[:-5]  # Remove .fits
+            base = input_basename[:-5]
         else:
             base = os.path.splitext(input_basename)[0]
         output_dir = os.path.dirname(str(input_path)) or "."
@@ -452,7 +455,6 @@ def run_pipeline() -> int:
         out_map_path = os.path.join(output_dir, f"{base}{default_suffix}")
         print(f"Output map path not specified, using default: {out_map_path}")
 
-    # --- Define Other Output Paths ---
     output_dir = os.path.dirname(out_map_path)
     base_out = os.path.splitext(os.path.basename(out_map_path))[0]
     out_mask_path = (
@@ -472,34 +474,6 @@ def run_pipeline() -> int:
     )
     out_weight_raw_path = args.output_weight_raw
 
-    # --- Open Input FITS ---
-    try:
-        hdul_input = fitsio.FITS(input_path, "r")
-        hdul_flat = fitsio.FITS(flat_path, "r") if flat_path else None
-    except OSError as e:
-        print(f"ERROR: Could not open input files: {e}")
-        return 1
-
-    # --- Handle HDU Selection ---
-    hdus_to_process = []
-    if input_hdu is not None:
-        if 0 <= input_hdu < len(hdul_input):
-            hdus_to_process = [input_hdu]
-        else:
-            print(f"ERROR: Specified HDU {input_hdu} not found.")
-            return 1
-    else:
-        # For fitsio, we assume all HDUs are image HDUs for now
-        hdus_to_process = list(range(len(hdul_input)))
-        if not hdus_to_process:
-            print("ERROR: No suitable Image HDUs found.")
-            return 1
-    print(f"Processing {len(hdus_to_process)} Image HDU(s): {hdus_to_process}")
-
-    # --- Prepare Output File Paths ---
-    # For fitsio, we'll handle file writing differently - create files as needed
-
-    # Initialize individual mask file paths as None
     individual_mask_paths = {}
     if args.individual_masks:
         individual_mask_paths = {
@@ -510,9 +484,205 @@ def run_pipeline() -> int:
             "streak": os.path.join(output_dir, f"{base_out}.streak.fits"),
         }
 
-    # --- Process HDUs ---
+    return {
+        "out_map_path": out_map_path,
+        "out_mask_path": out_mask_path,
+        "out_invvar_path": out_invvar_path,
+        "out_sky_path": out_sky_path,
+        "out_weight_raw_path": out_weight_raw_path,
+        "individual_mask_paths": individual_mask_paths,
+    }
+
+
+def open_fits_files(input_path: str, flat_path: str):
+    try:
+        hdul_input = fitsio.FITS(input_path, "r")
+        hdul_flat = fitsio.FITS(flat_path, "r") if flat_path else None
+        return hdul_input, hdul_flat
+    except OSError as e:
+        print(f"ERROR: Could not open input files: {e}")
+        return None, None
+
+
+def get_hdus_to_process(hdul_input, input_hdu: int) -> list:
+    if input_hdu is not None:
+        if 0 <= input_hdu < len(hdul_input):
+            return [input_hdu]
+        else:
+            print(f"ERROR: Specified HDU {input_hdu} not found.")
+            return []
+    else:
+        hdus = list(range(len(hdul_input)))
+        if not hdus:
+            print("ERROR: No suitable Image HDUs found.")
+        return hdus
+
+
+def extract_individual_masks(header_info: dict, mask_data):
+    shape = mask_data.shape if mask_data is not None else (0, 0)
+    if header_info and "individual_masks" in header_info:
+        individual_masks = header_info["individual_masks"]
+        bad_mask = (
+            individual_masks.get("bad", np.zeros(shape, dtype=bool))
+            if mask_data is not None
+            else np.array([])
+        )
+        sat_mask = (
+            individual_masks.get("sat", np.zeros(shape, dtype=bool))
+            if mask_data is not None
+            else np.array([])
+        )
+        cr_mask = (
+            individual_masks.get("cr", np.zeros(shape, dtype=bool))
+            if mask_data is not None
+            else np.array([])
+        )
+        obj_mask = (
+            individual_masks.get("obj", np.zeros(shape, dtype=bool))
+            if mask_data is not None
+            else np.array([])
+        )
+        streak_mask = (
+            individual_masks.get("streak", np.zeros(shape, dtype=bool))
+            if mask_data is not None
+            else np.array([])
+        )
+    else:
+        bad_mask = (
+            np.zeros(shape, dtype=bool) if mask_data is not None else np.array([])
+        )
+        sat_mask = (
+            np.zeros(shape, dtype=bool) if mask_data is not None else np.array([])
+        )
+        cr_mask = np.zeros(shape, dtype=bool) if mask_data is not None else np.array([])
+        obj_mask = (
+            np.zeros(shape, dtype=bool) if mask_data is not None else np.array([])
+        )
+        streak_mask = (
+            np.zeros(shape, dtype=bool) if mask_data is not None else np.array([])
+        )
+
+    return bad_mask, sat_mask, cr_mask, obj_mask, streak_mask
+
+
+def _store_individual_masks(
+    output_data,
+    i,
+    hdu_header,
+    hdu_name,
+    bad_mask,
+    sat_mask,
+    cr_mask,
+    obj_mask,
+    streak_mask,
+):
+    if i not in output_data:
+        output_data[i] = {}
+    output_data[i]["individual_masks"] = {
+        "bad": {
+            "data": bad_mask.astype(np.uint8),
+            "header": hdu_header,
+            "name": f"BAD_{hdu_name}",
+        },
+        "sat": {
+            "data": sat_mask.astype(np.uint8),
+            "header": hdu_header,
+            "name": f"SAT_{hdu_name}",
+        },
+        "cr": {
+            "data": cr_mask.astype(np.uint8),
+            "header": hdu_header,
+            "name": f"CR_{hdu_name}",
+        },
+        "obj": {
+            "data": obj_mask.astype(np.uint8),
+            "header": hdu_header,
+            "name": f"OBJ_{hdu_name}",
+        },
+        "streak": {
+            "data": streak_mask.astype(np.uint8),
+            "header": hdu_header,
+            "name": f"STREAK_{hdu_name}",
+        },
+    }
+
+
+def _assign_map_if_valid(output_data, i, key, data, header, hdu_name):
+    if data is not None:
+        if i not in output_data:
+            output_data[i] = {}
+        output_data[i][key] = {
+            "data": data,
+            "header": header,
+            "name": f"{key.upper()}_{hdu_name}",
+        }
+
+
+def _store_output_maps(
+    output_data,
+    i,
+    hdu_header,
+    hdu_name,
+    config,
+    confidence_map,
+    weight_map,
+    mask_data,
+    inv_var_data,
+    sky_map,
+    args,
+    bad_mask,
+    sat_mask,
+    cr_mask,
+    obj_mask,
+    streak_mask,
+    paths,
+):
+    if paths["out_map_path"]:
+        output_format = (
+            config.get("output_params", {}).get("output_map_format", "weight").lower()
+        )
+        map_data = confidence_map if output_format == "confidence" else weight_map
+        _assign_map_if_valid(output_data, i, "map", map_data, hdu_header, hdu_name)
+    if paths["out_mask_path"]:
+        _assign_map_if_valid(output_data, i, "mask", mask_data, hdu_header, hdu_name)
+    if paths["out_invvar_path"]:
+        _assign_map_if_valid(
+            output_data, i, "invvar", inv_var_data, hdu_header, hdu_name
+        )
+    if paths["out_sky_path"]:
+        _assign_map_if_valid(output_data, i, "sky", sky_map, hdu_header, hdu_name)
+    if paths["out_weight_raw_path"] and weight_map is not None:
+        if i not in output_data:
+            output_data[i] = {}
+        output_data[i]["weight_raw"] = {
+            "data": weight_map,
+            "header": hdu_header,
+            "name": f"WEIGHT_{hdu_name}",
+        }
+    if args.individual_masks and mask_data is not None:
+        _store_individual_masks(
+            output_data,
+            i,
+            hdu_header,
+            hdu_name,
+            bad_mask,
+            sat_mask,
+            cr_mask,
+            obj_mask,
+            streak_mask,
+        )
+
+
+def process_all_hdus(
+    hdus_to_process: list,
+    hdul_input,
+    hdul_flat,
+    config: dict,
+    paths: dict,
+    args: argparse.Namespace,
+) -> tuple:
     process_success_count = 0
-    output_data = {}  # Store output data for writing at the end
+    output_data = {}
 
     for i in hdus_to_process:
         try:
@@ -533,71 +703,16 @@ def run_pipeline() -> int:
             ) = result
             process_success_count += 1
 
-            # Extract individual masks from header_info
-            if header_info and "individual_masks" in header_info:
-                individual_masks = header_info["individual_masks"]
-                bad_mask = (
-                    individual_masks.get("bad", np.zeros_like(mask_data, dtype=bool))
-                    if mask_data is not None
-                    else np.array([])
-                )
-                sat_mask = (
-                    individual_masks.get("sat", np.zeros_like(mask_data, dtype=bool))
-                    if mask_data is not None
-                    else np.array([])
-                )
-                cr_mask = (
-                    individual_masks.get("cr", np.zeros_like(mask_data, dtype=bool))
-                    if mask_data is not None
-                    else np.array([])
-                )
-                obj_mask = (
-                    individual_masks.get("obj", np.zeros_like(mask_data, dtype=bool))
-                    if mask_data is not None
-                    else np.array([])
-                )
-                streak_mask = (
-                    individual_masks.get("streak", np.zeros_like(mask_data, dtype=bool))
-                    if mask_data is not None
-                    else np.array([])
-                )
-            else:
-                # Initialize empty masks if no individual masks data
-                shape = mask_data.shape if mask_data is not None else (0, 0)
-                bad_mask = (
-                    np.zeros(shape, dtype=bool)
-                    if mask_data is not None
-                    else np.array([])
-                )
-                sat_mask = (
-                    np.zeros(shape, dtype=bool)
-                    if mask_data is not None
-                    else np.array([])
-                )
-                cr_mask = (
-                    np.zeros(shape, dtype=bool)
-                    if mask_data is not None
-                    else np.array([])
-                )
-                obj_mask = (
-                    np.zeros(shape, dtype=bool)
-                    if mask_data is not None
-                    else np.array([])
-                )
-                streak_mask = (
-                    np.zeros(shape, dtype=bool)
-                    if mask_data is not None
-                    else np.array([])
-                )
+            bad_mask, sat_mask, cr_mask, obj_mask, streak_mask = (
+                extract_individual_masks(header_info, mask_data)
+            )
 
-            # Store output data for writing later
             hdu_name = (
                 getattr(hdu_sci, "name", f"HDU{i}")
                 if hasattr(hdu_sci, "name")
                 else f"HDU{i}"
             )
 
-            # Safely get the header
             try:
                 hdu_header = hdul_input[i].read_header()
             except Exception:
@@ -605,216 +720,181 @@ def run_pipeline() -> int:
             if hdu_header is None:
                 hdu_header = fitsio.FITSHDR()
 
-            # Store data for each output file
-            if out_map_path:
-                output_format = (
-                    config.get("output_params", {})
-                    .get("output_map_format", "weight")
-                    .lower()
-                )
-                map_data = (
-                    confidence_map if output_format == "confidence" else weight_map
-                )
-                if i not in output_data:
-                    output_data[i] = {}
-                output_data[i]["map"] = {
-                    "data": map_data,
-                    "header": hdu_header,
-                    "name": f"MAP_{hdu_name}",
-                }
-
-            if out_mask_path and mask_data is not None:
-                if i not in output_data:
-                    output_data[i] = {}
-                output_data[i]["mask"] = {
-                    "data": mask_data,
-                    "header": hdu_header,
-                    "name": f"MASK_{hdu_name}",
-                }
-
-            if out_invvar_path and inv_var_data is not None:
-                if i not in output_data:
-                    output_data[i] = {}
-                output_data[i]["invvar"] = {
-                    "data": inv_var_data,
-                    "header": hdu_header,
-                    "name": f"INVVAR_{hdu_name}",
-                }
-
-            if out_sky_path and sky_map is not None:
-                if i not in output_data:
-                    output_data[i] = {}
-                output_data[i]["sky"] = {
-                    "data": sky_map,
-                    "header": hdu_header,
-                    "name": f"SKY_{hdu_name}",
-                }
-
-            if out_weight_raw_path and weight_map is not None:
-                if i not in output_data:
-                    output_data[i] = {}
-                output_data[i]["weight_raw"] = {
-                    "data": weight_map,
-                    "header": hdu_header,
-                    "name": f"WEIGHT_{hdu_name}",
-                }
-
-            # Store individual masks if requested
-            if args.individual_masks and mask_data is not None:
-                if i not in output_data:
-                    output_data[i] = {}
-                output_data[i]["individual_masks"] = {
-                    "bad": {
-                        "data": bad_mask.astype(np.uint8),
-                        "header": hdu_header,
-                        "name": f"BAD_{hdu_name}",
-                    },
-                    "sat": {
-                        "data": sat_mask.astype(np.uint8),
-                        "header": hdu_header,
-                        "name": f"SAT_{hdu_name}",
-                    },
-                    "cr": {
-                        "data": cr_mask.astype(np.uint8),
-                        "header": hdu_header,
-                        "name": f"CR_{hdu_name}",
-                    },
-                    "obj": {
-                        "data": obj_mask.astype(np.uint8),
-                        "header": hdu_header,
-                        "name": f"OBJ_{hdu_name}",
-                    },
-                    "streak": {
-                        "data": streak_mask.astype(np.uint8),
-                        "header": hdu_header,
-                        "name": f"STREAK_{hdu_name}",
-                    },
-                }
+            _store_output_maps(
+                output_data,
+                i,
+                hdu_header,
+                hdu_name,
+                config,
+                confidence_map,
+                weight_map,
+                mask_data,
+                inv_var_data,
+                sky_map,
+                args,
+                bad_mask,
+                sat_mask,
+                cr_mask,
+                obj_mask,
+                streak_mask,
+                paths,
+            )
 
         except Exception as e:
             import traceback
 
             print(f"FATAL ERROR processing HDU {i}: {e}\n{traceback.format_exc()}")
 
-    # --- Write Output Files ---
-    if process_success_count > 0:
-        print("\nWriting output files...")
-        try:
-            # Write primary map file
-            if out_map_path and output_data:
-                # Create a new FITS file and write the primary HDU
-                primary_data = hdul_input[0].read() if len(hdul_input) > 0 else None
-                fitsio.write(out_map_path, primary_data, clobber=True)
-                # Append additional HDUs
-                with fitsio.FITS(out_map_path, "rw") as f_out:
-                    for i in sorted(output_data.keys()):
-                        if "map" in output_data[i]:
-                            f_out.write(
-                                output_data[i]["map"]["data"],
-                                header=output_data[i]["map"]["header"],
-                                extname=output_data[i]["map"]["name"],
-                            )
-                print(f"  Map file written: {out_map_path}")
+    return process_success_count, output_data
 
-            # Write mask file
-            if out_mask_path and output_data:
-                primary_data = hdul_input[0].read() if len(hdul_input) > 0 else None
-                fitsio.write(out_mask_path, primary_data, clobber=True)
-                with fitsio.FITS(out_mask_path, "rw") as f_out:
-                    for i in sorted(output_data.keys()):
-                        if "mask" in output_data[i]:
-                            f_out.write(
-                                output_data[i]["mask"]["data"],
-                                header=output_data[i]["mask"]["header"],
-                                extname=output_data[i]["mask"]["name"],
-                            )
-                print(f"  Mask file written: {out_mask_path}")
 
-            # Write inverse variance file
-            if out_invvar_path and output_data:
-                primary_data = hdul_input[0].read() if len(hdul_input) > 0 else None
-                fitsio.write(out_invvar_path, primary_data, clobber=True)
-                with fitsio.FITS(out_invvar_path, "rw") as f_out:
-                    for i in sorted(output_data.keys()):
-                        if "invvar" in output_data[i]:
-                            f_out.write(
-                                output_data[i]["invvar"]["data"],
-                                header=output_data[i]["invvar"]["header"],
-                                extname=output_data[i]["invvar"]["name"],
-                            )
-                print(f"  Inverse variance file written: {out_invvar_path}")
+def write_single_output_file(out_path: str, output_data: dict, hdul_input, key: str):
+    primary_data = hdul_input[0].read() if len(hdul_input) > 0 else None
+    fitsio.write(out_path, primary_data, clobber=True)
+    with fitsio.FITS(out_path, "rw") as f_out:
+        for i in sorted(output_data.keys()):
+            if key in output_data[i]:
+                f_out.write(
+                    output_data[i][key]["data"],
+                    header=output_data[i][key]["header"],
+                    extname=output_data[i][key]["name"],
+                )
 
-            # Write sky file
-            if out_sky_path and output_data:
-                primary_data = hdul_input[0].read() if len(hdul_input) > 0 else None
-                fitsio.write(out_sky_path, primary_data, clobber=True)
-                with fitsio.FITS(out_sky_path, "rw") as f_out:
-                    for i in sorted(output_data.keys()):
-                        if "sky" in output_data[i]:
-                            f_out.write(
-                                output_data[i]["sky"]["data"],
-                                header=output_data[i]["sky"]["header"],
-                                extname=output_data[i]["sky"]["name"],
-                            )
-                print(f"  Sky file written: {out_sky_path}")
 
-            # Write raw weight file
-            if out_weight_raw_path and output_data:
-                primary_data = hdul_input[0].read() if len(hdul_input) > 0 else None
-                fitsio.write(out_weight_raw_path, primary_data, clobber=True)
-                with fitsio.FITS(out_weight_raw_path, "rw") as f_out:
-                    for i in sorted(output_data.keys()):
-                        if "weight_raw" in output_data[i]:
-                            f_out.write(
-                                output_data[i]["weight_raw"]["data"],
-                                header=output_data[i]["weight_raw"]["header"],
-                                extname=output_data[i]["weight_raw"]["name"],
-                            )
-                print(f"  Raw weight file written: {out_weight_raw_path}")
-
-            # Write individual mask files if requested
-            if args.individual_masks and output_data:
-                for mask_type in ["bad", "sat", "cr", "obj", "streak"]:
-                    mask_path = individual_mask_paths.get(mask_type)
-                    if mask_path:
-                        primary_data = (
-                            hdul_input[0].read() if len(hdul_input) > 0 else None
+def write_individual_mask_files(
+    individual_mask_paths: dict, output_data: dict, hdul_input
+):
+    for mask_type in ["bad", "sat", "cr", "obj", "streak"]:
+        mask_path = individual_mask_paths.get(mask_type)
+        if mask_path:
+            primary_data = hdul_input[0].read() if len(hdul_input) > 0 else None
+            fitsio.write(mask_path, primary_data, clobber=True)
+            with fitsio.FITS(mask_path, "rw") as f_out:
+                for i in sorted(output_data.keys()):
+                    if (
+                        "individual_masks" in output_data[i]
+                        and mask_type in output_data[i]["individual_masks"]
+                    ):
+                        mask_info = output_data[i]["individual_masks"][mask_type]
+                        f_out.write(
+                            mask_info["data"],
+                            header=mask_info["header"],
+                            extname=mask_info["name"],
                         )
-                        fitsio.write(mask_path, primary_data, clobber=True)
-                        with fitsio.FITS(mask_path, "rw") as f_out:
-                            for i in sorted(output_data.keys()):
-                                if (
-                                    "individual_masks" in output_data[i]
-                                    and mask_type in output_data[i]["individual_masks"]
-                                ):
-                                    mask_info = output_data[i]["individual_masks"][
-                                        mask_type
-                                    ]
-                                    f_out.write(
-                                        mask_info["data"],
-                                        header=mask_info["header"],
-                                        extname=mask_info["name"],
-                                    )
-                        print(
-                            f"  {mask_type.capitalize()} mask file written: {mask_path}"
-                        )
+            print(f"  {mask_type.capitalize()} mask file written: {mask_path}")
 
-        except OSError as e:
-            print(f"ERROR: Failed to write output files: {e}")
-            import traceback
 
-            traceback.print_exc()
-            return 1
-    else:
+def write_all_output_files(
+    paths: dict, output_data: dict, hdul_input, process_success_count: int
+) -> bool:
+    if process_success_count == 0:
         print("\nNo HDUs processed successfully. No output files written.")
+        return True
 
-    # --- Cleanup ---
+    print("\nWriting output files...")
+    try:
+        if paths["out_map_path"] and output_data:
+            write_single_output_file(
+                paths["out_map_path"], output_data, hdul_input, "map"
+            )
+            print(f"  Map file written: {paths['out_map_path']}")
+
+        if paths["out_mask_path"] and output_data:
+            write_single_output_file(
+                paths["out_mask_path"], output_data, hdul_input, "mask"
+            )
+            print(f"  Mask file written: {paths['out_mask_path']}")
+
+        if paths["out_invvar_path"] and output_data:
+            write_single_output_file(
+                paths["out_invvar_path"], output_data, hdul_input, "invvar"
+            )
+            print(f"  Inverse variance file written: {paths['out_invvar_path']}")
+
+        if paths["out_sky_path"] and output_data:
+            write_single_output_file(
+                paths["out_sky_path"], output_data, hdul_input, "sky"
+            )
+            print(f"  Sky file written: {paths['out_sky_path']}")
+
+        if paths["out_weight_raw_path"] and output_data:
+            write_single_output_file(
+                paths["out_weight_raw_path"], output_data, hdul_input, "weight_raw"
+            )
+            print(f"  Raw weight file written: {paths['out_weight_raw_path']}")
+
+        if paths["individual_mask_paths"] and output_data:
+            write_individual_mask_files(
+                paths["individual_mask_paths"], output_data, hdul_input
+            )
+
+        return True
+    except OSError as e:
+        print(f"ERROR: Failed to write output files: {e}")
+        import traceback
+
+        traceback.print_exc()
+        return False
+
+
+def _cleanup_hdul(hdul_input, hdul_flat):
     if hdul_input:
         hdul_input.close()
     if hdul_flat:
         hdul_flat.close()
+
+
+def run_pipeline() -> int:
+    """Main function to parse arguments and run the pipeline."""
+    args = parse_arguments()
+
+    print("Starting WeightMask Pipeline...")
+    start_pipeline_time = time.time()
+
+    if not validate_input_files(args):
+        return 1
+
+    config = load_configuration(args.config)
+    if config is None:
+        return 1
+
+    input_path, input_hdu = extract_hdu_spec(args.input_file)
+    flat_path, flat_hdu = (
+        extract_hdu_spec(args.flat_image) if args.flat_image else (None, None)
+    )
+    if args.hdu is not None:
+        input_hdu = args.hdu
+
+    paths = determine_output_paths(args, input_path)
+
+    hdul_input, hdul_flat = open_fits_files(input_path, flat_path)
+    if hdul_input is None:
+        return 1
+
+    hdus_to_process = get_hdus_to_process(hdul_input, input_hdu)
+    if not hdus_to_process:
+        _cleanup_hdul(hdul_input, hdul_flat)
+        return 1
+    print(f"Processing {len(hdus_to_process)} Image HDU(s): {hdus_to_process}")
+
+    process_success_count, output_data = process_all_hdus(
+        hdus_to_process, hdul_input, hdul_flat, config, paths, args
+    )
+
+    success = write_all_output_files(
+        paths, output_data, hdul_input, process_success_count
+    )
+
+    _cleanup_hdul(hdul_input, hdul_flat)
+
+    import warnings
+
     warnings.filterwarnings("default", category=UserWarning)
     warnings.filterwarnings("default", category=RuntimeWarning)
+
+    if not success:
+        return 1
+
     print(f"\nPipeline finished in {time.time() - start_pipeline_time:.2f} seconds.")
     return 0
 
