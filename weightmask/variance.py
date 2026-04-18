@@ -24,26 +24,63 @@ def _calculate_empirical_noise_params(
     patch_variances = []
     patch_medians = []
 
-    # Iterate over patches
-    for y in range(0, img_shape[0], patch_size):
-        for x in range(0, img_shape[1], patch_size):
+    ny, nx = img_shape
+    ny_trunc = (ny // patch_size) * patch_size
+    nx_trunc = (nx // patch_size) * patch_size
+    n_patches_y = ny_trunc // patch_size
+    n_patches_x = nx_trunc // patch_size
+
+    # ⚡ Bolt: Vectorize patch calculation by reshaping views to avoid explicit Python loops over coordinates
+    if n_patches_y > 0 and n_patches_x > 0:
+        sci_blocks = (
+            sci_data[:ny_trunc, :nx_trunc]
+            .reshape(n_patches_y, patch_size, n_patches_x, patch_size)
+            .transpose(0, 2, 1, 3)
+            .reshape(-1, patch_size * patch_size)
+        )
+        mask_blocks = (
+            obj_mask[:ny_trunc, :nx_trunc]
+            .reshape(n_patches_y, patch_size, n_patches_x, patch_size)
+            .transpose(0, 2, 1, 3)
+            .reshape(-1, patch_size * patch_size)
+        )
+
+        # Replace masked pixels with NaNs for vectorized statistical functions
+        sci_blocks_float = np.where(mask_blocks, np.nan, sci_blocks)
+
+        valid_counts = np.sum(~mask_blocks, axis=1)
+        valid_mask = valid_counts >= 100
+
+        valid_sci_blocks = sci_blocks_float[valid_mask]
+
+        if valid_sci_blocks.shape[0] > 0:
+            patch_medians_arr = np.nanmedian(valid_sci_blocks, axis=1)
+            # Vectorized MAD calculation using nanmedian
+            abs_dev = np.abs(valid_sci_blocks - patch_medians_arr[:, np.newaxis])
+            patch_stds_arr = np.nanmedian(abs_dev, axis=1) * 1.4826022185056018
+
+            valid_var_mask = patch_stds_arr > 1e-6
+            patch_variances.extend((patch_stds_arr[valid_var_mask] ** 2).tolist())
+            patch_medians.extend(patch_medians_arr[valid_var_mask].tolist())
+
+    # Process any remaining edge patches
+    for y in range(0, ny, patch_size):
+        for x in range(0, nx, patch_size):
+            if y < ny_trunc and x < nx_trunc:
+                continue
+
             patch_slice = (slice(y, y + patch_size), slice(x, x + patch_size))
             patch_data = sci_data[patch_slice]
             patch_mask = obj_mask[patch_slice]
 
-            # Use only non-masked pixels in the patch
             valid_pixels = patch_data[~patch_mask]
-
-            # Ensure enough valid pixels are available
             if valid_pixels.size < 100:
                 continue
 
-            # Calculate robust statistics for the patch
             patch_median = np.median(valid_pixels)
-            # Use Median Absolute Deviation (MAD) for a robust standard deviation
             patch_std_robust = mad_std(valid_pixels, ignore_nan=True)
 
-            if patch_std_robust > 1e-6:  # Avoid patches with zero variance
+            if patch_std_robust > 1e-6:
                 patch_variances.append(patch_std_robust**2)
                 patch_medians.append(patch_median)
 
