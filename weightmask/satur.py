@@ -1,7 +1,7 @@
 import numpy as np
 import warnings
 
-import scipy.signal
+from scipy.signal import find_peaks
 import scipy.ndimage
 
 
@@ -91,7 +91,7 @@ def estimate_saturation_robust_clump(data, min_adu=None, max_adu=None):
         # Expected prominence is at least a few percent of the max smoothed count in this tail.
         min_prominence = max(2.0, np.max(smoothed_counts) * 0.05)
 
-        peaks, properties = scipy.signal.find_peaks(
+        peaks, properties = find_peaks(
             smoothed_counts, prominence=min_prominence
         )
 
