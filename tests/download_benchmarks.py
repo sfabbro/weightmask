@@ -17,9 +17,7 @@ def get_benchmarks():
 
     # 1. CFHT MegaCam public science exposure (MEF)
     # 1043132p is a known deep field observation
-    megacam_url = (
-        "https://www.cadc-ccda.hia-iha.nrc-cnrc.gc.ca/data/pub/CFHT/1043132p.fits.fz"
-    )
+    megacam_url = "https://www.cadc-ccda.hia-iha.nrc-cnrc.gc.ca/data/pub/CFHT/1043132p.fits.fz"
     download_file(megacam_url, os.path.join(base_dir, "cfht_megacam_1043132p.fits.fz"))
 
     print("\nBenchmark downloads complete.")

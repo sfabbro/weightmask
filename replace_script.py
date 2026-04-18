@@ -224,9 +224,17 @@ new_main_func = """def _detect_streaks_frangi(data_sub, bkg_rms_map, existing_ma
     return streak_mask_final_bool
 """
 
-pattern = r"def _detect_streaks_frangi\(data_sub, bkg_rms_map, existing_mask, config\):.*?return streak_mask_final_bool\n"
+pattern = (
+    r"def _detect_streaks_frangi\(data_sub, bkg_rms_map, existing_mask, config\):.*?return streak_mask_final_bool\n"
+)
 
-new_content = re.sub(pattern, helpers_code.replace("def _detect_streaks_frangi(data_sub, bkg_rms_map, existing_mask, config):\n", "") + new_main_func, content, flags=re.DOTALL)
+new_content = re.sub(
+    pattern,
+    helpers_code.replace("def _detect_streaks_frangi(data_sub, bkg_rms_map, existing_mask, config):\n", "")
+    + new_main_func,
+    content,
+    flags=re.DOTALL,
+)
 
 with open("weightmask/streaks.py", "w") as f:
     f.write(new_content)

@@ -142,9 +142,7 @@ def detect_objects(data_sub, bkg_rms_map, existing_mask, config):
                                 continue
 
             if clean_config.get("dynamic_halo_scaling", True):
-                print(
-                    f"    Halo scaling multiplier range: 1.0x to {np.max(scale_multiplier):.2f}x"
-                )
+                print(f"    Halo scaling multiplier range: 1.0x to {np.max(scale_multiplier):.2f}x")
 
             # --- 2. Diffraction Spike Masking ---
             if clean_config.get("spike_enable", True):
@@ -161,32 +159,21 @@ def detect_objects(data_sub, bkg_rms_map, existing_mask, config):
                     h, w = object_mask.shape
                     for obj in objects[bright_mask]:
                         # Scale spike length slightly by flux
-                        s_len = int(
-                            spike_length_base
-                            * (1.0 + 0.2 * np.log10(obj["flux"] / spike_thresh))
-                        )
+                        s_len = int(spike_length_base * (1.0 + 0.2 * np.log10(obj["flux"] / spike_thresh)))
                         xc, yc = int(obj["x"] + 0.5), int(obj["y"] + 0.5)
 
                         hw = spike_width // 2
 
                         # Horizontal spike
                         xstart, xend = max(0, xc - s_len), min(w - 1, xc + s_len)
-                        object_mask[
-                            max(0, yc - hw) : min(h, yc + hw + 1), xstart : xend + 1
-                        ] = True
+                        object_mask[max(0, yc - hw) : min(h, yc + hw + 1), xstart : xend + 1] = True
 
                         # Vertical spike
                         ystart, yend = max(0, yc - s_len), min(h - 1, yc + s_len)
-                        object_mask[
-                            ystart : yend + 1, max(0, xc - hw) : min(w, xc + hw + 1)
-                        ] = True
+                        object_mask[ystart : yend + 1, max(0, xc - hw) : min(w, xc + hw + 1)] = True
 
             # Only return newly detected pixels (not already in existing_mask)
-            m_orig = (
-                existing_mask.astype(bool)
-                if existing_mask is not None
-                else np.zeros_like(object_mask)
-            )
+            m_orig = existing_mask.astype(bool) if existing_mask is not None else np.zeros_like(object_mask)
             obj_add_mask = object_mask & (~m_orig)
             return obj_add_mask
 

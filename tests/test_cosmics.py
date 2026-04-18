@@ -1,16 +1,16 @@
-import numpy as np
 import unittest
-
-from weightmask.cosmics import detect_cosmic_rays
 
 # Try to find astroscrappy
 from importlib.util import find_spec
+
+import numpy as np
+
+from weightmask.cosmics import detect_cosmic_rays
 
 ASTROSCRAPPY_AVAILABLE = find_spec("astroscrappy") is not None
 
 
 class TestCosmics(unittest.TestCase):
-
     def test_get_psf_peakiness(self):
         """Test the calculation of PSF peakiness."""
         from weightmask.cosmics import _get_psf_peakiness
@@ -50,17 +50,13 @@ class TestCosmics(unittest.TestCase):
         # Skip test if astroscrappy is not available
         if not ASTROSCRAPPY_AVAILABLE:
             # Test that function handles missing astroscrappy gracefully
-            mask = detect_cosmic_rays(
-                sci_data, existing_mask, saturation_level, gain, read_noise, config
-            )
+            mask = detect_cosmic_rays(sci_data, existing_mask, saturation_level, gain, read_noise, config)
             # Should return empty mask when astroscrappy is not available
             self.assertEqual(np.sum(mask), 0)
             return
 
         # If astroscrappy is available, run the full test
-        mask = detect_cosmic_rays(
-            sci_data, existing_mask, saturation_level, gain, read_noise, config
-        )
+        mask = detect_cosmic_rays(sci_data, existing_mask, saturation_level, gain, read_noise, config)
 
         # Check that we got a result
         self.assertIsNotNone(mask)
@@ -87,17 +83,13 @@ class TestCosmics(unittest.TestCase):
         # Skip test if astroscrappy is not available
         if not ASTROSCRAPPY_AVAILABLE:
             # Test that function handles missing astroscrappy gracefully
-            mask = detect_cosmic_rays(
-                sci_data, existing_mask, saturation_level, gain, read_noise, config
-            )
+            mask = detect_cosmic_rays(sci_data, existing_mask, saturation_level, gain, read_noise, config)
             # Should return empty mask when astroscrappy is not available
             self.assertEqual(np.sum(mask), 0)
             return
 
         # If astroscrappy is available, run the full test
-        mask = detect_cosmic_rays(
-            sci_data, existing_mask, saturation_level, gain, read_noise, config
-        )
+        mask = detect_cosmic_rays(sci_data, existing_mask, saturation_level, gain, read_noise, config)
 
         # Check that existing masked pixels are not in the result
         self.assertFalse(mask[10, 10])
@@ -119,9 +111,7 @@ class TestCosmics(unittest.TestCase):
 
         # Test behavior when astroscrappy is not available
         if not ASTROSCRAPPY_AVAILABLE:
-            mask = detect_cosmic_rays(
-                sci_data, existing_mask, saturation_level, gain, read_noise, config
-            )
+            mask = detect_cosmic_rays(sci_data, existing_mask, saturation_level, gain, read_noise, config)
             # Should return empty mask when astroscrappy is not available
             self.assertEqual(np.sum(mask), 0)
 

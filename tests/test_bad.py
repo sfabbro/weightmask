@@ -1,5 +1,7 @@
-import numpy as np
 import unittest
+
+import numpy as np
+
 from weightmask.bad import detect_bad_pixels
 
 

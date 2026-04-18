@@ -1,11 +1,13 @@
-import numpy as np
 import unittest
 import warnings
+
+import numpy as np
+
 from weightmask.background import estimate_background
-from weightmask.variance import _rescale_variance_robust, _unbias_variance
 from weightmask.cosmics import detect_cosmic_rays
-from weightmask.streaks import detect_streaks
 from weightmask.satur import grow_bleed_trails
+from weightmask.streaks import detect_streaks
+from weightmask.variance import _rescale_variance_robust, _unbias_variance
 
 
 class TestRobustFeatures(unittest.TestCase):

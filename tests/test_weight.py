@@ -1,5 +1,7 @@
-import numpy as np
 import unittest
+
+import numpy as np
+
 from weightmask.weight import generate_weight_and_confidence
 
 
@@ -24,9 +26,7 @@ class TestWeight(unittest.TestCase):
             },
         }
 
-        weight_map, confidence_map = generate_weight_and_confidence(
-            inv_variance_map, final_mask_int, config
-        )
+        weight_map, confidence_map = generate_weight_and_confidence(inv_variance_map, final_mask_int, config)
 
         # Check that we got results
         self.assertIsNotNone(weight_map)
@@ -69,9 +69,7 @@ class TestWeight(unittest.TestCase):
             },
         }
 
-        weight_map, confidence_map = generate_weight_and_confidence(
-            inv_variance_map, final_mask_int, config
-        )
+        weight_map, confidence_map = generate_weight_and_confidence(inv_variance_map, final_mask_int, config)
 
         # Check that we got results
         self.assertIsNotNone(weight_map)
@@ -79,9 +77,7 @@ class TestWeight(unittest.TestCase):
 
         # Check that detected objects are masked when configured to do so (if we have a result)
         if weight_map is not None:
-            self.assertEqual(
-                weight_map[10, 10], 0.0
-            )  # DETECTED object should be masked
+            self.assertEqual(weight_map[10, 10], 0.0)  # DETECTED object should be masked
 
     def test_generate_weight_and_confidence_no_positive_weights(self):
         """Test weight and confidence map generation with no positive weights."""
@@ -100,9 +96,7 @@ class TestWeight(unittest.TestCase):
             },
         }
 
-        weight_map, confidence_map = generate_weight_and_confidence(
-            inv_variance_map, final_mask_int, config
-        )
+        weight_map, confidence_map = generate_weight_and_confidence(inv_variance_map, final_mask_int, config)
 
         # Check that we got results
         self.assertIsNotNone(weight_map)

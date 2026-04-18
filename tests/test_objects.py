@@ -1,5 +1,7 @@
-import numpy as np
 import unittest
+
+import numpy as np
+
 from weightmask.objects import detect_objects
 
 
@@ -32,9 +34,7 @@ class TestObjects(unittest.TestCase):
             "spike_enable": False,
         }
 
-        obj_mask = detect_objects(
-            self.data_sub, self.bkg_rms_map, self.existing_mask, config
-        )
+        obj_mask = detect_objects(self.data_sub, self.bkg_rms_map, self.existing_mask, config)
 
         # Check that objects were detected
         self.assertTrue(np.sum(obj_mask) > 0)
@@ -58,9 +58,7 @@ class TestObjects(unittest.TestCase):
             "spike_width": 3,
         }
 
-        obj_mask = detect_objects(
-            self.data_sub, self.bkg_rms_map, self.existing_mask, config
-        )
+        obj_mask = detect_objects(self.data_sub, self.bkg_rms_map, self.existing_mask, config)
 
         self.assertTrue(np.sum(obj_mask) > 0)
         self.assertTrue(obj_mask[50, 50])
@@ -87,9 +85,7 @@ class TestObjects(unittest.TestCase):
             "spike_enable": False,
         }
 
-        obj_mask = detect_objects(
-            self.data_sub, self.bkg_rms_map, self.existing_mask, config
-        )
+        obj_mask = detect_objects(self.data_sub, self.bkg_rms_map, self.existing_mask, config)
 
         self.assertTrue(np.sum(obj_mask) > 0)
         self.assertTrue(obj_mask[25, 25])
@@ -128,9 +124,7 @@ class TestObjects(unittest.TestCase):
             "min_area": 5,
         }
 
-        obj_mask = detect_objects(
-            self.data_sub, self.bkg_rms_map, self.existing_mask, config
-        )
+        obj_mask = detect_objects(self.data_sub, self.bkg_rms_map, self.existing_mask, config)
 
         self.assertIsInstance(obj_mask, np.ndarray)
         self.assertEqual(obj_mask.dtype, bool)
@@ -149,9 +143,7 @@ class TestObjects(unittest.TestCase):
         existing_mask = np.zeros(self.shape, dtype=bool)
         existing_mask[50, 50] = True
 
-        obj_mask = detect_objects(
-            self.data_sub, self.bkg_rms_map, existing_mask, config
-        )
+        obj_mask = detect_objects(self.data_sub, self.bkg_rms_map, existing_mask, config)
 
         # The star is detected, but the center pixel shouldn't be in the *new* mask
         self.assertFalse(obj_mask[50, 50])

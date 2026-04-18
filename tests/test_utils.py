@@ -1,6 +1,8 @@
-import numpy as np
 import unittest
-from weightmask.utils import extract_hdu_spec, create_binary_mask, clean_config_dict
+
+import numpy as np
+
+from weightmask.utils import clean_config_dict, create_binary_mask, extract_hdu_spec
 
 
 class TestUtils(unittest.TestCase):
@@ -55,8 +57,16 @@ class TestUtils(unittest.TestCase):
     def test_clean_config_dict_booleans(self):
         """Test clean_config_dict with boolean strings."""
         config = {
-            "t1": "true", "t2": "True", "t3": "TRUE", "t4": "yes", "t5": "on",
-            "f1": "false", "f2": "False", "f3": "FALSE", "f4": "no", "f5": "off"
+            "t1": "true",
+            "t2": "True",
+            "t3": "TRUE",
+            "t4": "yes",
+            "t5": "on",
+            "f1": "false",
+            "f2": "False",
+            "f3": "FALSE",
+            "f4": "no",
+            "f5": "off",
         }
         cleaned = clean_config_dict(config)
         for i in range(1, 6):
@@ -65,14 +75,7 @@ class TestUtils(unittest.TestCase):
 
     def test_clean_config_dict_numbers(self):
         """Test clean_config_dict with numeric strings."""
-        config = {
-            "int1": "42",
-            "int2": "-10",
-            "float1": "3.14",
-            "float2": "-0.001",
-            "sci1": "1e-5",
-            "sci2": "2.5E4"
-        }
+        config = {"int1": "42", "int2": "-10", "float1": "3.14", "float2": "-0.001", "sci1": "1e-5", "sci2": "2.5E4"}
         cleaned = clean_config_dict(config)
         self.assertEqual(cleaned["int1"], 42)
         self.assertEqual(cleaned["int2"], -10)
@@ -86,7 +89,7 @@ class TestUtils(unittest.TestCase):
         config = {
             "s1": "hello",
             "s2": "a longer string",
-            "s3": "123a" # Not fully numeric
+            "s3": "123a",  # Not fully numeric
         }
         cleaned = clean_config_dict(config)
         self.assertEqual(cleaned["s1"], "hello")
@@ -95,27 +98,13 @@ class TestUtils(unittest.TestCase):
 
     def test_clean_config_dict_other_types(self):
         """Test clean_config_dict with non-string types."""
-        config = {
-            "b1": True,
-            "b2": False,
-            "i1": 100,
-            "f1": 2.718,
-            "n1": None
-        }
+        config = {"b1": True, "b2": False, "i1": 100, "f1": 2.718, "n1": None}
         cleaned = clean_config_dict(config)
         self.assertEqual(cleaned, config)
 
     def test_clean_config_dict_nested_dict(self):
         """Test clean_config_dict with nested dictionaries."""
-        config = {
-            "level1": {
-                "val_str": "123",
-                "val_bool": "true",
-                "level2": {
-                    "val_float": "1.23"
-                }
-            }
-        }
+        config = {"level1": {"val_str": "123", "val_bool": "true", "level2": {"val_float": "1.23"}}}
         cleaned = clean_config_dict(config)
         self.assertEqual(cleaned["level1"]["val_str"], 123)
         self.assertTrue(cleaned["level1"]["val_bool"])
@@ -125,7 +114,7 @@ class TestUtils(unittest.TestCase):
         """Test clean_config_dict with lists."""
         config = {
             "list1": ["1", "true", "3.14", "hello", {"nested": "42"}],
-            "list2": [1, True, 3.14] # Already typed
+            "list2": [1, True, 3.14],  # Already typed
         }
         cleaned = clean_config_dict(config)
         self.assertEqual(cleaned["list1"], [1, True, 3.14, "hello", {"nested": 42}])

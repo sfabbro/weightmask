@@ -1,6 +1,7 @@
 def _apply_frangi_filter(tophat_img, sigmas, black_ridges, block_size, pad, img_rows, img_cols):
-    import warnings
     import concurrent.futures
+    import warnings
+
     import numpy as np
     from skimage.filters import frangi
 
@@ -8,7 +9,9 @@ def _apply_frangi_filter(tophat_img, sigmas, black_ridges, block_size, pad, img_
     ridge_map = np.zeros_like(tophat_img)
 
     if img_rows > block_size or img_cols > block_size:
-        print(f"    Image is large ({img_rows}x{img_cols}). Using parallel block processing (size={block_size}, pad={pad}).")
+        print(
+            f"    Image is large ({img_rows}x{img_cols}). Using parallel block processing (size={block_size}, pad={pad})."
+        )
 
         def process_block(r, c):
             r_start_pad = max(0, r - pad)
@@ -49,6 +52,7 @@ def _apply_frangi_filter(tophat_img, sigmas, black_ridges, block_size, pad, img_
 
     return ridge_map
 
+
 def _calculate_hysteresis_thresholds(cfg, tophat_img, ridge_map, existing_mask):
     import numpy as np
 
@@ -85,6 +89,7 @@ def _calculate_hysteresis_thresholds(cfg, tophat_img, ridge_map, existing_mask):
 
     return low_thresh, high_thresh
 
+
 def _filter_streak_regions(hyst_mask, min_area, existing_mask, data_sub_shape):
     import numpy as np
     from skimage.measure import label, regionprops
@@ -106,12 +111,7 @@ def _filter_streak_regions(hyst_mask, min_area, existing_mask, data_sub_shape):
             coords = region.coords
             valid_rows = coords[:, 0]
             valid_cols = coords[:, 1]
-            idx = (
-                (valid_rows >= 0)
-                & (valid_rows < img_rows)
-                & (valid_cols >= 0)
-                & (valid_cols < img_cols)
-            )
+            idx = (valid_rows >= 0) & (valid_rows < img_rows) & (valid_cols >= 0) & (valid_cols < img_cols)
             r_mask = existing_mask[valid_rows[idx], valid_cols[idx]]
             if np.sum(r_mask) > 0.5 * region.area:
                 continue
@@ -126,12 +126,7 @@ def _filter_streak_regions(hyst_mask, min_area, existing_mask, data_sub_shape):
             coords = region.coords
             valid_rows = coords[:, 0]
             valid_cols = coords[:, 1]
-            idx = (
-                (valid_rows >= 0)
-                & (valid_rows < img_rows)
-                & (valid_cols >= 0)
-                & (valid_cols < img_cols)
-            )
+            idx = (valid_rows >= 0) & (valid_rows < img_rows) & (valid_cols >= 0) & (valid_cols < img_cols)
             streak_core_mask[valid_rows[idx], valid_cols[idx]] = True
 
     print(f"    Validated {num_valid_streaks} regions as streaks based on length.")

@@ -3,25 +3,27 @@
 WeightMask CLI using fitsio instead of astropy.io.fits for better performance with MEF files.
 """
 
+import argparse
 import os
 import time
-import argparse
-import yaml
+from typing import Optional, Tuple
+
 import fitsio
 import numpy as np
-from typing import Optional, Tuple
+import yaml
+
+from . import MASK_BITS, MASK_DTYPE  # Import from __init__.py
+from .background import estimate_background
 
 # Import from other modules within the package using relative imports
 from .bad import detect_bad_pixels
-from .satur import detect_saturated_pixels, grow_bleed_trails
 from .cosmics import detect_cosmic_rays
+from .objects import detect_objects
+from .satur import detect_saturated_pixels, grow_bleed_trails
 from .streaks import detect_streaks
-from .background import estimate_background
+from .utils import clean_config_dict, extract_hdu_spec
 from .variance import calculate_inverse_variance
 from .weight import generate_weight_and_confidence
-from .objects import detect_objects
-from .utils import extract_hdu_spec, clean_config_dict
-from . import MASK_BITS, MASK_DTYPE  # Import from __init__.py
 
 
 def validate_fits_file(file_path: str) -> bool:
@@ -77,11 +79,7 @@ def process_hdu(
 ]:
     """Processes a single Science HDU to generate all mask and map products."""
     hdu_start_time = time.time()
-    hdu_name = (
-        getattr(hdu_sci, "name", f"HDU{hdu_index}")
-        if hasattr(hdu_sci, "name")
-        else f"HDU{hdu_index}"
-    )
+    hdu_name = getattr(hdu_sci, "name", f"HDU{hdu_index}") if hasattr(hdu_sci, "name") else f"HDU{hdu_index}"
     print(f"\n--- Processing HDU {hdu_index} ({hdu_name}) ---")
 
     # For fitsio, we need to read the data and header
@@ -134,9 +132,7 @@ def process_hdu(
             if not np.isfinite(sci_data_tile).any():
                 continue
 
-            flat_mask_bool_tile = detect_bad_pixels(
-                flat_data_tile, config.get("flat_masking", {}), using_unit_flat
-            )
+            flat_mask_bool_tile = detect_bad_pixels(flat_data_tile, config.get("flat_masking", {}), using_unit_flat)
             bad_mask[tile_slice] |= flat_mask_bool_tile
             final_mask_int[tile_slice][flat_mask_bool_tile] |= MASK_BITS["BAD"]
 
@@ -158,9 +154,7 @@ def process_hdu(
 
     # Calculate preliminary background RMS for CR and Bleed masking
     print("  Calculating preliminary background RMS...")
-    _, prelim_bkg_rms = estimate_background(
-        sci_data_full, interim_mask_bool, config.get("sep_background", {})
-    )
+    _, prelim_bkg_rms = estimate_background(sci_data_full, interim_mask_bool, config.get("sep_background", {}))
 
     # --- 1.5 Bleed Trail (Blooming) Masking ---
     # Now that we have a preliminary background RMS, we can grow the saturated cores
@@ -168,9 +162,7 @@ def process_hdu(
     sat_cfg = config.get("saturation", {})
     if sat_cfg.get("mask_bleed_trails", True):
         print("  (1.5/7) Growing Bleed Trails for saturated stars...")
-        sat_mask_full = grow_bleed_trails(
-            sci_data_full, sat_mask, prelim_bkg_rms * 0, prelim_bkg_rms, sat_cfg
-        )
+        sat_mask_full = grow_bleed_trails(sci_data_full, sat_mask, prelim_bkg_rms * 0, prelim_bkg_rms, sat_cfg)
         # Update masks
         new_bleed_pixels = sat_mask_full & ~sat_mask
         sat_mask |= new_bleed_pixels
@@ -182,9 +174,7 @@ def process_hdu(
     print("  (2/7) Running first-pass Cosmic Ray detection...")
     cosmic_cfg = config.get("cosmic_ray", {})
     variance_cfg = config.get("variance", {})
-    gain = sci_hdr.get(
-        variance_cfg.get("gain_keyword", "GAIN"), variance_cfg.get("default_gain", 1.0)
-    )
+    gain = sci_hdr.get(variance_cfg.get("gain_keyword", "GAIN"), variance_cfg.get("default_gain", 1.0))
     read_noise_e = sci_hdr.get(
         variance_cfg.get("rdnoise_keyword", "RDNOISE"),
         variance_cfg.get("default_rdnoise", 0.0),
@@ -214,16 +204,12 @@ def process_hdu(
     for i in range(iterations):
         print(f"    Iteration {i + 1}/{iterations}...")
         total_mask_for_bg = interim_mask_bool | current_obj_mask
-        bkg_map, bkg_rms_map = estimate_background(
-            sci_data_full, total_mask_for_bg, sep_bg_cfg
-        )
+        bkg_map, bkg_rms_map = estimate_background(sci_data_full, total_mask_for_bg, sep_bg_cfg)
         if bkg_map is None:
             return None, None, None, None, None, None
 
         data_sub = sci_data_full - bkg_map
-        new_obj_add_mask = detect_objects(
-            data_sub, bkg_rms_map, total_mask_for_bg, object_cfg
-        )
+        new_obj_add_mask = detect_objects(data_sub, bkg_rms_map, total_mask_for_bg, object_cfg)
 
         if np.sum(new_obj_add_mask) == 0 and i > 0:
             print("      No new objects found, ending iteration.")
@@ -238,9 +224,7 @@ def process_hdu(
     print("  (4/7) Finalizing sky maps and object mask...")
     final_obj_mask = current_obj_mask
     final_full_mask = interim_mask_bool | final_obj_mask
-    sky_map, final_bkg_rms_map = estimate_background(
-        sci_data_full, final_full_mask, sep_bg_cfg
-    )
+    sky_map, final_bkg_rms_map = estimate_background(sci_data_full, final_full_mask, sep_bg_cfg)
     if sky_map is None:
         return None, None, None, None, None, None
 
@@ -266,9 +250,7 @@ def process_hdu(
     streak_cfg = config.get("streak_masking", {})
     if streak_cfg.get("enable", False):
         data_sub = sci_data_full - sky_map
-        streak_add_mask = detect_streaks(
-            data_sub, final_bkg_rms_map, final_full_mask, streak_cfg
-        )
+        streak_add_mask = detect_streaks(data_sub, final_bkg_rms_map, final_full_mask, streak_cfg)
         streak_mask |= streak_add_mask
         final_mask_int[streak_add_mask] |= MASK_BITS["STREAK"]
         final_full_mask |= streak_add_mask
@@ -276,9 +258,7 @@ def process_hdu(
 
     # --- 7. Generate Final Weight and Confidence Maps ---
     print("  (7/7) Generating final weight and confidence maps...")
-    weight_map, confidence_map = generate_weight_and_confidence(
-        inv_variance_map, final_mask_int, config
-    )
+    weight_map, confidence_map = generate_weight_and_confidence(inv_variance_map, final_mask_int, config)
     if weight_map is None:
         return None, None, None, None, None, None
 
@@ -308,9 +288,7 @@ def process_hdu(
 
 
 def parse_arguments() -> argparse.Namespace:
-    parser = argparse.ArgumentParser(
-        description="Generate Mask and Weight/Confidence Maps for FITS files."
-    )
+    parser = argparse.ArgumentParser(description="Generate Mask and Weight/Confidence Maps for FITS files.")
     parser.add_argument("input_file", type=str, help="Path to input FITS file.")
     parser.add_argument(
         "--output_map",
@@ -458,9 +436,7 @@ def determine_output_paths(args: argparse.Namespace, input_path: str) -> dict:
     output_dir = os.path.dirname(out_map_path)
     base_out = os.path.splitext(os.path.basename(out_map_path))[0]
     out_mask_path = (
-        args.output_mask or os.path.join(output_dir, f"{base_out}.mask.fits")
-        if args.output_mask is not None
-        else None
+        args.output_mask or os.path.join(output_dir, f"{base_out}.mask.fits") if args.output_mask is not None else None
     )
     out_invvar_path = (
         args.output_invvar or os.path.join(output_dir, f"{base_out}.ivar.fits")
@@ -468,9 +444,7 @@ def determine_output_paths(args: argparse.Namespace, input_path: str) -> dict:
         else None
     )
     out_sky_path = (
-        args.output_sky or os.path.join(output_dir, f"{base_out}.sky.fits")
-        if args.output_sky is not None
-        else None
+        args.output_sky or os.path.join(output_dir, f"{base_out}.sky.fits") if args.output_sky is not None else None
     )
     out_weight_raw_path = args.output_weight_raw
 
@@ -522,45 +496,19 @@ def extract_individual_masks(header_info: dict, mask_data):
     shape = mask_data.shape if mask_data is not None else (0, 0)
     if header_info and "individual_masks" in header_info:
         individual_masks = header_info["individual_masks"]
-        bad_mask = (
-            individual_masks.get("bad", np.zeros(shape, dtype=bool))
-            if mask_data is not None
-            else np.array([])
-        )
-        sat_mask = (
-            individual_masks.get("sat", np.zeros(shape, dtype=bool))
-            if mask_data is not None
-            else np.array([])
-        )
-        cr_mask = (
-            individual_masks.get("cr", np.zeros(shape, dtype=bool))
-            if mask_data is not None
-            else np.array([])
-        )
-        obj_mask = (
-            individual_masks.get("obj", np.zeros(shape, dtype=bool))
-            if mask_data is not None
-            else np.array([])
-        )
+        bad_mask = individual_masks.get("bad", np.zeros(shape, dtype=bool)) if mask_data is not None else np.array([])
+        sat_mask = individual_masks.get("sat", np.zeros(shape, dtype=bool)) if mask_data is not None else np.array([])
+        cr_mask = individual_masks.get("cr", np.zeros(shape, dtype=bool)) if mask_data is not None else np.array([])
+        obj_mask = individual_masks.get("obj", np.zeros(shape, dtype=bool)) if mask_data is not None else np.array([])
         streak_mask = (
-            individual_masks.get("streak", np.zeros(shape, dtype=bool))
-            if mask_data is not None
-            else np.array([])
+            individual_masks.get("streak", np.zeros(shape, dtype=bool)) if mask_data is not None else np.array([])
         )
     else:
-        bad_mask = (
-            np.zeros(shape, dtype=bool) if mask_data is not None else np.array([])
-        )
-        sat_mask = (
-            np.zeros(shape, dtype=bool) if mask_data is not None else np.array([])
-        )
+        bad_mask = np.zeros(shape, dtype=bool) if mask_data is not None else np.array([])
+        sat_mask = np.zeros(shape, dtype=bool) if mask_data is not None else np.array([])
         cr_mask = np.zeros(shape, dtype=bool) if mask_data is not None else np.array([])
-        obj_mask = (
-            np.zeros(shape, dtype=bool) if mask_data is not None else np.array([])
-        )
-        streak_mask = (
-            np.zeros(shape, dtype=bool) if mask_data is not None else np.array([])
-        )
+        obj_mask = np.zeros(shape, dtype=bool) if mask_data is not None else np.array([])
+        streak_mask = np.zeros(shape, dtype=bool) if mask_data is not None else np.array([])
 
     return bad_mask, sat_mask, cr_mask, obj_mask, streak_mask
 
@@ -638,17 +586,13 @@ def _store_output_maps(
     paths,
 ):
     if paths["out_map_path"]:
-        output_format = (
-            config.get("output_params", {}).get("output_map_format", "weight").lower()
-        )
+        output_format = config.get("output_params", {}).get("output_map_format", "weight").lower()
         map_data = confidence_map if output_format == "confidence" else weight_map
         _assign_map_if_valid(output_data, i, "map", map_data, hdu_header, hdu_name)
     if paths["out_mask_path"]:
         _assign_map_if_valid(output_data, i, "mask", mask_data, hdu_header, hdu_name)
     if paths["out_invvar_path"]:
-        _assign_map_if_valid(
-            output_data, i, "invvar", inv_var_data, hdu_header, hdu_name
-        )
+        _assign_map_if_valid(output_data, i, "invvar", inv_var_data, hdu_header, hdu_name)
     if paths["out_sky_path"]:
         _assign_map_if_valid(output_data, i, "sky", sky_map, hdu_header, hdu_name)
     if paths["out_weight_raw_path"] and weight_map is not None:
@@ -703,15 +647,9 @@ def process_all_hdus(
             ) = result
             process_success_count += 1
 
-            bad_mask, sat_mask, cr_mask, obj_mask, streak_mask = (
-                extract_individual_masks(header_info, mask_data)
-            )
+            bad_mask, sat_mask, cr_mask, obj_mask, streak_mask = extract_individual_masks(header_info, mask_data)
 
-            hdu_name = (
-                getattr(hdu_sci, "name", f"HDU{i}")
-                if hasattr(hdu_sci, "name")
-                else f"HDU{i}"
-            )
+            hdu_name = getattr(hdu_sci, "name", f"HDU{i}") if hasattr(hdu_sci, "name") else f"HDU{i}"
 
             try:
                 hdu_header = hdul_input[i].read_header()
@@ -761,9 +699,7 @@ def write_single_output_file(out_path: str, output_data: dict, hdul_input, key: 
                 )
 
 
-def write_individual_mask_files(
-    individual_mask_paths: dict, output_data: dict, hdul_input
-):
+def write_individual_mask_files(individual_mask_paths: dict, output_data: dict, hdul_input):
     for mask_type in ["bad", "sat", "cr", "obj", "streak"]:
         mask_path = individual_mask_paths.get(mask_type)
         if mask_path:
@@ -771,10 +707,7 @@ def write_individual_mask_files(
             fitsio.write(mask_path, primary_data, clobber=True)
             with fitsio.FITS(mask_path, "rw") as f_out:
                 for i in sorted(output_data.keys()):
-                    if (
-                        "individual_masks" in output_data[i]
-                        and mask_type in output_data[i]["individual_masks"]
-                    ):
+                    if "individual_masks" in output_data[i] and mask_type in output_data[i]["individual_masks"]:
                         mask_info = output_data[i]["individual_masks"][mask_type]
                         f_out.write(
                             mask_info["data"],
@@ -784,9 +717,7 @@ def write_individual_mask_files(
             print(f"  {mask_type.capitalize()} mask file written: {mask_path}")
 
 
-def write_all_output_files(
-    paths: dict, output_data: dict, hdul_input, process_success_count: int
-) -> bool:
+def write_all_output_files(paths: dict, output_data: dict, hdul_input, process_success_count: int) -> bool:
     if process_success_count == 0:
         print("\nNo HDUs processed successfully. No output files written.")
         return True
@@ -794,39 +725,27 @@ def write_all_output_files(
     print("\nWriting output files...")
     try:
         if paths["out_map_path"] and output_data:
-            write_single_output_file(
-                paths["out_map_path"], output_data, hdul_input, "map"
-            )
+            write_single_output_file(paths["out_map_path"], output_data, hdul_input, "map")
             print(f"  Map file written: {paths['out_map_path']}")
 
         if paths["out_mask_path"] and output_data:
-            write_single_output_file(
-                paths["out_mask_path"], output_data, hdul_input, "mask"
-            )
+            write_single_output_file(paths["out_mask_path"], output_data, hdul_input, "mask")
             print(f"  Mask file written: {paths['out_mask_path']}")
 
         if paths["out_invvar_path"] and output_data:
-            write_single_output_file(
-                paths["out_invvar_path"], output_data, hdul_input, "invvar"
-            )
+            write_single_output_file(paths["out_invvar_path"], output_data, hdul_input, "invvar")
             print(f"  Inverse variance file written: {paths['out_invvar_path']}")
 
         if paths["out_sky_path"] and output_data:
-            write_single_output_file(
-                paths["out_sky_path"], output_data, hdul_input, "sky"
-            )
+            write_single_output_file(paths["out_sky_path"], output_data, hdul_input, "sky")
             print(f"  Sky file written: {paths['out_sky_path']}")
 
         if paths["out_weight_raw_path"] and output_data:
-            write_single_output_file(
-                paths["out_weight_raw_path"], output_data, hdul_input, "weight_raw"
-            )
+            write_single_output_file(paths["out_weight_raw_path"], output_data, hdul_input, "weight_raw")
             print(f"  Raw weight file written: {paths['out_weight_raw_path']}")
 
         if paths["individual_mask_paths"] and output_data:
-            write_individual_mask_files(
-                paths["individual_mask_paths"], output_data, hdul_input
-            )
+            write_individual_mask_files(paths["individual_mask_paths"], output_data, hdul_input)
 
         return True
     except OSError as e:
@@ -859,9 +778,7 @@ def run_pipeline() -> int:
         return 1
 
     input_path, input_hdu = extract_hdu_spec(args.input_file)
-    flat_path, flat_hdu = (
-        extract_hdu_spec(args.flat_image) if args.flat_image else (None, None)
-    )
+    flat_path, flat_hdu = extract_hdu_spec(args.flat_image) if args.flat_image else (None, None)
     if args.hdu is not None:
         input_hdu = args.hdu
 
@@ -877,13 +794,9 @@ def run_pipeline() -> int:
         return 1
     print(f"Processing {len(hdus_to_process)} Image HDU(s): {hdus_to_process}")
 
-    process_success_count, output_data = process_all_hdus(
-        hdus_to_process, hdul_input, hdul_flat, config, paths, args
-    )
+    process_success_count, output_data = process_all_hdus(hdus_to_process, hdul_input, hdul_flat, config, paths, args)
 
-    success = write_all_output_files(
-        paths, output_data, hdul_input, process_success_count
-    )
+    success = write_all_output_files(paths, output_data, hdul_input, process_success_count)
 
     _cleanup_hdul(hdul_input, hdul_flat)
 

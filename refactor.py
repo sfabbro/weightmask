@@ -1,5 +1,3 @@
-import re
-
 with open("tests/simulate_and_test.py", "r") as f:
     content = f.read()
 
@@ -175,7 +173,6 @@ def create_simulated_data(
     return data, bkg_rms, gt
 """
 
-import re
 
 # find the start and end of create_simulated_data
 start_idx = content.find("def create_simulated_data(")

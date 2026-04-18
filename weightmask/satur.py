@@ -1,8 +1,8 @@
-import numpy as np
 import warnings
 
-from scipy.signal import find_peaks
+import numpy as np
 import scipy.ndimage
+from scipy.signal import find_peaks
 
 
 def estimate_saturation_robust_clump(data, min_adu=None, max_adu=None):
@@ -45,30 +45,22 @@ def estimate_saturation_robust_clump(data, min_adu=None, max_adu=None):
             # Heuristic: start halfway between the 99th percentile and max,
             # or 80% of the 99.9th percentile, whichever is more conservative.
             auto_min_adu = min(p99 + (p_max - p99) * 0.3, p99_9 * 0.8)
-            auto_max_adu = min(
-                p_max * 1.01, p99_9 * 1.5
-            )  # Allow some room above 99.9th
+            auto_max_adu = min(p_max * 1.01, p99_9 * 1.5)  # Allow some room above 99.9th
 
             min_adu = min_adu if min_adu is not None else auto_min_adu
             max_adu = max_adu if max_adu is not None else auto_max_adu
 
             # Absolute sanity check: if max is small, we shouldn't be looking for saturation
             if p_max < 10000:
-                print(
-                    f"  Robust Clump: Max ADU ({p_max:.1f}) is very low. Assuming no saturation."
-                )
+                print(f"  Robust Clump: Max ADU ({p_max:.1f}) is very low. Assuming no saturation.")
                 return None
 
             if max_adu <= min_adu:
                 max_adu = min_adu + 100.0
 
-            print(
-                f"  Auto-determined histogram range: [{min_adu:.1f}, {max_adu:.1f}] ADU"
-            )
+            print(f"  Auto-determined histogram range: [{min_adu:.1f}, {max_adu:.1f}] ADU")
 
-        print(
-            f"  Attempting robust clump analysis: range=[{min_adu:.1f}, {max_adu:.1f}]"
-        )
+        print(f"  Attempting robust clump analysis: range=[{min_adu:.1f}, {max_adu:.1f}]")
 
         # Bin the extreme tail into ~100 bins.
         # This prevents the histogram from dissolving into noise for smeared clumps.
@@ -77,28 +69,20 @@ def estimate_saturation_robust_clump(data, min_adu=None, max_adu=None):
         bin_centers = (bin_edges[:-1] + bin_edges[1:]) / 2
 
         if np.sum(counts) < 20:
-            print(
-                "  Robust Clump: Not enough pixels in extreme tail (empty field). No saturation detected."
-            )
+            print("  Robust Clump: Not enough pixels in extreme tail (empty field). No saturation detected.")
             return None
 
         # Smooth the histogram heavily to find the macro-structure (the clump)
-        smoothed_counts = scipy.ndimage.gaussian_filter1d(
-            counts.astype(float), sigma=2.0
-        )
+        smoothed_counts = scipy.ndimage.gaussian_filter1d(counts.astype(float), sigma=2.0)
 
         # Find peaks.
         # Expected prominence is at least a few percent of the max smoothed count in this tail.
         min_prominence = max(2.0, np.max(smoothed_counts) * 0.05)
 
-        peaks, properties = find_peaks(
-            smoothed_counts, prominence=min_prominence
-        )
+        peaks, properties = find_peaks(smoothed_counts, prominence=min_prominence)
 
         if len(peaks) == 0:
-            print(
-                "  Robust Clump: Smooth intensity tail with no anomalous clumps. No saturation detected."
-            )
+            print("  Robust Clump: Smooth intensity tail with no anomalous clumps. No saturation detected.")
             return None
 
         # The saturation clump is usually the most prominent peak in this extreme tail
@@ -115,9 +99,7 @@ def estimate_saturation_robust_clump(data, min_adu=None, max_adu=None):
         estimated_level = max(estimated_level, min_adu + (peak_adu - min_adu) * 0.2)
 
         print(f"  Robust Clump: Found anomalous clump at ~{peak_adu:.1f} ADU.")
-        print(
-            f"  Robust Clump: Setting threshold near the base of the clump: {estimated_level:.1f} ADU."
-        )
+        print(f"  Robust Clump: Setting threshold near the base of the clump: {estimated_level:.1f} ADU.")
 
         return float(estimated_level)
 
@@ -161,9 +143,7 @@ def detect_saturated_pixels(sci_data, sci_hdr, config):
     """
     saturation_level = None
     sat_method_used = "none"
-    hist_params = config.get(
-        "histogram_params", {}
-    )  # Get sub-dictionary for histogram params
+    hist_params = config.get("histogram_params", {})  # Get sub-dictionary for histogram params
 
     # Ensure data is float for calculations
     if not np.issubdtype(sci_data.dtype, np.floating):
@@ -188,9 +168,7 @@ def detect_saturated_pixels(sci_data, sci_hdr, config):
         if saturation_level is not None:
             sat_method_used = "histogram (robust clump)"
         else:
-            print(
-                "  Robust Clump detection yielded no saturation. Trying header fallback..."
-            )
+            print("  Robust Clump detection yielded no saturation. Trying header fallback...")
             saturation_level = _get_saturation_from_header(sci_hdr, header_keyword)
             if saturation_level is not None:
                 sat_method_used = "header (fallback)"
@@ -203,14 +181,10 @@ def detect_saturated_pixels(sci_data, sci_hdr, config):
 
     # Final fallback to default value if all methods fail
     if saturation_level is None:
-        fallback_level = config.get(
-            "fallback_level", 65535.0
-        )  # Default fallback if not in config
+        fallback_level = config.get("fallback_level", 65535.0)  # Default fallback if not in config
         saturation_level = fallback_level
         sat_method_used = "default fallback"
-        print(
-            f"  WARNING: Using fallback saturation level: {saturation_level:.1f} ADU."
-        )
+        print(f"  WARNING: Using fallback saturation level: {saturation_level:.1f} ADU.")
 
     # Ensure saturation_level is a float before comparison
     saturation_level = float(saturation_level)
@@ -220,9 +194,7 @@ def detect_saturated_pixels(sci_data, sci_hdr, config):
     with np.errstate(invalid="ignore"):  # Suppress warnings from comparing with NaN/Inf
         sat_mask_bool = (sci_data >= saturation_level) & np.isfinite(sci_data)
 
-    print(
-        f"  Final saturation level used: {saturation_level:.1f} ADU (Method: {sat_method_used})"
-    )
+    print(f"  Final saturation level used: {saturation_level:.1f} ADU (Method: {sat_method_used})")
 
     return saturation_level, sat_method_used, sat_mask_bool
 

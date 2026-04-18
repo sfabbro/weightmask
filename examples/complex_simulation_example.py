@@ -1,5 +1,7 @@
-import numpy as np
 import os
+
+import numpy as np
+
 from tests.simulate_and_test import create_simulated_data
 
 

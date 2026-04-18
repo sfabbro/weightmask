@@ -1,16 +1,15 @@
+import warnings
+
 import numpy as np
 import sep
-from scipy.ndimage import median_filter
 from astropy.stats import mad_std
-import warnings
+from scipy.ndimage import median_filter
 
 
 def _estimate_global_sep(sci_data, mask):
     """Estimate a single global background using a single SEP box."""
     try:
-        bkg = sep.Background(
-            sci_data, mask=mask, bw=sci_data.shape[1], bh=sci_data.shape[0]
-        )
+        bkg = sep.Background(sci_data, mask=mask, bw=sci_data.shape[1], bh=sci_data.shape[0])
         if bkg.globalback == 0 and np.any(~mask):
             return None, None
         bkg_map = np.full(sci_data.shape, bkg.globalback, dtype=np.float32)
@@ -65,9 +64,7 @@ def _estimate_sep_tiered(sci_data, mask, box_size, filter_size):
             )
             bkg_map = bkg.back()
             bkg_rms_map = bkg.rms()
-            print(
-                f"    SEP background global RMS: {bkg.globalrms:.3f} (box={current_box})"
-            )
+            print(f"    SEP background global RMS: {bkg.globalrms:.3f} (box={current_box})")
 
             bkg_map = _check_and_fix_edge_artifacts(bkg_map, sci_data.shape)
             return bkg_map, bkg_rms_map
@@ -134,27 +131,21 @@ def estimate_background(sci_data, mask, config):
     if method == "sep":
         mask_fraction = np.mean(mask)
         if mask_fraction > 0.8:
-            print(
-                f"    WARNING: High mask coverage ({mask_fraction:.1%}). Proactively falling back to global mode."
-            )
+            print(f"    WARNING: High mask coverage ({mask_fraction:.1%}). Proactively falling back to global mode.")
             bkg_map, bkg_rms_map = _estimate_global_sep(sci_data, mask)
             if bkg_map is None:
                 method = "robust_median_fallback"
         else:
             box_size = config.get("box_size", 128)
             filter_size = config.get("filter_size", 3)
-            bkg_map, bkg_rms_map = _estimate_sep_tiered(
-                sci_data, mask, box_size, filter_size
-            )
+            bkg_map, bkg_rms_map = _estimate_sep_tiered(sci_data, mask, box_size, filter_size)
             if bkg_map is None:
                 method = "robust_median_fallback"
 
     if method in ("robust_median_fallback", "median_filter"):
         bkg_map, bkg_rms_map = _estimate_robust_median(sci_data, mask, method, config)
     elif method != "sep":
-        warnings.warn(
-            f"Unknown background estimation method: '{method}'", RuntimeWarning
-        )
+        warnings.warn(f"Unknown background estimation method: '{method}'", RuntimeWarning)
         return None, None
 
     if bkg_rms_map is not None:

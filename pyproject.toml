@@ -35,3 +35,10 @@ exclude = ["sandbox*"]
 # --- This section creates the command-line script ---
 [project.scripts]
 weightmask = "weightmask.cli:run_pipeline" # Tells pip: command 'weightmask' runs 'run_pipeline' function in 'weightmask/cli.py'
+
+[tool.ruff]
+line-length = 120
+
+[tool.ruff.lint]
+select = ["E", "F", "W", "I"]
+ignore = ["E501"]

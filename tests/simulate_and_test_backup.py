@@ -1,18 +1,18 @@
-import numpy as np
-import fitsio
-import os
-import yaml
 import argparse
-from weightmask.satur import detect_saturated_pixels, grow_bleed_trails
-from weightmask.streaks import detect_streaks
+import os
+
+import fitsio
+import numpy as np
+import yaml
+
+from weightmask.background import estimate_background
 from weightmask.cosmics import detect_cosmic_rays
 from weightmask.objects import detect_objects
-from weightmask.background import estimate_background
+from weightmask.satur import detect_saturated_pixels, grow_bleed_trails
+from weightmask.streaks import detect_streaks
 
 
-def create_simulated_data(
-    size=1024, noise_level=10.0, num_stars=50, streak_flux=30.0, regime_type="normal"
-):
+def create_simulated_data(size=1024, noise_level=10.0, num_stars=50, streak_flux=30.0, regime_type="normal"):
     print(
         f"Generating synthetic data (size={size}, noise={noise_level}, stars={num_stars}, streak_flux={streak_flux}, regime_type={regime_type})..."
     )
@@ -33,9 +33,7 @@ def create_simulated_data(
         bkg_map = np.ones((size, size), dtype=np.float32) * bkg_base
 
     data = bkg_map.copy().astype(np.float32)
-    bkg_rms = (
-        np.ones_like(data) * noise_level
-    )  # Initial estimate, will be updated if complex
+    bkg_rms = np.ones_like(data) * noise_level  # Initial estimate, will be updated if complex
 
     # Ground truth masks
     gt = {
@@ -62,19 +60,11 @@ def create_simulated_data(
             sigma_y = sigma_x * np.random.uniform(2.0, 3.5)  # highly elliptical
             theta = np.deg2rad(np.random.uniform(0, 180))
 
-            a = np.cos(theta) ** 2 / (2 * sigma_x**2) + np.sin(theta) ** 2 / (
-                2 * sigma_y**2
-            )
-            b = -np.sin(2 * theta) / (4 * sigma_x**2) + np.sin(2 * theta) / (
-                4 * sigma_y**2
-            )
-            c = np.sin(theta) ** 2 / (2 * sigma_x**2) + np.cos(theta) ** 2 / (
-                2 * sigma_y**2
-            )
+            a = np.cos(theta) ** 2 / (2 * sigma_x**2) + np.sin(theta) ** 2 / (2 * sigma_y**2)
+            b = -np.sin(2 * theta) / (4 * sigma_x**2) + np.sin(2 * theta) / (4 * sigma_y**2)
+            c = np.sin(theta) ** 2 / (2 * sigma_x**2) + np.cos(theta) ** 2 / (2 * sigma_y**2)
 
-            star = flux * np.exp(
-                -(a * (x - cx) ** 2 + 2 * b * (x - cx) * (y - cy) + c * (y - cy) ** 2)
-            )
+            star = flux * np.exp(-(a * (x - cx) ** 2 + 2 * b * (x - cx) * (y - cy) + c * (y - cy) ** 2))
         else:
             sigma = np.random.uniform(1.5, 3.0)
             star = flux * np.exp(-((x - cx) ** 2 + (y - cy) ** 2) / (2 * sigma**2))
@@ -93,9 +83,7 @@ def create_simulated_data(
     cx_sat, cy_sat = int(size * 0.3), int(size * 0.7)
     flux_sat = 500000  # Enough to trigger spikes
     sigma_sat = 4.0 if regime_type == "normal" else 4.5
-    star_sat = flux_sat * np.exp(
-        -((x - cx_sat) ** 2 + (y - cy_sat) ** 2) / (2 * sigma_sat**2)
-    )
+    star_sat = flux_sat * np.exp(-((x - cx_sat) ** 2 + (y - cy_sat) ** 2) / (2 * sigma_sat**2))
     # GT for bright star - use row, col (y, x)
     rr_b, cc_b = disk((cy_sat, cx_sat), 10, shape=(size, size))
     gt["stars"][rr_b, cc_b] = True
@@ -104,9 +92,7 @@ def create_simulated_data(
 
     # Simulate bleeding (happens before noise is added)
     bleed_length = 60
-    data[cy_sat - bleed_length : cy_sat + bleed_length, cx_sat - 1 : cx_sat + 2] += (
-        flux_sat
-    )
+    data[cy_sat - bleed_length : cy_sat + bleed_length, cx_sat - 1 : cx_sat + 2] += flux_sat
     gt["sat"][data >= 65000] = True  # Approximate ground truth for saturation
 
     # Apply physical noise model
@@ -121,9 +107,7 @@ def create_simulated_data(
         # Add Read Noise (Gaussian)
         # We assume noise_level passed in is roughly the read noise we want to target
         read_noise = noise_level
-        noisy_data += np.random.normal(0, read_noise, size=(size, size)).astype(
-            np.float32
-        )
+        noisy_data += np.random.normal(0, read_noise, size=(size, size)).astype(np.float32)
 
         data = noisy_data
 
@@ -170,9 +154,7 @@ def create_simulated_data(
             if 0 <= i < size and 0 <= j < size:
                 data[i, j] += s_flux
                 # Forgiving ground truth: mark 3x3 area
-                gt["streak"][
-                    max(0, i - 1) : min(size, i + 2), max(0, j - 1) : min(size, j + 2)
-                ] = True
+                gt["streak"][max(0, i - 1) : min(size, i + 2), max(0, j - 1) : min(size, j + 2)] = True
 
     # 5. Add a SPARCE RANSAC trail (dotted line)
     dot_flux = 20.0 * noise_level  # 20 sigma (bright glints)
@@ -182,9 +164,7 @@ def create_simulated_data(
     # Mark the FULL line in ground truth since we expect the detector to find the line
     for i, j in zip(rr, cc):
         if 0 <= i < size and 0 <= j < size:
-            gt["streak"][
-                max(0, i - 1) : min(size, i + 2), max(0, j - 1) : min(size, j + 2)
-            ] = True
+            gt["streak"][max(0, i - 1) : min(size, i + 2), max(0, j - 1) : min(size, j + 2)] = True
 
     # Add dots to data only
     if regime_type != "normal":
@@ -210,9 +190,7 @@ def create_simulated_data(
         faint_flux = 5.0 * noise_level  # Only 5 sigma
         for i, j in zip(rr2, cc2):
             if 0 <= i < size and 0 <= j < size:
-                gt["streak"][
-                    max(0, i - 1) : min(size, i + 2), max(0, j - 1) : min(size, j + 2)
-                ] = True
+                gt["streak"][max(0, i - 1) : min(size, i + 2), max(0, j - 1) : min(size, j + 2)] = True
 
         for i, j in zip(rr2[::15], cc2[::15]):
             if 0 <= i < size and 0 <= j < size:
@@ -241,9 +219,7 @@ def evaluate_mask(pred_mask, gt_mask, name, pre_mask=None):
         # We aggressively dilate the ground truth mask for evaluation to cover expected halos.
         from scipy.ndimage import binary_dilation
 
-        g_mask_eval = binary_dilation(
-            g_mask, iterations=6
-        )  # Allow up to 6px radius of 'true' halo
+        g_mask_eval = binary_dilation(g_mask, iterations=6)  # Allow up to 6px radius of 'true' halo
     else:
         g_mask_eval = g_mask
 
@@ -284,9 +260,7 @@ def run_masking_test(config_path, args, save_fits=True):
     os.makedirs(output_dir, exist_ok=True)
 
     if save_fits:
-        fitsio.write(
-            os.path.join(output_dir, "simulated_raw.fits"), sci_data, clobber=True
-        )
+        fitsio.write(os.path.join(output_dir, "simulated_raw.fits"), sci_data, clobber=True)
 
     metrics = {}
 
@@ -295,23 +269,15 @@ def run_masking_test(config_path, args, save_fits=True):
         # Create a heavy pre-mask (e.g. 85% of pixels)
         initial_mask = np.random.random(sci_data.shape) < args.mask_pct
         existing_mask |= initial_mask
-        print(
-            f"  Pre-masking {args.mask_pct * 100:.1f}% of image for background robustness test..."
-        )
+        print(f"  Pre-masking {args.mask_pct * 100:.1f}% of image for background robustness test...")
 
     # 1. Test Saturation & Bleed
-    sat_level, method, sat_mask = detect_saturated_pixels(
-        sci_data, None, config.get("saturation", {})
-    )
+    sat_level, method, sat_mask = detect_saturated_pixels(sci_data, None, config.get("saturation", {}))
 
     # Apply new bleed growing
-    sat_mask = grow_bleed_trails(
-        sci_data, sat_mask, sci_data * 0, bkg_rms, config.get("saturation", {})
-    )
+    sat_mask = grow_bleed_trails(sci_data, sat_mask, sci_data * 0, bkg_rms, config.get("saturation", {}))
 
-    metrics["Saturation"] = evaluate_mask(
-        sat_mask, gt["sat"], "Saturation", pre_mask=initial_mask
-    )
+    metrics["Saturation"] = evaluate_mask(sat_mask, gt["sat"], "Saturation", pre_mask=initial_mask)
     if save_fits:
         fitsio.write(
             os.path.join(output_dir, "mask_sat.fits"),
@@ -331,9 +297,7 @@ def run_masking_test(config_path, args, save_fits=True):
         config=config.get("cosmic_ray", {}),
         bkg_rms_map=bkg_rms,
     )
-    metrics["Cosmics"] = evaluate_mask(
-        cr_mask, gt["cr"], "Cosmics", pre_mask=initial_mask
-    )
+    metrics["Cosmics"] = evaluate_mask(cr_mask, gt["cr"], "Cosmics", pre_mask=initial_mask)
     if save_fits:
         fitsio.write(
             os.path.join(output_dir, "mask_cr.fits"),
@@ -345,25 +309,17 @@ def run_masking_test(config_path, args, save_fits=True):
     overlap = int(np.sum(cr_mask & gt["stars"]))
     metrics["CR_Star_Overlap"] = overlap
     if overlap > 0:
-        print(
-            f"  WARNING: Cosmic Ray mask overlaps with {overlap} Ground Truth Star pixels!"
-        )
+        print(f"  WARNING: Cosmic Ray mask overlaps with {overlap} Ground Truth Star pixels!")
 
     existing_mask |= cr_mask
 
     # 3. Test Objects
-    sky_map, _ = estimate_background(
-        sci_data, existing_mask, config.get("sep_background", {})
-    )
+    sky_map, _ = estimate_background(sci_data, existing_mask, config.get("sep_background", {}))
     data_sub = sci_data - sky_map
     # Use initial_mask here to avoid losing objects that were wrongly flagged as CRs/Saturation
     # to get cleaner metrics on object detection itself.
-    obj_mask = detect_objects(
-        data_sub, bkg_rms, initial_mask, config.get("sep_objects", {})
-    )
-    metrics["Objects"] = evaluate_mask(
-        obj_mask, gt["stars"], "Objects", pre_mask=initial_mask
-    )
+    obj_mask = detect_objects(data_sub, bkg_rms, initial_mask, config.get("sep_objects", {}))
+    metrics["Objects"] = evaluate_mask(obj_mask, gt["stars"], "Objects", pre_mask=initial_mask)
     if save_fits:
         fitsio.write(
             os.path.join(output_dir, "mask_obj.fits"),
@@ -373,16 +329,10 @@ def run_masking_test(config_path, args, save_fits=True):
     existing_mask |= obj_mask
 
     # 4. Test Streaks (Run after objects for clean background)
-    sky_map, _ = estimate_background(
-        sci_data, existing_mask, config.get("sep_background", {})
-    )
+    sky_map, _ = estimate_background(sci_data, existing_mask, config.get("sep_background", {}))
     data_sub = sci_data - sky_map
-    streak_mask = detect_streaks(
-        data_sub, bkg_rms, existing_mask, config.get("streak_masking", {})
-    )
-    metrics["Streaks"] = evaluate_mask(
-        streak_mask, gt["streak"], "Streaks", pre_mask=initial_mask
-    )
+    streak_mask = detect_streaks(data_sub, bkg_rms, existing_mask, config.get("streak_masking", {}))
+    metrics["Streaks"] = evaluate_mask(streak_mask, gt["streak"], "Streaks", pre_mask=initial_mask)
     if save_fits:
         fitsio.write(
             os.path.join(output_dir, "mask_streak.fits"),
@@ -533,9 +483,7 @@ def run_auto_sweep(report_file=None):
         print(f"\nGenerating Markdown report: {report_file}")
         with open(report_file, "w") as f:
             f.write("# Weightmask Benchmark Report\n\n")
-            f.write(
-                "| Regime | Saturation P/R | Cosmics P/R | Objects P/R | Streaks P/R | CR-Star Overlap |\n"
-            )
+            f.write("| Regime | Saturation P/R | Cosmics P/R | Objects P/R | Streaks P/R | CR-Star Overlap |\n")
             f.write("|---|---|---|---|---|---|\n")
             for name, metrics in results.items():
                 sat_p, sat_r = metrics.get("Saturation", (0, 0))

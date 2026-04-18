@@ -44,9 +44,7 @@ def generate_weight_and_confidence(inv_variance_map, final_mask_int, config):
     # Define which mask bits correspond to "bad" pixels that get zero weight
     # By default, DETECTED objects *keep* their weight. Add MASK_BITS['DETECTED']
     # here if detected objects should also be zeroed in the weight map.
-    zero_weight_mask_bits = (
-        MASK_BITS["BAD"] | MASK_BITS["SAT"] | MASK_BITS["CR"] | MASK_BITS["STREAK"]
-    )
+    zero_weight_mask_bits = MASK_BITS["BAD"] | MASK_BITS["SAT"] | MASK_BITS["CR"] | MASK_BITS["STREAK"]
     # Add DETECTED bit if configured
     if out_cfg.get("mask_detected_in_weight", False):
         print("    NOTE: Detected objects will be masked (zero weight).")
@@ -66,9 +64,7 @@ def generate_weight_and_confidence(inv_variance_map, final_mask_int, config):
     print("  Calculating continuous confidence map (normalized weight map)...")
     conf_dtype_str = conf_cfg.get("dtype", "float32")
     conf_dtype = getattr(np, conf_dtype_str, np.float32)  # Default to float32
-    normalize_percentile = conf_cfg.get(
-        "normalize_percentile", 99.0
-    )  # Percentile for normalization
+    normalize_percentile = conf_cfg.get("normalize_percentile", 99.0)  # Percentile for normalization
     scale_to_100 = conf_cfg.get("scale_to_100", False)  # Option for 0-100 range
 
     confidence_map = np.zeros_like(weight_map, dtype=conf_dtype)
@@ -80,16 +76,12 @@ def generate_weight_and_confidence(inv_variance_map, final_mask_int, config):
             # ⚡ Bolt: Subsample large arrays before calculating global robust statistics
             step = max(1, valid_weights.size // 100000)
             norm_factor = np.percentile(valid_weights[::step], normalize_percentile)
-            print(
-                f"    Normalizing using {normalize_percentile:.1f}th percentile weight: {norm_factor:.4g}"
-            )
+            print(f"    Normalizing using {normalize_percentile:.1f}th percentile weight: {norm_factor:.4g}")
         else:
             norm_factor = np.max(valid_weights)
             print(f"    Normalizing using maximum weight: {norm_factor:.4g}")
 
-        if (
-            norm_factor > 1e-12
-        ):  # Use a slightly more generous epsilon for normalization factor
+        if norm_factor > 1e-12:  # Use a slightly more generous epsilon for normalization factor
             # Normalize the weight map (clipping at 1.0)
             confidence_map = np.clip(weight_map / norm_factor, 0.0, 1.0)
 
@@ -99,9 +91,7 @@ def generate_weight_and_confidence(inv_variance_map, final_mask_int, config):
             else:
                 print("    Confidence map range: 0-1.")
         else:
-            print(
-                "    WARNING: Normalization factor is near zero. Confidence map will be zeros."
-            )
+            print("    WARNING: Normalization factor is near zero. Confidence map will be zeros.")
     else:
         print("    WARNING: No positive weights found. Confidence map will be zeros.")
 
