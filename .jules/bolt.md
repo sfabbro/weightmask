@@ -34,3 +34,7 @@
 ## 2023-10-25 - Parallelizing heavy skimage operations
 **Learning:** Nested loops on image blocks mapping sequentially to expensive skimage functions (like `skimage.filters.frangi`) can be a significant bottleneck. Python's `concurrent.futures.ThreadPoolExecutor` handles block parallelization very efficiently here, dropping the filter time significantly (e.g. 4x speedup).
 **Action:** Always parallelize block processing on image data using `ThreadPoolExecutor` or `ProcessPoolExecutor` where operations on blocks are independent.
+
+## 2024-05-18 - Optimized Saturation Bleed Trail Segment Search
+**Learning:** In operations that require finding 1D contiguous segments along columns (or rows), looping over each column to run `scipy.ndimage.label(col)` scales poorly with image size.
+**Action:** Replaced per-column loop with a single global pass of `scipy.ndimage.label` over a sliced 2D array of affected columns, using a strictly vertical structural element (`[[0, 1, 0], [0, 1, 0], [0, 1, 0]]`). `scipy.ndimage.find_objects` then provides instantaneous lookup of column bounds. This removed $O(N)$ outer-loop Python overhead and replaced it with an $O(1)$ C-optimized operation, offering a massive speedup when processing many saturated areas.

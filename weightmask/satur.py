@@ -263,65 +263,88 @@ def grow_bleed_trails(sci_data, sat_mask, sky_map, bkg_rms_map, config):
     # Identify columns with saturation
     sat_cols = np.where(np.any(sat_mask, axis=0))[0]
 
-    for x in sat_cols:
-        col_sat = sat_mask[:, x]
-        # Find contiguous segments of saturated pixels in this column
-        labeled_segments, num_segments = scipy.ndimage.label(col_sat)
+    if len(sat_cols) == 0:
+        return new_mask
 
-        for s in range(1, num_segments + 1):
-            segment_indices = np.where(labeled_segments == s)[0]
-            y_min, y_max = segment_indices.min(), segment_indices.max()
+    # Get a 2D mask of just the saturated columns to label
+    sat_mask_cols = sat_mask[:, sat_cols]
 
-            # Get background levels for this column
-            col_bkg = sky_map[:, x] if sky_map is not None else np.zeros(h)
-            col_rms = bkg_rms_map[:, x] if bkg_rms_map is not None else np.full(h, 10.0)
+    # 2D structure for labeling (connects only vertically)
+    struct = np.array([[0, 1, 0], [0, 1, 0], [0, 1, 0]])
 
-            # Use a conservative threshold (e.g. 5 sigma) to prevent over-growing into noise
-            stop_thresh = col_bkg + config.get("bleed_thresh_sigma", 5.0) * col_rms
+    labeled_cols, num_segments = scipy.ndimage.label(sat_mask_cols, structure=struct)
 
-            max_grow = config.get("bleed_grow_vertical", 50)
+    # Pre-calculate background levels
+    if sky_map is None:
+        sky_map = np.zeros((h, w))
+    if bkg_rms_map is None:
+        bkg_rms_map = np.full((h, w), 10.0)
 
-            # Grow up
-            if y_min > 0:
-                start_idx = y_min - 1
-                end_idx = max(-1, start_idx - max_grow)
+    # Pre-calculate thresholds for all saturated columns at once
+    col_bkgs = sky_map[:, sat_cols]
+    col_rmss = bkg_rms_map[:, sat_cols]
+    stop_threshes = col_bkgs + config.get("bleed_thresh_sigma", 5.0) * col_rmss
 
-                if end_idx == -1:
-                    sci_slice = sci_data[start_idx::-1, x]
-                    thresh_slice = stop_thresh[start_idx::-1]
+    # Find all segments at once
+    slices = scipy.ndimage.find_objects(labeled_cols)
+
+    for s_idx, slc in enumerate(slices):
+        if slc is None:
+            continue
+
+        y_slice, x_slice = slc
+        y_min = y_slice.start
+        y_max = y_slice.stop - 1
+
+        # In a purely vertical structure, the x_slice spans exactly 1 element
+        col_idx = x_slice.start
+        x = sat_cols[col_idx]
+
+        stop_thresh = stop_threshes[:, col_idx]
+
+        max_grow = config.get("bleed_grow_vertical", 50)
+
+        # Grow up
+        if y_min > 0:
+            start_idx = y_min - 1
+            end_idx = max(-1, start_idx - max_grow)
+
+            if end_idx == -1:
+                sci_slice = sci_data[start_idx::-1, x]
+                thresh_slice = stop_thresh[start_idx::-1]
+            else:
+                sci_slice = sci_data[start_idx:end_idx:-1, x]
+                thresh_slice = stop_thresh[start_idx:end_idx:-1]
+
+            cond = sci_slice > thresh_slice
+            if not np.all(cond):
+                grown = np.argmin(cond)
+            else:
+                grown = len(cond)
+
+            if grown > 0:
+                end_mask = start_idx - grown
+                if end_mask == -1:
+                    new_mask[start_idx::-1, x] = True
                 else:
-                    sci_slice = sci_data[start_idx:end_idx:-1, x]
-                    thresh_slice = stop_thresh[start_idx:end_idx:-1]
+                    new_mask[start_idx:end_mask:-1, x] = True
 
-                cond = sci_slice > thresh_slice
-                if not np.all(cond):
-                    grown = np.argmin(cond)
-                else:
-                    grown = len(cond)
+        # Grow down
+        if y_max < h - 1:
+            start_idx = y_max + 1
+            end_idx = min(h, start_idx + max_grow)
 
-                if grown > 0:
-                    end_mask = start_idx - grown
-                    if end_mask == -1:
-                        new_mask[start_idx::-1, x] = True
-                    else:
-                        new_mask[start_idx:end_mask:-1, x] = True
+            sci_slice = sci_data[start_idx:end_idx, x]
+            thresh_slice = stop_thresh[start_idx:end_idx]
 
-            # Grow down
-            if y_max < h - 1:
-                start_idx = y_max + 1
-                end_idx = min(h, start_idx + max_grow)
+            cond = sci_slice > thresh_slice
+            if not np.all(cond):
+                grown = np.argmin(cond)
+            else:
+                grown = len(cond)
 
-                sci_slice = sci_data[start_idx:end_idx, x]
-                thresh_slice = stop_thresh[start_idx:end_idx]
-
-                cond = sci_slice > thresh_slice
-                if not np.all(cond):
-                    grown = np.argmin(cond)
-                else:
-                    grown = len(cond)
-
-                if grown > 0:
-                    new_mask[start_idx : start_idx + grown, x] = True
+            if grown > 0:
+                new_mask[start_idx : start_idx + grown, x] = True
 
     # Horizontal dilation for safety (optional)
     h_dilation = config.get("bleed_grow_horizontal", 2)
