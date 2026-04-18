@@ -108,12 +108,15 @@ def detect_cosmic_rays(sci_data, existing_mask, saturation_level, gain, read_noi
         # Apply morphological dilation to catch the wings of the cosmic rays
         if config.get('dilate_cr', True):
             print("    Applying morphological dilation to cosmic ray mask...")
-            from skimage.morphology import binary_dilation, disk
+            from scipy.ndimage import binary_dilation as scipy_binary_dilation
             dilation_radius = config.get('dilation_radius', 1)
             
-            selem = disk(dilation_radius)
+            # Create a disk structural element manually to avoid importing skimage
+            y, x = np.ogrid[-dilation_radius:dilation_radius+1, -dilation_radius:dilation_radius+1]
+            selem = (x**2 + y**2) <= dilation_radius**2
+
             if selem.size > 0:
-                crmask_bool = binary_dilation(crmask_bool, footprint=selem)
+                crmask_bool = scipy_binary_dilation(crmask_bool, structure=selem)
 
         # Only return newly detected pixels (not already in existing_mask)
         cr_add_mask = crmask_bool & (~existing_mask)

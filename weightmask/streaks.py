@@ -2,9 +2,6 @@ import numpy as np
 import time
 import warnings
 from scipy.ndimage import median_filter
-from skimage.measure import label, regionprops, ransac, LineModelND
-from skimage.morphology import binary_dilation, disk, white_tophat
-from skimage.filters import frangi, apply_hysteresis_threshold
 
 def _detect_streaks_frangi(data_sub, bkg_rms_map, existing_mask, config):
     """
@@ -49,8 +46,16 @@ def _detect_streaks_frangi(data_sub, bkg_rms_map, existing_mask, config):
         # literally erases the streak before Frangi runs!
         data_clean = data_sub.copy()
                  
+        from skimage.morphology import white_tophat
+        from skimage.filters import frangi, apply_hysteresis_threshold
+        from skimage.measure import label, regionprops
+
         print(f"    Applying White Top-Hat (radius={tophat_radius}) to flatten sky/stars...")
-        selem = disk(tophat_radius)
+
+        # Create a disk structural element manually to avoid importing skimage morphology disk
+        y, x = np.ogrid[-tophat_radius:tophat_radius+1, -tophat_radius:tophat_radius+1]
+        selem = (x**2 + y**2) <= tophat_radius**2
+
         if selem.size > 0:
             tophat_img = white_tophat(data_clean, footprint=selem)
         else:
@@ -185,9 +190,14 @@ def _detect_streaks_frangi(data_sub, bkg_rms_map, existing_mask, config):
 
         # Step 5: Dilation
         print(f"    Dilating {np.sum(streak_core_mask)} streak core pixels by radius {dilation_radius}...")
-        selem = disk(dilation_radius)
+
+        # Create a disk structural element manually to avoid importing skimage morphology
+        y, x = np.ogrid[-dilation_radius:dilation_radius+1, -dilation_radius:dilation_radius+1]
+        selem = (x**2 + y**2) <= dilation_radius**2
+
         if selem.size > 0:
-            streak_mask_final_bool = binary_dilation(streak_core_mask, footprint=selem)
+            from scipy.ndimage import binary_dilation as scipy_binary_dilation
+            streak_mask_final_bool = scipy_binary_dilation(streak_core_mask, structure=selem)
         else:
             streak_mask_final_bool = streak_core_mask
 
@@ -267,6 +277,8 @@ def _detect_trails_ransac(data_sub, bkg_rms_map, existing_mask, config):
     trail_mask = np.zeros(data_sub.shape, dtype=bool)
     
     try:
+        from skimage.measure import ransac, LineModelND
+
         # We might have multiple trails. Try to find the dominant one.
         # For now, just find one dominant trail per call.
         model_robust, inliers = ransac(coords, LineModelND, min_samples=2,
@@ -306,8 +318,13 @@ def _detect_trails_ransac(data_sub, bkg_rms_map, existing_mask, config):
                 
                 # Dilate the thin line
                 dilation_radius = config.get('dilation_radius', 3)
-                selem = disk(dilation_radius)
-                trail_mask = binary_dilation(trail_mask, footprint=selem)
+
+                # Create a disk structural element manually
+                y, x = np.ogrid[-dilation_radius:dilation_radius+1, -dilation_radius:dilation_radius+1]
+                selem = (x**2 + y**2) <= dilation_radius**2
+
+                from scipy.ndimage import binary_dilation as scipy_binary_dilation
+                trail_mask = scipy_binary_dilation(trail_mask, structure=selem)
                 
     except Exception as e:
         print(f"    RANSAC trail detection failed: {e}")
