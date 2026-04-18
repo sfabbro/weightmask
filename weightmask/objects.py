@@ -191,9 +191,6 @@ def detect_objects(data_sub, bkg_rms_map, existing_mask, config):
             return obj_add_mask
 
     except Exception:
-        # print("  Object detection failed")
-        # import traceback
-        # traceback.print_exc()
         pass
 
     return np.zeros(data_sub.shape, dtype=bool)
