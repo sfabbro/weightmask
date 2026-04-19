@@ -274,14 +274,22 @@ def grow_bleed_trails(sci_data, sat_mask, sky_map, bkg_rms_map, config):
     # Identify columns with saturation
     sat_cols = np.where(np.any(sat_mask, axis=0))[0]
 
-    for x in sat_cols:
-        col_sat = sat_mask[:, x]
-        # Find contiguous segments of saturated pixels in this column
-        labeled_segments, num_segments = scipy.ndimage.label(col_sat)
+    if len(sat_cols) > 0:
+        min_x, max_x = np.min(sat_cols), np.max(sat_cols)
+        sliced_sat_mask = sat_mask[:, min_x:max_x+1]
 
-        for s in range(1, num_segments + 1):
-            segment_indices = np.where(labeled_segments == s)[0]
-            y_min, y_max = segment_indices.min(), segment_indices.max()
+        # Find contiguous vertical segments in 2D to avoid 1D looping overhead
+        struct = np.array([[0, 1, 0], [0, 1, 0], [0, 1, 0]])
+        labeled_mask, num_features = scipy.ndimage.label(sliced_sat_mask, structure=struct)
+        slices = scipy.ndimage.find_objects(labeled_mask)
+
+        for s in slices:
+            if s is None:
+                continue
+            sy, sx = s
+            x = sx.start + min_x
+            y_min = sy.start
+            y_max = sy.stop - 1
 
             # Get background levels for this column
             col_bkg = sky_map[:, x] if sky_map is not None else np.zeros(h)

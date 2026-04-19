@@ -37,3 +37,7 @@
 ## 2024-05-24 - Vectorize spatial patch processing with NaN functions
 **Learning:** Nested Python coordinate loops for processing spatial image patches are exceptionally slow on large arrays (e.g. 10000x10000 pixels).
 **Action:** When calculating patch statistics (like median or MAD), truncate dimensions to perfectly fit the patch size, reshape and transpose the arrays into `(num_patches, patch_size * patch_size)`, replace masked pixels with `np.nan` using `np.where`, and apply vectorized functions like `np.nanmedian` along the axis. Process any remaining non-divisible edge patches using a minimal fallback loop.
+
+## 2024-05-24 - Avoid 1D looping for contiguous segments
+**Learning:** Looping over 1D arrays to find contiguous segments (e.g., column-by-column saturation masking) using `scipy.ndimage.label` incurs massive Python overhead when there are many features.
+**Action:** Perform a single 2D `scipy.ndimage.label` on a sliced 2D subset using a strict directional structuring element (like a vertical 3x3 array `[[0, 1, 0], [0, 1, 0], [0, 1, 0]]` for columns), followed by `scipy.ndimage.find_objects` for efficient bounding box retrieval.
