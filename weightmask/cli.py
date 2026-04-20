@@ -67,8 +67,12 @@ def validate_config(config: dict) -> bool:
     return True
 
 
-def process_hdu(
-    hdu_sci, hdu_flat, config: dict, hdu_index: int, tile_size: int = 1024
+def process_image(
+    sci_data_full: np.ndarray,
+    sci_hdr: dict,
+    flat_data_full: Optional[np.ndarray],
+    config: dict,
+    tile_size: int = 1024,
 ) -> Tuple[
     Optional[np.ndarray],
     Optional[np.ndarray],
@@ -77,32 +81,15 @@ def process_hdu(
     Optional[np.ndarray],
     Optional[dict],
 ]:
-    """Processes a single Science HDU to generate all mask and map products."""
+    """Processes a single Science image to generate all mask and map products."""
     hdu_start_time = time.time()
-    hdu_name = getattr(hdu_sci, "name", f"HDU{hdu_index}") if hasattr(hdu_sci, "name") else f"HDU{hdu_index}"
-    print(f"\n--- Processing HDU {hdu_index} ({hdu_name}) ---")
-
-    # For fitsio, we need to read the data and header
-    try:
-        sci_data_full = np.ascontiguousarray(hdu_sci.read().astype(np.float32))
-        sci_hdr = hdu_sci.read_header()
-    except OSError as e:
-        print(f"Skipping HDU: Cannot read science data: {e}")
-        return None, None, None, None, None, None
-
     sci_shape = sci_data_full.shape
-    flat_data_full = None
     using_unit_flat = True
 
-    if hdu_flat is not None:
-        try:
-            flat_data_full = np.ascontiguousarray(hdu_flat.read().astype(np.float32))
-            using_unit_flat = False
-            if flat_data_full.shape != sci_shape:
-                print("Skipping HDU: Flat data shape mismatch.")
-                return None, None, None, None, None, None
-        except OSError as e:
-            print(f"Skipping HDU: Cannot read flat data: {e}")
+    if flat_data_full is not None:
+        using_unit_flat = False
+        if flat_data_full.shape != sci_shape:
+            print("Skipping processing: Flat data shape mismatch.")
             return None, None, None, None, None, None
     else:
         print("  INFO: No flat field provided, assuming flat = 1.0.")
@@ -126,7 +113,6 @@ def process_hdu(
         for x in range(0, sci_shape[1], tile_size):
             tile_slice = (slice(y, y + tile_size), slice(x, x + tile_size))
             sci_data_tile = sci_data_full[tile_slice]
-
             flat_data_tile = flat_data_full[tile_slice]
 
             if not np.isfinite(sci_data_tile).any():
@@ -157,13 +143,10 @@ def process_hdu(
     _, prelim_bkg_rms = estimate_background(sci_data_full, interim_mask_bool, config.get("sep_background", {}))
 
     # --- 1.5 Bleed Trail (Blooming) Masking ---
-    # Now that we have a preliminary background RMS, we can grow the saturated cores
-    # vertically into trails much more robustly than with a fixed dilation.
     sat_cfg = config.get("saturation", {})
     if sat_cfg.get("mask_bleed_trails", True):
         print("  (1.5/7) Growing Bleed Trails for saturated stars...")
         sat_mask_full = grow_bleed_trails(sci_data_full, sat_mask, prelim_bkg_rms * 0, prelim_bkg_rms, sat_cfg)
-        # Update masks
         new_bleed_pixels = sat_mask_full & ~sat_mask
         sat_mask |= new_bleed_pixels
         final_mask_int[new_bleed_pixels] |= MASK_BITS["SAT"]
@@ -230,9 +213,7 @@ def process_hdu(
 
     # --- 5. Inverse Variance Map ---
     print("  (5/7) Calculating inverse variance map...")
-
-    # Pass necessary data to new variance function signature
-    variance_cfg["gain"] = gain  # Pass header/default gain for fallback
+    variance_cfg["gain"] = gain
     variance_cfg["read_noise"] = read_noise_e
     inv_variance_map = calculate_inverse_variance(
         variance_cfg,
@@ -262,7 +243,6 @@ def process_hdu(
     if weight_map is None:
         return None, None, None, None, None, None
 
-    # Store individual masks in header_info for later access
     header_info["individual_masks"] = {
         "bad": bad_mask,
         "sat": sat_mask,
@@ -271,9 +251,8 @@ def process_hdu(
         "streak": streak_mask,
     }
 
-    # --- End Processing ---
     hdu_elapsed = time.time() - hdu_start_time
-    print(f"--- HDU processed in {hdu_elapsed:.2f} seconds ---")
+    print(f"--- Image processed in {hdu_elapsed:.2f} seconds ---")
     return (
         final_mask_int,
         inv_variance_map,
@@ -282,6 +261,38 @@ def process_hdu(
         sky_map,
         header_info,
     )
+
+
+def process_hdu(
+    hdu_sci, hdu_flat, config: dict, hdu_index: int, tile_size: int = 1024
+) -> Tuple[
+    Optional[np.ndarray],
+    Optional[np.ndarray],
+    Optional[np.ndarray],
+    Optional[np.ndarray],
+    Optional[np.ndarray],
+    Optional[dict],
+]:
+    """Processes a single Science HDU to generate all mask and map products."""
+    hdu_name = getattr(hdu_sci, "name", f"HDU{hdu_index}") if hasattr(hdu_sci, "name") else f"HDU{hdu_index}"
+    print(f"\n--- Processing HDU {hdu_index} ({hdu_name}) ---")
+
+    try:
+        sci_data_full = np.ascontiguousarray(hdu_sci.read().astype(np.float32))
+        sci_hdr = hdu_sci.read_header()
+    except OSError as e:
+        print(f"Skipping HDU: Cannot read science data: {e}")
+        return None, None, None, None, None, None
+
+    flat_data_full = None
+    if hdu_flat is not None:
+        try:
+            flat_data_full = np.ascontiguousarray(hdu_flat.read().astype(np.float32))
+        except OSError as e:
+            print(f"Skipping HDU: Cannot read flat data: {e}")
+            return None, None, None, None, None, None
+
+    return process_image(sci_data_full, sci_hdr, flat_data_full, config, tile_size)
 
 
 # --- Main execution function called by entry point ---
