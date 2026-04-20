@@ -1,10 +1,11 @@
 import os
 import sys
 
-sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))  # noqa: E402
 import yaml
 from astropy.io import fits
-from weightmask.pipeline import WeightMapGenerator
+
+from weightmask.pipeline import WeightMapGenerator  # noqa: E402
 
 
 def evaluate_real_mef():
