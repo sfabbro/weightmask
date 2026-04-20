@@ -1,0 +1,19 @@
+[project]
+name = "weightmask"
+channels = ["conda-forge"]
+platforms = ["osx-arm64", "linux-64"]
+
+[tasks]
+lint = "ruff check ."
+format = "ruff format ."
+test = "pytest -v"
+
+[dependencies]
+python = ">=3.10"
+numpy = "*"
+astropy = "*"
+scikit-image = "*"
+sep = "*"
+pyyaml = "*"
+ruff = "*"
+pytest = "*"
