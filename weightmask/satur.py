@@ -276,7 +276,7 @@ def grow_bleed_trails(sci_data, sat_mask, sky_map, bkg_rms_map, config):
 
     if len(sat_cols) > 0:
         min_x, max_x = np.min(sat_cols), np.max(sat_cols)
-        sliced_sat_mask = sat_mask[:, min_x:max_x+1]
+        sliced_sat_mask = sat_mask[:, min_x : max_x + 1]
 
         # Find contiguous vertical segments in 2D to avoid 1D looping overhead
         struct = np.array([[0, 1, 0], [0, 1, 0], [0, 1, 0]])
