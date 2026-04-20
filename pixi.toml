@@ -6,7 +6,7 @@ platforms = ["osx-arm64", "linux-64"]
 [tasks]
 lint = "ruff check ."
 format = "ruff format ."
-test = "pytest -v"
+test = "pytest"
 
 [dependencies]
 python = ">=3.10"
@@ -17,3 +17,6 @@ sep = "*"
 pyyaml = "*"
 ruff = "*"
 pytest = "*"
+
+[pypi-dependencies]
+weightmask = { path = ".", editable = true }
