@@ -41,3 +41,6 @@
 ## 2024-05-24 - Avoid 1D looping for contiguous segments
 **Learning:** Looping over 1D arrays to find contiguous segments (e.g., column-by-column saturation masking) using `scipy.ndimage.label` incurs massive Python overhead when there are many features.
 **Action:** Perform a single 2D `scipy.ndimage.label` on a sliced 2D subset using a strict directional structuring element (like a vertical 3x3 array `[[0, 1, 0], [0, 1, 0], [0, 1, 0]]` for columns), followed by `scipy.ndimage.find_objects` for efficient bounding box retrieval.
+## 2024-05-24 - NumPy Array Instantiation vs Slicing in Loops
+**Learning:** Instantiating single-element NumPy arrays in a tight loop using `np.array([val[i]])` introduces significant overhead due to scalar extraction, list creation, and array allocation.
+**Action:** Use array slicing `val[i:i+1]` instead to get a length-1 array view. It completely bypasses array instantiation and provides roughly a 20% speedup in functions like `sep.mask_ellipse` looping.

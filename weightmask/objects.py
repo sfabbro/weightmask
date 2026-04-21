@@ -117,11 +117,11 @@ def detect_objects(data_sub, bkg_rms_map, existing_mask, config):
                         try:
                             sep.mask_ellipse(
                                 object_mask,
-                                np.array([objects["x"][i]]),
-                                np.array([objects["y"][i]]),
-                                np.array([scaled_a[i]]),
-                                np.array([scaled_b[i]]),
-                                np.array([objects["theta"][i]]),
+                                objects["x"][i : i + 1],
+                                objects["y"][i : i + 1],
+                                scaled_a[i : i + 1],
+                                scaled_b[i : i + 1],
+                                objects["theta"][i : i + 1],
                                 r=base_k,
                             )
                         except Exception:
