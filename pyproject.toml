@@ -42,5 +42,3 @@ line-length = 120
 [tool.ruff.lint]
 select = ["E", "F", "W", "I"]
 ignore = ["E501"]
-[tool.setuptools]
-packages = ["weightmask"]
