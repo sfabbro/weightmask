@@ -3,12 +3,16 @@ import time
 import warnings
 
 import numpy as np
+from astropy.stats import mad_std
+from skimage.draw import line
 from skimage.filters import apply_hysteresis_threshold, frangi
 from skimage.measure import LineModelND, label, ransac, regionprops
 from skimage.morphology import dilation, disk, white_tophat
 
 
-def _apply_frangi_filter(tophat_img, sigmas, black_ridges, block_size, pad, img_rows, img_cols):
+def _apply_frangi_filter(
+    tophat_img, sigmas, black_ridges, block_size, pad, img_rows, img_cols
+):
     print(f"    Applying Frangi Filter (sigmas={sigmas})...")
     ridge_map = np.zeros_like(tophat_img)
 
@@ -111,7 +115,12 @@ def _filter_streak_regions(hyst_mask, min_area, existing_mask, data_sub_shape):
             coords = region.coords
             valid_rows = coords[:, 0]
             valid_cols = coords[:, 1]
-            idx = (valid_rows >= 0) & (valid_rows < img_rows) & (valid_cols >= 0) & (valid_cols < img_cols)
+            idx = (
+                (valid_rows >= 0)
+                & (valid_rows < img_rows)
+                & (valid_cols >= 0)
+                & (valid_cols < img_cols)
+            )
             r_mask = existing_mask[valid_rows[idx], valid_cols[idx]]
             if np.sum(r_mask) > 0.5 * region.area:
                 continue
@@ -126,7 +135,12 @@ def _filter_streak_regions(hyst_mask, min_area, existing_mask, data_sub_shape):
             coords = region.coords
             valid_rows = coords[:, 0]
             valid_cols = coords[:, 1]
-            idx = (valid_rows >= 0) & (valid_rows < img_rows) & (valid_cols >= 0) & (valid_cols < img_cols)
+            idx = (
+                (valid_rows >= 0)
+                & (valid_rows < img_rows)
+                & (valid_cols >= 0)
+                & (valid_cols < img_cols)
+            )
             streak_core_mask[valid_rows[idx], valid_cols[idx]] = True
 
     print(f"    Validated {num_valid_streaks} regions as streaks based on length.")
@@ -155,7 +169,9 @@ def _detect_streaks_frangi(data_sub, bkg_rms_map, existing_mask, config):
 
     try:
         data_clean = data_sub.copy()
-        print(f"    Applying White Top-Hat (radius={tophat_radius}) to flatten sky/stars...")
+        print(
+            f"    Applying White Top-Hat (radius={tophat_radius}) to flatten sky/stars..."
+        )
         selem = disk(tophat_radius)
         if selem.size > 0:
             tophat_img = white_tophat(data_clean, footprint=selem)
@@ -169,18 +185,28 @@ def _detect_streaks_frangi(data_sub, bkg_rms_map, existing_mask, config):
         block_size = cfg.get("block_size", 1024)
         pad = cfg.get("block_pad", 32)
 
-        ridge_map = _apply_frangi_filter(tophat_img, sigmas, black_ridges, block_size, pad, img_rows, img_cols)
+        ridge_map = _apply_frangi_filter(
+            tophat_img, sigmas, black_ridges, block_size, pad, img_rows, img_cols
+        )
 
-        low_thresh, high_thresh = _calculate_hysteresis_thresholds(cfg, tophat_img, ridge_map, existing_mask)
+        low_thresh, high_thresh = _calculate_hysteresis_thresholds(
+            cfg, tophat_img, ridge_map, existing_mask
+        )
 
-        print(f"    Hysteresis Thresholds: Low={low_thresh:.2e}, High={high_thresh:.2e}")
+        print(
+            f"    Hysteresis Thresholds: Low={low_thresh:.2e}, High={high_thresh:.2e}"
+        )
 
         hyst_mask = apply_hysteresis_threshold(ridge_map, low_thresh, high_thresh)
         print(f"    Hysteresis found {np.sum(hyst_mask)} candidate pixel groups.")
 
-        streak_core_mask = _filter_streak_regions(hyst_mask, min_area, existing_mask, data_sub.shape)
+        streak_core_mask = _filter_streak_regions(
+            hyst_mask, min_area, existing_mask, data_sub.shape
+        )
 
-        print(f"    Dilating {np.sum(streak_core_mask)} streak core pixels by radius {dilation_radius}...")
+        print(
+            f"    Dilating {np.sum(streak_core_mask)} streak core pixels by radius {dilation_radius}..."
+        )
 
         from skimage.morphology import dilation
 
@@ -218,7 +244,11 @@ def _detect_trails_ransac(data_sub, bkg_rms_map, existing_mask, config):
     # --- Adaptive RANSAC Thresholds (Density/Clutter Scaling) ---
     # We inspect the global background to see how 'cluttered' or heavy-tailed the noise is.
     # A purely Gaussian background has a P99 around 2.3 sigma.
-    valid_mask = ~existing_mask if existing_mask is not None else np.ones(data_sub.shape, dtype=bool)
+    valid_mask = (
+        ~existing_mask
+        if existing_mask is not None
+        else np.ones(data_sub.shape, dtype=bool)
+    )
     if bkg_rms_map is not None:
         valid_mask &= bkg_rms_map > 0
     valid_data = data_sub[valid_mask]
@@ -245,13 +275,13 @@ def _detect_trails_ransac(data_sub, bkg_rms_map, existing_mask, config):
         median_rms = np.median(bkg_rms_map)
         # Logarithmic threshold scaling for extremely noisy backgrounds
         if median_rms > 15.0:
-            effective_sig = detect_thresh_sig * (1.0 + 0.5 * np.log10(median_rms / 15.0))
+            effective_sig = detect_thresh_sig * (
+                1.0 + 0.5 * np.log10(median_rms / 15.0)
+            )
             thresh = effective_sig * bkg_rms_map
         else:
             thresh = detect_thresh_sig * bkg_rms_map
     else:
-        from astropy.stats import mad_std
-
         thresh = detect_thresh_sig * mad_std(data_sub)
 
     candidate_mask = (data_sub > thresh) & (~existing_mask)
@@ -265,13 +295,17 @@ def _detect_trails_ransac(data_sub, bkg_rms_map, existing_mask, config):
 
     # Optional: if points are overwhelmingly noise (e.g. >30% of image), give up RANSAC
     if len(coords) > 0.3 * data_sub.size:
-        print(f"    WARNING: Too many points for RANSAC ({len(coords)}). Skipping RANSAC.")
+        print(
+            f"    WARNING: Too many points for RANSAC ({len(coords)}). Skipping RANSAC."
+        )
         return np.zeros(data_sub.shape, dtype=bool)
 
     if len(coords) < min_inliers:
         return np.zeros(data_sub.shape, dtype=bool)
 
-    print(f"--> Using RANSAC Method for Sparse Trail Detection ({len(coords)} candidate points)")
+    print(
+        f"--> Using RANSAC Method for Sparse Trail Detection ({len(coords)} candidate points)"
+    )
     trail_mask = np.zeros(data_sub.shape, dtype=bool)
 
     try:
@@ -309,8 +343,6 @@ def _detect_trails_ransac(data_sub, bkg_rms_map, existing_mask, config):
                     f"    RANSAC found trail: length={length:.1f} pix, inliers={np.sum(inliers)}, density={density:.3f}"
                 )
                 # Draw the line in the mask
-                from skimage.draw import line
-
                 y0, x0 = p0.astype(int)
                 y1, x1 = p1.astype(int)
                 # Ensure within bounds
@@ -359,11 +391,15 @@ def detect_streaks(data_sub, bkg_rms_map, existing_mask, config):
 
     # Run primary selected method
     if method == "frangi":
-        streak_mask_bool |= _detect_streaks_frangi(data_sub, bkg_rms_map, existing_mask, config)
+        streak_mask_bool |= _detect_streaks_frangi(
+            data_sub, bkg_rms_map, existing_mask, config
+        )
 
     # Optionally run RANSAC trail detection to catch sparse tracks
     if config.get("enable_ransac_trails", True):
-        streak_mask_bool |= _detect_trails_ransac(data_sub, bkg_rms_map, existing_mask, config)
+        streak_mask_bool |= _detect_trails_ransac(
+            data_sub, bkg_rms_map, existing_mask, config
+        )
 
     # We return the full boolean mask of the detected streak.
     # If the user wants to know how many *new* pixels were added, we can compute it,
@@ -374,7 +410,9 @@ def detect_streaks(data_sub, bkg_rms_map, existing_mask, config):
         num_new_pixels = np.sum(streak_mask_bool)
 
     if num_new_pixels > 0:
-        print(f"  Final streak mask includes {num_new_pixels} new pixels (Method: {method}).")
+        print(
+            f"  Final streak mask includes {num_new_pixels} new pixels (Method: {method})."
+        )
     else:
         print(f"  No new streak pixels added by method '{method}'.")
 
