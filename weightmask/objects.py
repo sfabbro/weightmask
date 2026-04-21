@@ -1,5 +1,6 @@
 import numpy as np
 import sep
+from skimage.draw import ellipse
 
 
 def detect_objects(data_sub, bkg_rms_map, existing_mask, config):
@@ -108,7 +109,6 @@ def detect_objects(data_sub, bkg_rms_map, existing_mask, config):
             except Exception as e:
                 print(f"  [Bolt] Error applying vectorized ellipse mask: {e}")
                 # Fallback to individual ellipse rendering
-                from skimage.draw import ellipse
 
                 h, w = object_mask.shape
                 for i in range(len(objects)):
