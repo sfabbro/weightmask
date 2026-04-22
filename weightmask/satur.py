@@ -278,6 +278,13 @@ def grow_bleed_trails(sci_data, sat_mask, sky_map, bkg_rms_map, config):
         min_x, max_x = np.min(sat_cols), np.max(sat_cols)
         sliced_sat_mask = sat_mask[:, min_x : max_x + 1]
 
+        # ⚡ Bolt: Extract configuration lookups and pre-allocate fallback arrays outside the loop
+        # to avoid redundant dict lookups and allocations inside the tight iteration over saturation segments
+        bleed_thresh_sigma = config.get("bleed_thresh_sigma", 5.0)
+        max_grow = config.get("bleed_grow_vertical", 50)
+        fallback_bkg = np.zeros(h) if sky_map is None else None
+        fallback_rms = np.full(h, 10.0) if bkg_rms_map is None else None
+
         # Find contiguous vertical segments in 2D to avoid 1D looping overhead
         struct = np.array([[0, 1, 0], [0, 1, 0], [0, 1, 0]])
         labeled_mask, num_features = scipy.ndimage.label(sliced_sat_mask, structure=struct)
