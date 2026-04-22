@@ -1,4 +1,3 @@
-
 ## 2024-05-18 - Avoid Python loops for pixel masking
 **Learning:** Pure Python iteration to draw thousands of ellipses using `skimage.draw.ellipse` creates a significant bottleneck on dense star fields. Vectorized C-extensions like `sep.mask_ellipse` offer ~50-100x speedups.
 **Action:** Always prefer C-level vectorized operations (`sep.mask_ellipse`, `skimage.draw.polygon2mask`, etc.) over manual pixel-level `for` loops when generating masks in Python.
@@ -34,6 +33,7 @@
 ## 2023-10-25 - Parallelizing heavy skimage operations
 **Learning:** Nested loops on image blocks mapping sequentially to expensive skimage functions (like `skimage.filters.frangi`) can be a significant bottleneck. Python's `concurrent.futures.ThreadPoolExecutor` handles block parallelization very efficiently here, dropping the filter time significantly (e.g. 4x speedup).
 **Action:** Always parallelize block processing on image data using `ThreadPoolExecutor` or `ProcessPoolExecutor` where operations on blocks are independent.
+
 ## 2024-05-24 - Vectorize spatial patch processing with NaN functions
 **Learning:** Nested Python coordinate loops for processing spatial image patches are exceptionally slow on large arrays (e.g. 10000x10000 pixels).
 **Action:** When calculating patch statistics (like median or MAD), truncate dimensions to perfectly fit the patch size, reshape and transpose the arrays into `(num_patches, patch_size * patch_size)`, replace masked pixels with `np.nan` using `np.where`, and apply vectorized functions like `np.nanmedian` along the axis. Process any remaining non-divisible edge patches using a minimal fallback loop.
@@ -41,6 +41,7 @@
 ## 2024-05-24 - Avoid 1D looping for contiguous segments
 **Learning:** Looping over 1D arrays to find contiguous segments (e.g., column-by-column saturation masking) using `scipy.ndimage.label` incurs massive Python overhead when there are many features.
 **Action:** Perform a single 2D `scipy.ndimage.label` on a sliced 2D subset using a strict directional structuring element (like a vertical 3x3 array `[[0, 1, 0], [0, 1, 0], [0, 1, 0]]` for columns), followed by `scipy.ndimage.find_objects` for efficient bounding box retrieval.
+
 ## 2024-06-25 - Local imports overhead
 **Learning:** Local imports (importing packages inside function calls) add significant execution overhead (~30% worse execution time for imports in a loop).
 **Action:** Always move imports to the top module level when possible, especially for libraries that will be called inside loops or frequently executed functions.
