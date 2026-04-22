@@ -290,6 +290,12 @@ def grow_bleed_trails(sci_data, sat_mask, sky_map, bkg_rms_map, config):
         labeled_mask, num_features = scipy.ndimage.label(sliced_sat_mask, structure=struct)
         slices = scipy.ndimage.find_objects(labeled_mask)
 
+        # Pre-allocate config constants and fallback arrays outside the loop
+        bleed_thresh_sigma = config.get("bleed_thresh_sigma", 5.0)
+        max_grow = config.get("bleed_grow_vertical", 50)
+        fallback_bkg = np.zeros(h) if sky_map is None else None
+        fallback_rms = np.full(h, 10.0) if bkg_rms_map is None else None
+
         for s in slices:
             if s is None:
                 continue
