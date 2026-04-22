@@ -44,3 +44,7 @@
 ## 2024-06-25 - Local imports overhead
 **Learning:** Local imports (importing packages inside function calls) add significant execution overhead (~30% worse execution time for imports in a loop).
 **Action:** Always move imports to the top module level when possible, especially for libraries that will be called inside loops or frequently executed functions.
+
+## 2024-05-24 - Pre-allocate inner loop arrays and config constants
+**Learning:** Instantiating new NumPy arrays (like `np.zeros(h)`) or fetching values from configuration dictionaries inside high-frequency loops (like iterating over saturation segments) creates substantial redundant memory allocation and runtime overhead.
+**Action:** Extract invariant dictionary lookups and array instantiations to variables outside the loop. Reusing a pre-allocated array inside the loop is completely safe as long as downstream calculations create a new object (e.g. `stop_thresh = col_bkg + ...`) rather than mutating it in place.
