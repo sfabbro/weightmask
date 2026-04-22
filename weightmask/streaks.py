@@ -3,6 +3,8 @@ import time
 import warnings
 
 import numpy as np
+from astropy.stats import mad_std
+from skimage.draw import line
 from skimage.filters import apply_hysteresis_threshold, frangi
 from skimage.measure import LineModelND, label, ransac, regionprops
 from skimage.morphology import dilation, disk, white_tophat
@@ -250,8 +252,6 @@ def _detect_trails_ransac(data_sub, bkg_rms_map, existing_mask, config):
         else:
             thresh = detect_thresh_sig * bkg_rms_map
     else:
-        from astropy.stats import mad_std
-
         thresh = detect_thresh_sig * mad_std(data_sub)
 
     candidate_mask = (data_sub > thresh) & (~existing_mask)
@@ -309,8 +309,6 @@ def _detect_trails_ransac(data_sub, bkg_rms_map, existing_mask, config):
                     f"    RANSAC found trail: length={length:.1f} pix, inliers={np.sum(inliers)}, density={density:.3f}"
                 )
                 # Draw the line in the mask
-                from skimage.draw import line
-
                 y0, x0 = p0.astype(int)
                 y1, x1 = p1.astype(int)
                 # Ensure within bounds

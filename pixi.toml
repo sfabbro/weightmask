@@ -19,6 +19,7 @@ fitsio = "*"
 astroscrappy = "*"
 ruff = "*"
 pytest = "*"
+pre-commit = ">=4.5.1,<5"
 
 [pypi-dependencies]
 weightmask = { path = ".", editable = true }

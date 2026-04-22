@@ -283,15 +283,11 @@ def grow_bleed_trails(sci_data, sat_mask, sky_map, bkg_rms_map, config):
         labeled_mask, num_features = scipy.ndimage.label(sliced_sat_mask, structure=struct)
         slices = scipy.ndimage.find_objects(labeled_mask)
 
-        # Pre-allocate arrays and get config values outside the loop
-        # to avoid redundant allocations and dictionary lookups
+        # Pre-allocate config constants and fallback arrays outside the loop
         bleed_thresh_sigma = config.get("bleed_thresh_sigma", 5.0)
         max_grow = config.get("bleed_grow_vertical", 50)
-
-        if sky_map is None:
-            sky_map_fallback = np.zeros(h)
-        if bkg_rms_map is None:
-            bkg_rms_map_fallback = np.full(h, 10.0)
+        fallback_bkg = np.zeros(h) if sky_map is None else None
+        fallback_rms = np.full(h, 10.0) if bkg_rms_map is None else None
 
         for s in slices:
             if s is None:
@@ -302,8 +298,8 @@ def grow_bleed_trails(sci_data, sat_mask, sky_map, bkg_rms_map, config):
             y_max = sy.stop - 1
 
             # Get background levels for this column
-            col_bkg = sky_map[:, x] if sky_map is not None else sky_map_fallback
-            col_rms = bkg_rms_map[:, x] if bkg_rms_map is not None else bkg_rms_map_fallback
+            col_bkg = sky_map[:, x] if sky_map is not None else fallback_bkg
+            col_rms = bkg_rms_map[:, x] if bkg_rms_map is not None else fallback_rms
 
             # Use a conservative threshold (e.g. 5 sigma) to prevent over-growing into noise
             stop_thresh = col_bkg + bleed_thresh_sigma * col_rms
