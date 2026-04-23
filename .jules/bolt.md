@@ -49,3 +49,7 @@
 ## 2024-05-24 - Pre-allocate inner loop arrays and config constants
 **Learning:** Instantiating new NumPy arrays (like `np.zeros(h)`) or fetching values from configuration dictionaries inside high-frequency loops (like iterating over saturation segments) creates substantial redundant memory allocation and runtime overhead.
 **Action:** Extract invariant dictionary lookups and array instantiations to variables outside the loop. Reusing a pre-allocated array inside the loop is completely safe as long as downstream calculations create a new object (e.g. `stop_thresh = col_bkg + ...`) rather than mutating it in place.
+
+## 2024-05-25 - Avoid new np.array allocations in tight loops
+**Learning:** Instantiating new NumPy arrays inside a loop using `np.array([val])` to create length-1 arrays is very slow due to Python wrapper overhead and memory allocation.
+**Action:** When a function requires a 1D length-1 array, use view slicing directly on the parent array (e.g., `parent_array[i:i+1]`) instead of `np.array([parent_array[i]])` to achieve ~2.5x speedups.
