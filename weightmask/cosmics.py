@@ -1,8 +1,12 @@
 import warnings
 
 import numpy as np
-from astroscrappy import detect_cosmics
 from scipy.ndimage import convolve
+
+try:
+    from astroscrappy import detect_cosmics
+except Exception:  # pragma: no cover - exercised indirectly in environments without astroscrappy
+    detect_cosmics = None
 
 
 def _get_psf_peakiness(fwhm):
@@ -37,6 +41,20 @@ def _adjust_dynamic_sigclip(config, bkg_rms_map, default_sigclip):
         warnings.warn(f"Dynamic sigclip adjustment failed: {e}", RuntimeWarning)
 
     return float(sigclip)
+
+
+def _adjust_dynamic_objlim(config, existing_mask, default_objlim):
+    """Increase object protection in crowded scenes with many masked pixels."""
+    objlim = float(default_objlim)
+    if not config.get("dynamic_objlim", True) or existing_mask is None:
+        return objlim
+
+    coverage = float(np.mean(existing_mask))
+    if coverage <= 0:
+        return objlim
+    objlim *= 1.0 + min(coverage * 4.0, 1.5)
+    print(f"    Dynamically adjusted objlim to {objlim:.2f} based on pre-mask coverage {coverage:.2%}")
+    return float(objlim)
 
 
 def _apply_psf_protection(crmask_bool, sci_data, config, gain, read_noise, bkg_rms_map):
@@ -79,14 +97,43 @@ def _apply_morphological_dilation(crmask_bool, config):
         return crmask_bool
 
     print("    Applying morphological dilation to cosmic ray mask...")
-    from skimage.morphology import binary_dilation, disk
+    from skimage.morphology import dilation, disk
 
     dilation_radius = config.get("dilation_radius", 1)
     selem = disk(dilation_radius)
     if selem.size > 0:
-        crmask_bool = binary_dilation(crmask_bool, footprint=selem)
+        crmask_bool = dilation(crmask_bool, footprint=selem)
 
     return crmask_bool
+
+
+def _post_filter_components(crmask_bool, sci_data, bkg_rms_map, config):
+    """Reject large, diffuse components that are unlikely to be cosmic rays."""
+    from skimage.measure import label, regionprops
+
+    labeled = label(crmask_bool.astype(np.uint8), connectivity=2)
+    if labeled.max() == 0:
+        return crmask_bool
+
+    max_component_area = int(config.get("max_component_area", 12))
+    min_contrast_sigma = float(config.get("min_component_contrast_sigma", 4.0))
+    filtered = np.zeros_like(crmask_bool, dtype=bool)
+    if bkg_rms_map is not None:
+        safe_rms = np.where((bkg_rms_map > 0) & np.isfinite(bkg_rms_map), bkg_rms_map, np.nanmedian(bkg_rms_map))
+    else:
+        safe_rms = np.ones_like(sci_data, dtype=np.float32)
+
+    for region in regionprops(labeled, intensity_image=sci_data):
+        coords = region.coords
+        if region.area > max_component_area:
+            continue
+        local_values = sci_data[coords[:, 0], coords[:, 1]]
+        local_rms = safe_rms[coords[:, 0], coords[:, 1]]
+        snr = np.nanmax(local_values / np.maximum(local_rms, 1e-6))
+        if not np.isfinite(snr) or snr < min_contrast_sigma:
+            continue
+        filtered[coords[:, 0], coords[:, 1]] = True
+    return filtered
 
 
 def detect_cosmic_rays(
@@ -113,8 +160,12 @@ def detect_cosmic_rays(
     Returns:
         ndarray: Boolean mask of newly detected cosmic ray pixels
     """
+    if detect_cosmics is None:
+        print("  Astroscrappy is unavailable; returning empty cosmic-ray mask.")
+        return np.zeros(sci_data.shape, dtype=bool)
+
     sigclip = _adjust_dynamic_sigclip(config, bkg_rms_map, default_sigclip=config.get("sigclip", 4.5))
-    objlim = config.get("objlim", 5.0)
+    objlim = _adjust_dynamic_objlim(config, existing_mask, default_objlim=config.get("objlim", 5.0))
 
     try:
         # Use astroscrappy to detect cosmic rays
@@ -130,6 +181,7 @@ def detect_cosmic_rays(
         )
 
         crmask_bool = _apply_psf_protection(crmask_bool, sci_data, config, gain, read_noise, bkg_rms_map)
+        crmask_bool = _post_filter_components(crmask_bool.astype(bool), sci_data, bkg_rms_map, config)
 
         crmask_bool = _apply_morphological_dilation(crmask_bool, config)
 

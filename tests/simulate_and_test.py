@@ -12,12 +12,21 @@ from weightmask.satur import detect_saturated_pixels, grow_bleed_trails
 from weightmask.streaks import detect_streaks
 
 
+def _f1(precision, recall):
+    if precision + recall <= 0:
+        return 0.0
+    return 2.0 * precision * recall / (precision + recall)
+
+
 def _generate_background(size, x, y, regime_type):
     bkg_base = 100.0
-    if regime_type in ["complex", "extreme_gradient"]:
+    if regime_type in ["complex", "extreme_gradient", "amplifier_step"]:
         bkg_map = bkg_base + 20.0 * np.sin(x / 100.0) * np.cos(y / 150.0)
         if regime_type == "extreme_gradient":
             bkg_map += 0.5 * x + 0.2 * y
+        elif regime_type == "amplifier_step":
+            bkg_map += 0.05 * x
+            bkg_map[:, size // 2 :] += 35.0
         else:
             bkg_map += 0.05 * x
     else:
@@ -25,22 +34,32 @@ def _generate_background(size, x, y, regime_type):
     return bkg_map
 
 
-def _add_stars(data, gt, size, x, y, num_stars, regime_type):
+def _add_stars(data, gt, size, x, y, num_stars, regime_type, rng):
     from skimage.draw import disk
 
     center_x, center_y = size / 2, size / 2
     for _ in range(num_stars):
-        cx, cy = np.random.randint(20, size - 20, size=2)
-        flux = np.random.uniform(500, 5000)
+        cx, cy = rng.integers(20, size - 20, size=2)
+        flux = rng.uniform(500, 5000)
 
-        if regime_type in ["complex", "extreme_gradient"]:
+        if regime_type in ["complex", "extreme_gradient", "amplifier_step"]:
             r = np.sqrt((cx - center_x) ** 2 + (cy - center_y) ** 2)
             sigma = 1.5 + 2.0 * (r / (size / np.sqrt(2)))
             star = flux * np.exp(-((x - cx) ** 2 + (y - cy) ** 2) / (2 * sigma**2))
         elif regime_type == "elliptical_psf":
-            sigma_x = np.random.uniform(1.5, 2.5)
-            sigma_y = sigma_x * np.random.uniform(2.0, 3.5)
-            theta = np.deg2rad(np.random.uniform(0, 180))
+            sigma_x = rng.uniform(1.5, 2.5)
+            sigma_y = sigma_x * rng.uniform(2.0, 3.5)
+            theta = np.deg2rad(rng.uniform(0, 180))
+
+            a = np.cos(theta) ** 2 / (2 * sigma_x**2) + np.sin(theta) ** 2 / (2 * sigma_y**2)
+            b = -np.sin(2 * theta) / (4 * sigma_x**2) + np.sin(2 * theta) / (4 * sigma_y**2)
+            c = np.sin(theta) ** 2 / (2 * sigma_x**2) + np.cos(theta) ** 2 / (2 * sigma_y**2)
+
+            star = flux * np.exp(-(a * (x - cx) ** 2 + 2 * b * (x - cx) * (y - cy) + c * (y - cy) ** 2))
+        elif regime_type == "elongated_galaxies":
+            sigma_x = rng.uniform(2.0, 4.0)
+            sigma_y = sigma_x * rng.uniform(1.5, 3.0)
+            theta = np.deg2rad(rng.uniform(0, 180))
 
             a = np.cos(theta) ** 2 / (2 * sigma_x**2) + np.sin(theta) ** 2 / (2 * sigma_y**2)
             b = -np.sin(2 * theta) / (4 * sigma_x**2) + np.sin(2 * theta) / (4 * sigma_y**2)
@@ -48,7 +67,7 @@ def _add_stars(data, gt, size, x, y, num_stars, regime_type):
 
             star = flux * np.exp(-(a * (x - cx) ** 2 + 2 * b * (x - cx) * (y - cy) + c * (y - cy) ** 2))
         else:
-            sigma = np.random.uniform(1.5, 3.0)
+            sigma = rng.uniform(1.5, 3.0)
             star = flux * np.exp(-((x - cx) ** 2 + (y - cy) ** 2) / (2 * sigma**2))
 
         data += star
@@ -75,30 +94,30 @@ def _add_saturated_stars(data, gt, size, x, y, regime_type):
     gt["sat"][data >= 65000] = True
 
 
-def _apply_noise(data, bkg_map, size, noise_level, regime_type):
+def _apply_noise(data, bkg_map, size, noise_level, regime_type, rng):
     if regime_type != "normal":
         safe_data = np.maximum(data, 0.0)
-        noisy_data = np.random.poisson(safe_data).astype(np.float32)
+        noisy_data = rng.poisson(safe_data).astype(np.float32)
 
         read_noise = noise_level
-        noisy_data += np.random.normal(0, read_noise, size=(size, size)).astype(np.float32)
+        noisy_data += rng.normal(0, read_noise, size=(size, size)).astype(np.float32)
 
         data = noisy_data
         bkg_rms = np.sqrt(bkg_map + read_noise**2).astype(np.float32)
     else:
-        data += np.random.normal(0, noise_level, size=(size, size)).astype(np.float32)
+        data += rng.normal(0, noise_level, size=(size, size)).astype(np.float32)
         bkg_rms = np.ones_like(data) * noise_level
 
     data = np.clip(data, 0, 65535.0)
     return data, bkg_rms
 
 
-def _add_cosmic_rays(data, gt, size):
+def _add_cosmic_rays(data, gt, size, rng):
     for _ in range(20):
-        cr_x, cr_y = np.random.randint(10, size - 10, size=2)
-        cr_length = np.random.randint(1, 5)
+        cr_x, cr_y = rng.integers(10, size - 10, size=2)
+        cr_length = int(rng.integers(1, 5))
         for i in range(cr_length):
-            data[cr_y + i, cr_x] += np.random.uniform(2000, 10000)
+            data[cr_y + i, cr_x] += rng.uniform(2000, 10000)
             gt["cr"][cr_y + i, cr_x] = True
 
 
@@ -108,12 +127,15 @@ def _add_streaks(data, gt, size, noise_level, regime_type):
     s_flux = 10.0 * noise_level
     rr, cc = line(100, 100, size - 100, size - 200)
 
-    if regime_type == "thick_streak":
+    if regime_type in {"thick_streak", "variable_width_streak"}:
         for w in range(-3, 4):
             rr_w, cc_w = line(100 + w, 100, size - 100 + w, size - 200)
             for i, j in zip(rr_w, cc_w):
                 if 0 <= i < size and 0 <= j < size:
-                    data[i, j] += s_flux * 0.8
+                    flux_scale = 0.8
+                    if regime_type == "variable_width_streak":
+                        flux_scale *= 0.5 + 0.5 * np.sin((i + j) / 60.0)
+                    data[i, j] += s_flux * flux_scale
                     gt["streak"][
                         max(0, i - 2) : min(size, i + 3),
                         max(0, j - 2) : min(size, j + 3),
@@ -163,10 +185,24 @@ def _add_streaks(data, gt, size, noise_level, regime_type):
                 data[i, j] += dot_flux
 
 
-def create_simulated_data(size=1024, noise_level=10.0, num_stars=50, streak_flux=30.0, regime_type="normal"):
+def _inject_dark_defects(data, gt, size, noise_level, rng):
+    hot_pixels = 25
+    cols = rng.choice(np.arange(8, size - 8), size=3, replace=False)
+    for _ in range(hot_pixels):
+        x = int(rng.integers(8, size - 8))
+        y = int(rng.integers(8, size - 8))
+        data[y, x] += 30.0 * noise_level
+        gt["defects"][y, x] = True
+    for col in cols:
+        data[:, col] += 8.0 * noise_level
+        gt["defects"][:, col] = True
+
+
+def create_simulated_data(size=1024, noise_level=10.0, num_stars=50, streak_flux=30.0, regime_type="normal", seed=None):
     print(
-        f"Generating synthetic data (size={size}, noise={noise_level}, stars={num_stars}, streak_flux={streak_flux}, regime_type={regime_type})..."
+        f"Generating synthetic data (size={size}, noise={noise_level}, stars={num_stars}, streak_flux={streak_flux}, regime_type={regime_type}, seed={seed})..."
     )
+    rng = np.random.default_rng(seed)
 
     x, y = np.meshgrid(np.arange(size), np.arange(size))
 
@@ -178,13 +214,16 @@ def create_simulated_data(size=1024, noise_level=10.0, num_stars=50, streak_flux
         "sat": np.zeros((size, size), dtype=bool),
         "cr": np.zeros((size, size), dtype=bool),
         "streak": np.zeros((size, size), dtype=bool),
+        "defects": np.zeros((size, size), dtype=bool),
     }
 
-    _add_stars(data, gt, size, x, y, num_stars, regime_type)
+    _add_stars(data, gt, size, x, y, num_stars, regime_type, rng)
     _add_saturated_stars(data, gt, size, x, y, regime_type)
-    data, bkg_rms = _apply_noise(data, bkg_map, size, noise_level, regime_type)
-    _add_cosmic_rays(data, gt, size)
+    data, bkg_rms = _apply_noise(data, bkg_map, size, noise_level, regime_type, rng)
+    _add_cosmic_rays(data, gt, size, rng)
     _add_streaks(data, gt, size, noise_level, regime_type)
+    if regime_type in {"complex", "extreme_gradient", "amplifier_step", "variable_width_streak"}:
+        _inject_dark_defects(data, gt, size, noise_level, rng)
 
     return data, bkg_rms, gt
 
@@ -220,12 +259,55 @@ def evaluate_mask(pred_mask, gt_mask, name, pre_mask=None):
     recall = min(recall, 1.0)
 
     print(
-        f"  [{name}] Precision: {precision:.3f} | Recall: {recall:.3f} (TP:{true_positives}, FP:{false_positives}, FN:{false_negatives}, PredSum:{np.sum(p_mask)}, GTSum:{np.sum(g_mask)})"
+        f"  [{name}] Precision: {precision:.3f} | Recall: {recall:.3f} | F1: {_f1(precision, recall):.3f} "
+        f"(TP:{true_positives}, FP:{false_positives}, FN:{false_negatives}, PredSum:{np.sum(p_mask)}, GTSum:{np.sum(g_mask)})"
     )
     return precision, recall
 
 
-def run_masking_test(config_path, args, save_fits=True):
+def _benchmark_gate_failures(results):
+    streak_f1 = {name: _f1(*metrics.get("Streaks", (0.0, 0.0))) for name, metrics in results.items()}
+    cosmic_f1 = [_f1(*metrics.get("Cosmics", (0.0, 0.0))) for metrics in results.values()]
+    object_f1 = [_f1(*metrics.get("Objects", (0.0, 0.0))) for metrics in results.values()]
+
+    failures = []
+    avg_streak_f1 = float(np.mean(list(streak_f1.values()))) if streak_f1 else 0.0
+    if avg_streak_f1 < 0.65:
+        failures.append(f"Average streak F1 {avg_streak_f1:.3f} < 0.650")
+
+    if streak_f1.get("Complex Ideal (Var Bkg/PSF)", 0.0) < 0.45:
+        failures.append(
+            f"Complex Ideal (Var Bkg/PSF) streak F1 {streak_f1.get('Complex Ideal (Var Bkg/PSF)', 0.0):.3f} < 0.450"
+        )
+
+    if streak_f1.get("Extreme Poisson Crowded", 0.0) < 0.25:
+        failures.append(
+            f"Extreme Poisson Crowded streak F1 {streak_f1.get('Extreme Poisson Crowded', 0.0):.3f} < 0.250"
+        )
+
+    zero_failures = [name for name, metrics in results.items() if metrics.get("Streaks", (0.0, 0.0)) == (0.0, 0.0)]
+    if zero_failures:
+        failures.append("Zero streak precision/recall in: " + ", ".join(sorted(zero_failures)))
+
+    avg_cosmic_f1 = float(np.mean(cosmic_f1)) if cosmic_f1 else 0.0
+    if avg_cosmic_f1 < 0.67:
+        failures.append(f"Average cosmic-ray F1 {avg_cosmic_f1:.3f} < 0.670")
+
+    avg_object_f1 = float(np.mean(object_f1)) if object_f1 else 0.0
+    if avg_object_f1 < 0.40:
+        failures.append(f"Average object F1 {avg_object_f1:.3f} < 0.400")
+
+    crowded_object_recall = results.get("Galactic Plane (Crowded)", {}).get("Objects", (0.0, 0.0))[1]
+    if crowded_object_recall < 0.95:
+        failures.append(f"Crowded-field object recall {crowded_object_recall:.3f} < 0.950")
+
+    if any(metrics.get("CR_Star_Overlap", 0) > 0 for metrics in results.values()):
+        failures.append("CR-star overlap is non-zero in one or more regimes")
+
+    return failures
+
+
+def run_masking_test(config_path, args, save_fits=True, return_products=False):
     with open(config_path, "r") as f:
         config = yaml.safe_load(f)
 
@@ -235,6 +317,7 @@ def run_masking_test(config_path, args, save_fits=True):
         num_stars=args.stars,
         streak_flux=args.streak,
         regime_type=getattr(args, "regime_type", "normal"),
+        seed=getattr(args, "seed", None),
     )
     existing_mask = np.zeros_like(sci_data, dtype=bool)
 
@@ -326,6 +409,19 @@ def run_masking_test(config_path, args, save_fits=True):
             clobber=True,
         )
     existing_mask |= streak_mask & ~existing_mask
+
+    if return_products:
+        return metrics, {
+            "science": sci_data,
+            "bkg_rms": bkg_rms,
+            "ground_truth": gt,
+            "masks": {
+                "saturation": sat_mask,
+                "cosmics": cr_mask,
+                "objects": obj_mask,
+                "streaks": streak_mask,
+            },
+        }
 
     return metrics
 
@@ -461,16 +557,31 @@ def run_auto_sweep(report_file=None):
     print("=" * 50)
     for name, metrics in results.items():
         cr_overlap = metrics.get("CR_Star_Overlap", 0)
+        streak_f1 = _f1(*metrics["Streaks"])
         print(
-            f"{name:30s} | Streaks P/R: {metrics['Streaks'][0]:.3f}/{metrics['Streaks'][1]:.3f} | CR-Star Overlap: {cr_overlap}"
+            f"{name:30s} | Streaks P/R/F1: {metrics['Streaks'][0]:.3f}/{metrics['Streaks'][1]:.3f}/{streak_f1:.3f} "
+            f"| CR-Star Overlap: {cr_overlap}"
         )
+
+    failures = _benchmark_gate_failures(results)
+    if failures:
+        print("\nBenchmark gate failures:")
+        for failure in failures:
+            print(f"  - {failure}")
+    else:
+        print("\nBenchmark gate PASSED.")
 
     if report_file:
         print(f"\nGenerating Markdown report: {report_file}")
         with open(report_file, "w") as f:
             f.write("# Weightmask Benchmark Report\n\n")
-            f.write("| Regime | Saturation P/R | Cosmics P/R | Objects P/R | Streaks P/R | CR-Star Overlap |\n")
-            f.write("|---|---|---|---|---|---|\n")
+            f.write(
+                "| Regime | Saturation P | Saturation R | Saturation F1 | "
+                "Cosmics P | Cosmics R | Cosmics F1 | "
+                "Objects P | Objects R | Objects F1 | "
+                "Streaks P | Streaks R | Streaks F1 | CR-Star Overlap |\n"
+            )
+            f.write("|---|---|---|---|---|---|---|---|---|---|---|---|---|---|\n")
             for name, metrics in results.items():
                 sat_p, sat_r = metrics.get("Saturation", (0, 0))
                 cr_p, cr_r = metrics.get("Cosmics", (0, 0))
@@ -478,8 +589,20 @@ def run_auto_sweep(report_file=None):
                 streak_p, streak_r = metrics.get("Streaks", (0, 0))
                 cr_overlap = metrics.get("CR_Star_Overlap", 0)
                 f.write(
-                    f"| {name} | {sat_p:.3f}/{sat_r:.3f} | {cr_p:.3f}/{cr_r:.3f} | {obj_p:.3f}/{obj_r:.3f} | {streak_p:.3f}/{streak_r:.3f} | {cr_overlap} |\n"
+                    f"| {name} | "
+                    f"{sat_p:.3f} | {sat_r:.3f} | {_f1(sat_p, sat_r):.3f} | "
+                    f"{cr_p:.3f} | {cr_r:.3f} | {_f1(cr_p, cr_r):.3f} | "
+                    f"{obj_p:.3f} | {obj_r:.3f} | {_f1(obj_p, obj_r):.3f} | "
+                    f"{streak_p:.3f} | {streak_r:.3f} | {_f1(streak_p, streak_r):.3f} | "
+                    f"{cr_overlap} |\n"
                 )
+
+            if failures:
+                f.write("\n## Benchmark Gate Failures\n\n")
+                for failure in failures:
+                    f.write(f"- {failure}\n")
+            else:
+                f.write("\n## Benchmark Gate\n\nPassed.\n")
 
 
 if __name__ == "__main__":

@@ -176,6 +176,7 @@ sandbox/
 # Local test outputs and debug scripts
 test_outputs/
 debug_*.py
+.jules/
 
 # Data and logs
 benchmark_data/

@@ -53,11 +53,12 @@ WeightMask uses a YAML configuration file to control its behavior. If not specif
 #### Flat Masking
 ```yaml
 flat_masking:
-  low_thresh: 0.5
-  high_thresh: 2.0
+  local_filter_size: 15
+  local_low_thresh: 0.5
+  local_high_thresh: 2.0
   col_enable: True
-  col_low_var_factor: 0.05
-  col_median_dev_factor: 0.1
+  col_deriv_sigma: 10.0
+  col_dead_thresh: 0.1
 ```
 
 #### Saturation Detection
@@ -65,21 +66,25 @@ flat_masking:
 saturation:
   method: 'histogram'
   keyword: 'SATURATE'
+  effective_full_scale: 65535.0
+  histogram_params:
+    guard_fraction: 0.75
+    max_upper_factor: 1.05
   fallback_level: 65000.0
 ```
 
 #### Background Estimation
 ```yaml
-background:
-  method: 'sep' # Options: 'sep', 'median_filter'
-
-  # Parameters for method: 'sep'
+sep_background:
+  method: 'sep' # Options: 'sep', 'median_filter', 'robust_median_fallback'
   box_size: 128
+  auto_box_scaling: true
   filter_size: 3
   iterations: 2 # Number of iterative background/object detection loops
-
-  # Parameters for method: 'median_filter'
+  mask_threshold: 0.8
+  max_box_size: 1024
   median_kernel_size: 31 # Kernel size for the median filter
+  smooth_surface_fallback: true
 ```
 
 #### Astroscrappy Cosmic Ray Detection
@@ -88,31 +93,59 @@ cosmic_ray:
   sigclip: 4.5
   objlim: 5.0
   dynamic_sigclip: true # Auto-adjust sigclip based on background noise
+  dynamic_objlim: true
 ```
 
 #### SEP Object Detection
 ```yaml
 sep_objects:
-  extract_thresh: 1.5
-  min_area: 5
+  extract_thresh: 3.0
+  min_area: 10
+  deblend_nthresh: 32
+  deblend_cont: 0.005
+  seed_thresh_factor: 1.25
   ellipse_k: 2.5
+  dynamic_halo_scaling: true
+  halo_brightness_factor: 0.15
+  max_halo_multiplier: 1.8
+  handoff_elongated_to_streak: true
 ```
 
 #### Streak Masking
 ```yaml
 streak_masking:
   enable: True
-  method: 'ransac' # Options: 'ransac', 'hough'
-  dilation_radius: 5
-
-  # Advanced parameters for 'ransac' method
-  ransac_params:
-    use_canny: True
-    canny_sigma: 1.0
+  mode: 'auto_ground' # Options: 'auto_ground', 'satdet_only', 'mrt_only', 'legacy_compare'
+  debug: false
+  dilation_radius: 2
+  satdet_params:
+    rescale_percentiles: [4.5, 93.0]
+    gaussian_sigma: 2.0
+    gaussian_sigmas: [1.5, 2.0, 3.0]
     canny_low_threshold: 0.1
-    canny_high_threshold: 0.5
-    min_elongation: 5.0
-    min_inliers: 15
+    canny_high_threshold: 0.35
+    small_edge_perimeter: 60
+    hough_min_line_length: 120
+    hough_max_line_gap: 30
+    cluster_angle_tol_deg: 3.0
+    cluster_rho_tol_px: 30.0
+    edge_buffer: 32
+    confidence_threshold: 0.4
+  mrt_rescue_params:
+    theta_step_deg: 1.0
+    peak_threshold_sig: 4.5
+    max_candidates: 4
+    confidence_threshold: 0.35
+  mask_params:
+    strip_length: 256
+    strip_width: 96
+    profile_sigma_threshold: 3.0
+    padding: 4
+  enable_sparse_ransac: True
+  sparse_ransac_params:
+    detect_thresh_sig: 5.0
+    min_inliers: 10
+    min_length: 100
 ```
 
 #### Variance Calculation
@@ -195,4 +228,12 @@ weightmask science.fits --config my_config.yml
 ### Generate Individual Masks
 ```bash
 weightmask science.fits --individual_masks
+```
+
+## Benchmark Runner
+
+```bash
+uv run python -m tests.benchmarks.run --suite synthetic_v2 --with-baselines
+uv run python -m tests.benchmarks.run --suite megacam_real
+uv run python -m tests.benchmarks.run --suite acs_compare
 ```

@@ -1,5 +1,3 @@
-import os
-
 from tests.simulate_and_test import run_masking_test
 
 
@@ -18,12 +16,9 @@ def demonstrate_robustness():
         stars = 500  # Very crowded
         streak = 40.0
         mask_pct = 0.0
-        complex_mode = True
+        regime_type = "complex"
 
     config_path = "weightmask.yml"
-    output_dir = "example_outputs"
-    os.makedirs(output_dir, exist_ok=True)
-
     print(f"Goal: Detect artifacts in a field with {Args.stars} stars and Poisson noise.")
 
     # Run masking test

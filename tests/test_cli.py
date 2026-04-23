@@ -77,6 +77,23 @@ class TestValidateConfig(unittest.TestCase):
             valid_config = {"variance": {"method": method}}
             self.assertTrue(validate_config(valid_config))
 
+    def test_validate_config_invalid_streak_method(self):
+        invalid_config = {"streak_masking": {"method": "hough"}}
+        self.assertFalse(validate_config(invalid_config))
+
+    def test_validate_config_rejects_stale_top_level_background(self):
+        invalid_config = {"background": {}, "variance": {"method": "theoretical"}}
+        self.assertFalse(validate_config(invalid_config))
+
+    def test_validate_config_rejects_misplaced_flat_keys(self):
+        invalid_config = {
+            "variance": {
+                "method": "theoretical",
+                "local_filter_size": 15,
+            }
+        }
+        self.assertFalse(validate_config(invalid_config))
+
 
 class TestRunPipeline(unittest.TestCase):
     def setUp(self):

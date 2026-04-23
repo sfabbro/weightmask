@@ -22,16 +22,17 @@ It runs the full `weightmask` pipeline and produces a summary of precision and r
 Ensure you are in the project root and have the virtual environment activated:
 
 ```bash
-source venv/bin/activate
-python examples/complex_simulation_example.py
+uv run python examples/complex_simulation_example.py
 ```
 
 ## What it Produces
 
 The examples typically output:
 1. **FITS files**: The original simulated image and the final mask bits.
-2. **Terminal logs**: Detailed steps of the detection pipeline (Background subtraction, Frangi thresholds, RANSAC fits, etc.).
+2. **Terminal logs**: Detailed steps of the detection pipeline (background subtraction, satdet-style Hough candidates, strip refinement, RANSAC fallback, etc.).
 3. **Metrics**: Precision and Recall against the "ground truth" simulation model.
+
+Generated example products are written to `test_outputs/` and are ignored by git.
 
 ---
 

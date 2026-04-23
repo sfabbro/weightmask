@@ -162,9 +162,11 @@ def _rescale_variance_robust(inv_variance, sci_data, sky_map, obj_mask, epsilon)
     # SNR = (data - sky) * sqrt(inv_variance)
     # Background should have SNR stdev of 1.0
     data_sub = sci_data - sky_map
-    snr = data_sub[~obj_mask] * np.sqrt(inv_variance[~obj_mask])
+    valid = (~obj_mask) & np.isfinite(data_sub) & np.isfinite(inv_variance) & (inv_variance > epsilon)
+    if np.sum(valid) < 100:
+        return inv_variance
 
-    # Filter out non-finite SNRs
+    snr = data_sub[valid] * np.sqrt(inv_variance[valid])
     snr = snr[np.isfinite(snr)]
     if snr.size < 100:
         return inv_variance

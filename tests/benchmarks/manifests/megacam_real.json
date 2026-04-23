@@ -1,0 +1,49 @@
+{
+  "suite": "megacam_real",
+  "description": "Ground-based MegaCam benchmark cases. Populate local files under benchmark_data/megacam/ to activate these cases.",
+  "cases": [
+    {
+      "case_id": "megacam_sparse_control",
+      "source_identifier": "CADC public MegaCam sparse-field control selected by MegaPrime query",
+      "download_url": "https://www.cadc-ccda.hia-iha.nrc-cnrc.gc.ca/en/search/",
+      "download_source": "cadc_query",
+      "cadc_query": "SELECT TOP 1 Plane.publisherID FROM caom2.Plane AS Plane JOIN caom2.Observation AS Observation ON Plane.obsID = Observation.obsID WHERE Observation.collection = 'CFHT' AND Observation.instrument_name = 'MegaPrime' AND Observation.type = 'OBJECT' AND Plane.dataRelease < '2015-01-01' ORDER BY Plane.publisherID",
+      "local_path": "benchmark_data/megacam/megacam_sparse_control.fits",
+      "label_recipe": "blank_control",
+      "crop_mode": "random",
+      "crop_shape": [768, 768],
+      "comparators": ["rubin_compatible_kht", "simple_hough"],
+      "expected_instrument": "MegaPrime",
+      "expected_detector": "MegaCam"
+    },
+    {
+      "case_id": "megacam_streak_case",
+      "source_identifier": "CFHT MegaCam on-ecliptic streak field (2079618p)",
+      "download_url": "https://www.cadc-ccda.hia-iha.nrc-cnrc.gc.ca/data/pub/CFHT/2079618p.fits.fz",
+      "download_source": "cadc",
+      "cadc_id": "2079618p",
+      "local_path": "benchmark_data/megacam/megacam_streak_case.fits",
+      "label_recipe": "manual_streak_mask",
+      "crop_mode": "random",
+      "crop_shape": [768, 768],
+      "comparators": ["rubin_compatible_kht", "simple_hough", "simple_radon"],
+      "expected_instrument": "MegaPrime",
+      "expected_detector": "MegaCam"
+    },
+    {
+      "case_id": "megacam_dark_injection",
+      "source_identifier": "CFHT Elixir-calibrated science exposure with held-out dark residual injection",
+      "download_url": "https://www.cfht.hawaii.edu/Science/CFHTLS-DATA/dataprocessing.html",
+      "download_source": "cadc_query",
+      "cadc_query": "SELECT TOP 1 Plane.publisherID FROM caom2.Plane AS Plane JOIN caom2.Observation AS Observation ON Plane.obsID = Observation.obsID WHERE Observation.collection = 'CFHT' AND Observation.instrument_name = 'MegaPrime' AND Observation.type = 'DARK' AND Plane.dataRelease < '2010-01-01'",
+      "local_path": "benchmark_data/megacam/megacam_dark_injection_science.fits",
+      "dark_local_path": "benchmark_data/megacam/megacam_dark_residual.fits",
+      "label_recipe": "dark_injection_v1",
+      "crop_mode": "random",
+      "crop_shape": [768, 768],
+      "comparators": ["astroscrappy_only", "dark_threshold_baseline"],
+      "expected_instrument": "MegaPrime",
+      "expected_detector": "MegaCam"
+    }
+  ]
+}

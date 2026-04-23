@@ -9,7 +9,7 @@ from weightmask.pipeline import WeightMapGenerator  # noqa: E402
 
 
 def evaluate_real_mef():
-    fits_path = os.path.join("benchmark_data", "cfht_megacam_1043132p.fits.fz")
+    fits_path = os.path.join("benchmark_data", "megacam", "megacam_streak_case.fits")
     config_path = "weightmask.yml"
 
     if not os.path.exists(fits_path):

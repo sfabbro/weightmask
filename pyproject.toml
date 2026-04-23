@@ -21,9 +21,17 @@ classifiers = [
 dependencies = [
     "numpy",
     "astropy",
+    "fitsio",
+    "scipy",
     "scikit-image",
     "sep",
     "PyYAML",
+    "astroscrappy",
+]
+
+[project.optional-dependencies]
+benchmarks = [
+    "galsim",
 ]
 
 [project.urls]

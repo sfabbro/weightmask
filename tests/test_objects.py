@@ -91,6 +91,25 @@ class TestObjects(unittest.TestCase):
         self.assertTrue(obj_mask[25, 25])
         self.assertTrue(obj_mask[75, 75])
 
+    def test_detect_objects_capped_halo_growth(self):
+        """Dynamic halo scaling should be capped by max_halo_multiplier."""
+        self.add_star(self.data_sub, 50, 50, flux=50000.0, radius=2.0)
+
+        config = {
+            "extract_thresh": 3.0,
+            "min_area": 5,
+            "dynamic_halo_scaling": True,
+            "halo_brightness_factor": 1.0,
+            "max_halo_multiplier": 1.3,
+            "ellipse_k": 2.0,
+            "spike_enable": False,
+        }
+
+        obj_mask = detect_objects(self.data_sub, self.bkg_rms_map, self.existing_mask, config)
+
+        self.assertTrue(obj_mask[50, 50])
+        self.assertFalse(obj_mask[50, 70])
+
     def test_detect_objects_clutter_scaling(self):
         """Test adaptive thresholding in highly cluttered images."""
         # Create a highly cluttered image to trigger the mad_approx logic
@@ -149,6 +168,27 @@ class TestObjects(unittest.TestCase):
         self.assertFalse(obj_mask[50, 50])
         # But pixels around it should be in the new mask
         self.assertTrue(obj_mask[50, 51] or obj_mask[51, 50])
+
+    def test_detect_objects_handoff_elongated_sources(self):
+        """Highly elongated detections should be left for the streak pipeline."""
+        data_sub = np.zeros((120, 120), dtype=np.float32)
+        data_sub[58:62, 20:100] = 40.0
+        bkg_rms_map = np.ones_like(data_sub)
+
+        mask = detect_objects(
+            data_sub,
+            bkg_rms_map,
+            None,
+            {
+                "extract_thresh": 2.0,
+                "min_area": 5,
+                "max_elongation": 2.0,
+                "handoff_elongated_to_streak": True,
+                "spike_enable": False,
+            },
+        )
+
+        self.assertFalse(np.any(mask))
 
     def test_detect_objects_exception_handling(self):
         """Return empty mask when SEP raises (e.g. 1D arrays)."""

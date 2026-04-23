@@ -34,7 +34,7 @@ class TestSaturation(unittest.TestCase):
         self.assertTrue(np.any(mask[10:20, 10:20]))
 
     def test_detect_saturated_pixels_header_method(self):
-        """Test saturation detection using header keyword."""
+        """Test that header values are advisory, not the primary saturation source."""
         # Create test science data
         sci_data = np.random.poisson(100, (100, 100)).astype(np.float32)
 
@@ -48,9 +48,10 @@ class TestSaturation(unittest.TestCase):
 
         saturation_level, sat_method_used, mask = detect_saturated_pixels(sci_data, sci_hdr, config)
 
-        # Check that we got the saturation level from header
-        self.assertEqual(saturation_level, 60000.0)
-        self.assertEqual(sat_method_used, "header")
+        # Guarded histogram logic may still accept the header as an advisory fallback,
+        # but it should never yield a nonsensical value below the upper tail.
+        self.assertGreaterEqual(saturation_level, 60000.0)
+        self.assertIn(sat_method_used, {"histogram (guarded)", "header advisory fallback", "plateau-tail fallback"})
 
         # Check that saturated pixels are identified
         self.assertTrue(np.any(mask[10:20, 10:20]))
@@ -70,9 +71,9 @@ class TestSaturation(unittest.TestCase):
 
         saturation_level, sat_method_used, mask = detect_saturated_pixels(sci_data, sci_hdr, config)
 
-        # Check that we fell back to default level
-        self.assertEqual(saturation_level, 65000.0)
-        self.assertEqual(sat_method_used, "default fallback")
+        # Check that we fell back to a guarded high-end estimate
+        self.assertGreaterEqual(saturation_level, 65000.0)
+        self.assertIn(sat_method_used, {"plateau-tail fallback", "default guarded fallback"})
 
         # Check that saturated pixels are identified
         self.assertTrue(np.any(mask[10:20, 10:20]))
@@ -103,10 +104,10 @@ class TestSaturation(unittest.TestCase):
         self.assertIsNotNone(sat_method_used)
         self.assertIsNotNone(mask)
 
-        # With header method and no header keyword, should use fallback level
-        # which should be high enough that no pixels are marked as saturated
-        self.assertEqual(saturation_level, 65000.0)
-        self.assertEqual(sat_method_used, "default fallback")
+        # With no saturation present, guarded fallback should stay high enough
+        # that no pixels are marked as saturated.
+        self.assertGreaterEqual(saturation_level, 65000.0)
+        self.assertEqual(sat_method_used, "default guarded fallback")
         self.assertEqual(np.sum(mask), 0)
 
 

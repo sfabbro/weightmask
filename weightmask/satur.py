@@ -114,16 +114,95 @@ def estimate_saturation_robust_clump(data, min_adu=None, max_adu=None):
 def _get_saturation_from_header(sci_hdr, header_keyword):
     """Attempt to extract saturation level from the header."""
     if not header_keyword or sci_hdr is None or header_keyword not in sci_hdr:
-        print(f"  Header method failed (keyword '{header_keyword}' missing or not specified).")
+        print(f"  Header advisory unavailable (keyword '{header_keyword}' missing or not specified).")
         return None
 
     try:
         saturation_level = float(sci_hdr[header_keyword])
-        print(f"  Using saturation from header keyword '{header_keyword}': {saturation_level:.1f} ADU.")
+        print(f"  Header advisory from keyword '{header_keyword}': {saturation_level:.1f} ADU.")
         return saturation_level
     except (ValueError, TypeError):
-        print(f"  Header method failed (parse error for keyword '{header_keyword}').")
+        print(f"  Header advisory failed (parse error for keyword '{header_keyword}').")
         return None
+
+
+def _estimate_effective_full_scale(sci_data, sci_hdr, config, header_keyword):
+    """Estimate a plausible upper-scale bound for guarded saturation detection."""
+    hist_params = config.get("histogram_params", {})
+    candidates = []
+
+    explicit = config.get("effective_full_scale")
+    if explicit is not None:
+        candidates.append(float(explicit))
+
+    if hist_params.get("hist_max_adu") is not None:
+        candidates.append(float(hist_params["hist_max_adu"]))
+
+    fallback_level = config.get("fallback_level", 65535.0)
+    candidates.append(float(fallback_level))
+
+    advisory = _get_saturation_from_header(sci_hdr, header_keyword)
+    if advisory is not None and advisory > 0:
+        candidates.append(float(advisory))
+
+    if np.issubdtype(sci_data.dtype, np.integer):
+        candidates.append(float(np.iinfo(sci_data.dtype).max))
+
+    finite_data = sci_data[np.isfinite(sci_data)]
+    data_max = float(np.max(finite_data)) if finite_data.size > 0 else 0.0
+    positive = [value for value in candidates if np.isfinite(value) and value > 0]
+    if not positive:
+        return max(data_max, 65535.0), advisory
+
+    # Prefer the smallest plausible scale that still safely clears the current data range.
+    plausible = [value for value in positive if value >= max(data_max, 1.0) * 0.75]
+    effective = min(plausible) if plausible else max(positive)
+    return float(effective), advisory
+
+
+def _estimate_plateau_tail(sci_data, effective_full_scale, config):
+    """Estimate saturation from an upper-tail plateau when histogram clumps are ambiguous."""
+    finite_data = sci_data[np.isfinite(sci_data)]
+    if finite_data.size == 0:
+        return None
+
+    hist_params = config.get("histogram_params", {})
+    plateau_percentile = float(hist_params.get("plateau_percentile", 99.8))
+    guard_fraction = float(hist_params.get("guard_fraction", 0.75))
+    min_tail_pixels = int(hist_params.get("min_tail_pixels", 8))
+    lower_guard = guard_fraction * effective_full_scale
+
+    if np.max(finite_data) < lower_guard:
+        return None
+
+    tail = finite_data[finite_data >= lower_guard]
+    if tail.size < min_tail_pixels:
+        return None
+
+    estimate = float(np.percentile(tail, plateau_percentile))
+    if not np.isfinite(estimate) or estimate < lower_guard:
+        return None
+    return estimate
+
+
+def _choose_saturation_level(hist_level, plateau_level, effective_full_scale, advisory, config):
+    """Pick the final saturation level using guarded histogram logic."""
+    hist_params = config.get("histogram_params", {})
+    guard_fraction = float(hist_params.get("guard_fraction", 0.75))
+    upper_factor = float(hist_params.get("max_upper_factor", 1.05))
+    lower_guard = guard_fraction * effective_full_scale
+    upper_guard = upper_factor * effective_full_scale
+
+    if hist_level is not None and lower_guard <= hist_level <= upper_guard:
+        return float(hist_level), "histogram (guarded)"
+
+    if plateau_level is not None and lower_guard <= plateau_level <= upper_guard:
+        return float(plateau_level), "plateau-tail fallback"
+
+    if advisory is not None and lower_guard <= advisory <= upper_guard:
+        return float(advisory), "header advisory fallback"
+
+    return float(effective_full_scale), "default guarded fallback"
 
 
 def detect_saturated_pixels(sci_data, sci_hdr, config):
@@ -143,7 +222,7 @@ def detect_saturated_pixels(sci_data, sci_hdr, config):
     """
     saturation_level = None
     sat_method_used = "none"
-    hist_params = config.get("histogram_params", {})  # Get sub-dictionary for histogram params
+    hist_params = config.get("histogram_params", {})
 
     # Ensure data is float for calculations
     if not np.issubdtype(sci_data.dtype, np.floating):
@@ -156,35 +235,27 @@ def detect_saturated_pixels(sci_data, sci_hdr, config):
     method = config.get("method", "histogram")
     header_keyword = config.get("keyword")
 
-    if method == "histogram":
-        print("Attempting robust detrended saturation detection (Clump method)...")
-        # Pass specific histogram parameters if they exist in the config
-        saturation_level = estimate_saturation_robust_clump(
-            sci_data,
-            min_adu=hist_params.get("hist_min_adu"),  # Use .get for safety
-            max_adu=hist_params.get("hist_max_adu"),
-        )
+    if method not in {"histogram", "header"}:
+        warnings.warn(f"Unknown saturation method '{method}', using guarded histogram logic.", RuntimeWarning)
 
-        if saturation_level is not None:
-            sat_method_used = "histogram (robust clump)"
-        else:
-            print("  Robust Clump detection yielded no saturation. Trying header fallback...")
-            saturation_level = _get_saturation_from_header(sci_hdr, header_keyword)
-            if saturation_level is not None:
-                sat_method_used = "header (fallback)"
+    print("Attempting guarded histogram-based saturation detection...")
+    effective_full_scale, advisory = _estimate_effective_full_scale(sci_data, sci_hdr, config, header_keyword)
+    hist_level = estimate_saturation_robust_clump(
+        sci_data,
+        min_adu=hist_params.get("hist_min_adu"),
+        max_adu=hist_params.get("hist_max_adu"),
+    )
+    plateau_level = _estimate_plateau_tail(sci_data, effective_full_scale, config)
 
-    elif method == "header":
-        print("Attempting saturation detection via header keyword...")
-        saturation_level = _get_saturation_from_header(sci_hdr, header_keyword)
-        if saturation_level is not None:
-            sat_method_used = "header"
-
-    # Final fallback to default value if all methods fail
-    if saturation_level is None:
-        fallback_level = config.get("fallback_level", 65535.0)  # Default fallback if not in config
-        saturation_level = fallback_level
-        sat_method_used = "default fallback"
-        print(f"  WARNING: Using fallback saturation level: {saturation_level:.1f} ADU.")
+    saturation_level, sat_method_used = _choose_saturation_level(
+        hist_level,
+        plateau_level,
+        effective_full_scale,
+        advisory,
+        config,
+    )
+    if sat_method_used == "default guarded fallback":
+        print(f"  WARNING: Falling back to guarded full-scale saturation level: {saturation_level:.1f} ADU.")
 
     # Ensure saturation_level is a float before comparison
     saturation_level = float(saturation_level)

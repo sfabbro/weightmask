@@ -104,13 +104,15 @@ Returns:
 ```python
 def detect_streaks(data_sub, bkg_rms_map, existing_mask, config)
 ```
-Detect linear streaks using the method specified in the configuration.
+Detect linear streaks using the configured ground-based mode.
 
 Args:
 - `data_sub` (ndarray): Background-subtracted image data
 - `bkg_rms_map` (ndarray): Background RMS map
 - `existing_mask` (ndarray): Boolean mask of already masked pixels
 - `config` (dict): Configuration dictionary for streak detection
+- Supported public modes are `auto_ground`, `satdet_only`, `mrt_only`, and `legacy_compare`.
+- `auto_ground` uses multi-scale Hough/KHT-style candidate extraction, strip/profile refinement, and an MRT-like rescue path.
 
 Returns:
 - `ndarray`: Boolean mask of newly detected streak pixels

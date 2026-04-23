@@ -121,9 +121,37 @@ class TestRobustFeatures(unittest.TestCase):
         mask = np.zeros(self.shape, dtype=bool)
         config = {
             "enable": True,
-            "method": "frangi",  # Run frangi first
-            "enable_ransac_trails": True,
-            "ransac_params": {
+            "mode": "auto_ground",
+            "satdet_params": {
+                "rescale_percentiles": [1.0, 99.5],
+                "gaussian_sigma": 1.0,
+                "gaussian_sigmas": [1.0, 1.5],
+                "canny_low_threshold": 0.05,
+                "canny_high_threshold": 0.2,
+                "small_edge_perimeter": 3,
+                "hough_threshold": 5,
+                "hough_min_line_length": 30,
+                "hough_max_line_gap": 10,
+                "cluster_angle_tol_deg": 4.0,
+                "cluster_rho_tol_px": 12.0,
+                "min_cluster_segments": 1,
+                "edge_buffer": 16,
+                "min_edge_touches": 0,
+                "min_interior_span": 30.0,
+                "confidence_threshold": 0.15,
+            },
+            "mrt_rescue_params": {"peak_threshold_sig": 3.0, "confidence_threshold": 0.15},
+            "mask_params": {
+                "strip_length": 128,
+                "strip_width": 32,
+                "profile_sigma_threshold": 1.0,
+                "profile_percentile": 70.0,
+                "padding": 2,
+                "min_mask_pixels": 8,
+                "min_row_hits": 3,
+            },
+            "enable_sparse_ransac": True,
+            "sparse_ransac_params": {
                 "min_inliers": 5,
                 "min_length": 50,
                 "detect_thresh_sig": 5.0,

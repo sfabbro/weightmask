@@ -62,7 +62,7 @@ This table focuses on physical artifacts or characteristics that might remain af
 | **CTI trails** | correction models(X)                      | -                                  | HST/ACS CTI correction, JWST/MIRI tools, `ctisim`  |
 | **IPC effect** | kernel deconvolution(X), PSF modeling(X)  | -                                  | JWST NIRCam IPC correction, `spaceKLIP` |
 | **cross-talk** | modeling & subtraction(X), masking(X)     | -                                  | LSST/DECam cross-talk correction, `MzLS_pipeline` |
-| **amplifier glow** | modeling & subtraction(X), masking(X)   | assumed pre-processed      | `ccdproc`/`astropy` (overscan utilities), `WIRCam Pipeline` |
+| **amplifier glow** | modeling & subtraction(X), masking(X)   | assumed pre-processed      | `ccdproc`/`astropy` (overscan utilities), instrument preprocessing pipelines |
 | **ghosts/reflections**| masking (geometric/thresholding)(X)     | -                                  | `photutils` (bright source masking), `acstools.ghostcorr` |
 | **scattered light** | extended source masking(X), modeling(X) | background model (partial)         | `photutils` (masking), `astropy.modeling`, `jwst.straylight` |
 | **diffraction spikes**| radial/geometric masking(X)             | segmentation (implicit via object) | `MaxiMask`, `diffractionspikes` package |

@@ -1,4 +1,5 @@
 import unittest
+import warnings
 from unittest.mock import patch
 
 import numpy as np
@@ -248,6 +249,24 @@ class TestVariance(unittest.TestCase):
         sky_map = np.ones((10, 10))
         result = _unbias_variance(inv_variance, sci_data, sky_map, gain=-1.0, epsilon=1e-9)
         np.testing.assert_array_equal(result, inv_variance)
+
+    def test_rescale_variance_robust_ignores_invalid_inverse_variance(self):
+        from weightmask.variance import _rescale_variance_robust
+
+        inv_variance = np.array([[0.04, -1.0], [np.nan, 0.04]], dtype=np.float32)
+        sci_data = np.full((2, 2), 110.0, dtype=np.float32)
+        sky_map = np.full((2, 2), 100.0, dtype=np.float32)
+        obj_mask = np.zeros((2, 2), dtype=bool)
+
+        with warnings.catch_warnings(record=True) as caught:
+            warnings.simplefilter("always")
+            scaled = _rescale_variance_robust(inv_variance, sci_data, sky_map, obj_mask, 1e-9)
+
+        self.assertEqual(scaled.shape, inv_variance.shape)
+        self.assertFalse(
+            any("invalid value encountered in sqrt" in str(w.message) for w in caught),
+            "Variance rescaling should ignore invalid inverse variance inputs.",
+        )
 
     def test_calculate_empirical_noise_params_success(self):
         """Test successful calculation of empirical noise parameters."""

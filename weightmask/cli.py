@@ -52,17 +52,78 @@ def validate_config(config: dict) -> bool:
         "confidence_params",
         "output_params",
     ]
+    allowed_sections = set(required_sections)
     for section in required_sections:
         if section not in config:
             print(f"WARNING: Required configuration section '{section}' missing.")
 
-    if "variance" in config:
-        if not isinstance(config["variance"], dict):
-            print("ERROR: 'variance' section must be a dictionary.")
+    extra_sections = sorted(set(config) - allowed_sections)
+    if extra_sections:
+        print(f"ERROR: Unsupported top-level configuration sections: {', '.join(extra_sections)}")
+        return False
+
+    dict_sections = [
+        "flat_masking",
+        "saturation",
+        "sep_background",
+        "cosmic_ray",
+        "sep_objects",
+        "streak_masking",
+        "variance",
+        "confidence_params",
+        "output_params",
+    ]
+    for section in dict_sections:
+        if section in config and not isinstance(config[section], dict):
+            print(f"ERROR: '{section}' section must be a dictionary.")
             return False
+
+    if "variance" in config:
         var_method = config["variance"].get("method", "theoretical")
         if var_method not in ["theoretical", "rms_map", "empirical_fit"]:
             print(f"ERROR: Invalid variance method '{var_method}'.")
+            return False
+
+        misplaced_flat_keys = {
+            "local_filter_size",
+            "local_low_thresh",
+            "local_high_thresh",
+            "col_enable",
+            "col_deriv_sigma",
+            "col_dead_thresh",
+        }
+        wrong_place = sorted(misplaced_flat_keys & set(config["variance"]))
+        if wrong_place:
+            print(
+                "ERROR: Bad-pixel tuning keys must be under 'flat_masking', not 'variance': " + ", ".join(wrong_place)
+            )
+            return False
+
+    if "sep_background" in config:
+        background_method = config["sep_background"].get("method", "sep")
+        if background_method not in ["sep", "median_filter", "robust_median_fallback"]:
+            print(f"ERROR: Invalid background method '{background_method}'.")
+            return False
+
+    if "streak_masking" in config:
+        streak_method = config["streak_masking"].get("method")
+        streak_mode = config["streak_masking"].get("mode")
+        allowed_values = ["auto_ground", "satdet_only", "mrt_only", "legacy_compare", "satdet", "frangi_legacy"]
+        if streak_method is not None and streak_method not in allowed_values:
+            print(f"ERROR: Invalid streak masking method '{streak_method}'.")
+            return False
+        if streak_mode is not None and streak_mode not in allowed_values:
+            print(f"ERROR: Invalid streak masking mode '{streak_mode}'.")
+            return False
+
+        legacy_keys = {"enable_ransac_trails", "ransac_params", "frangi_params"}
+        stale_keys = sorted(legacy_keys & set(config["streak_masking"]))
+        if stale_keys:
+            print(
+                "ERROR: Legacy streak keys are no longer supported. "
+                "Use 'enable_sparse_ransac', 'sparse_ransac_params', and 'frangi_legacy_params': "
+                + ", ".join(stale_keys)
+            )
             return False
     return True
 
@@ -107,8 +168,7 @@ def process_image(
     streak_mask = np.zeros(sci_shape, dtype=bool)
 
     # --- 1. Tile-based Masking (Bad Pixels, Saturation) ---
-    print("  (1/7) Processing tiles for Bad Pixel and Saturation masks...")
-    saturation_level, sat_method_used = -1, "unknown"
+    print("  (1/7) Processing tiles for Bad Pixel mask...")
     for y in range(0, sci_shape[0], tile_size):
         for x in range(0, sci_shape[1], tile_size):
             tile_slice = (slice(y, y + tile_size), slice(x, x + tile_size))
@@ -122,18 +182,12 @@ def process_image(
             bad_mask[tile_slice] |= flat_mask_bool_tile
             final_mask_int[tile_slice][flat_mask_bool_tile] |= MASK_BITS["BAD"]
 
-            sat_level_tile, sat_meth_tile, sat_mask_bool_tile = detect_saturated_pixels(
-                sci_data_tile, sci_hdr, config.get("saturation", {})
-            )
-            sat_mask[tile_slice] |= sat_mask_bool_tile
-            final_mask_int[tile_slice][sat_mask_bool_tile] |= MASK_BITS["SAT"]
-
-            if saturation_level < 0:  # Use first tile's result as representative
-                saturation_level, sat_method_used = sat_level_tile, sat_meth_tile
-                header_info["SAT_LVL"], header_info["SAT_METH"] = (
-                    saturation_level,
-                    sat_method_used,
-                )
+    print("  (1.1/7) Detecting saturation on the full image...")
+    saturation_level, sat_method_used, sat_mask = detect_saturated_pixels(
+        sci_data_full, sci_hdr, config.get("saturation", {})
+    )
+    final_mask_int[sat_mask] |= MASK_BITS["SAT"]
+    header_info["SAT_LVL"], header_info["SAT_METH"] = saturation_level, sat_method_used
 
     # --- Full Image Processing Steps ---
     interim_mask_bool = final_mask_int > 0

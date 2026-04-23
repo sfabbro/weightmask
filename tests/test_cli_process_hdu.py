@@ -16,7 +16,7 @@ class TestProcessHDU(unittest.TestCase):
             "sep_objects": {},
             "cosmic_ray": {},
             "variance": {},
-            "streaks": {"enable": False},
+            "streak_masking": {"enable": False},
             "output_params": {"output_map_format": "weight"},
         }
 

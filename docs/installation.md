@@ -2,10 +2,11 @@
 
 ## System Requirements
 
-WeightMask requires Python 3.7 or higher and the following dependencies:
+WeightMask requires Python 3.10 or higher and the following dependencies:
 
 - numpy
 - astropy
+- fitsio
 - scikit-image
 - sep (Source Extractor Python library)
 - PyYAML
@@ -13,23 +14,20 @@ WeightMask requires Python 3.7 or higher and the following dependencies:
 
 ## Installation Methods
 
-### Method 1: Install from PyPI (Recommended)
+### Method 1: Install from Source
 
-```bash
-pip install weightmask
-```
-
-### Method 2: Install from Source
-
-1. Clone the repository:
 ```bash
 git clone https://github.com/sfabbro/weightmask.git
 cd weightmask
+pip install -e .
 ```
 
-2. Install in development mode:
+### Method 2: Install with `uv`
+
 ```bash
-pip install -e .
+git clone https://github.com/sfabbro/weightmask.git
+cd weightmask
+uv sync
 ```
 
 ### Method 3: Install with conda
@@ -37,9 +35,9 @@ pip install -e .
 If you're using conda, you can create a new environment and install the dependencies:
 
 ```bash
-conda create -n weightmask python=3.9
+conda create -n weightmask python=3.10
 conda activate weightmask
-conda install numpy astropy scikit-image sep pyyaml
+conda install numpy astropy fitsio scikit-image sep pyyaml
 pip install astroscrappy
 pip install -e .
 ```
@@ -52,14 +50,18 @@ After installation, you can verify that WeightMask is properly installed by runn
 weightmask --help
 ```
 
-This should display the help message with available options.
+You can also verify the test suite on a source checkout:
+
+```bash
+uv run pytest -q
+```
 
 ## Testing the Installation
 
 To test the installation with a sample FITS file:
 
 ```bash
-weightmask sample.fits
+weightmask sample.fits --config weightmask.yml
 ```
 
 If you don't have a FITS file, you can create a simple test:
@@ -83,7 +85,7 @@ hdu.writeto('test.fits', overwrite=True)
 
 1. **Missing Dependencies**: If you encounter import errors, make sure all dependencies are installed:
    ```bash
-   pip install numpy astropy scikit-image sep pyyaml astroscrappy
+   pip install numpy astropy fitsio scikit-image sep pyyaml astroscrappy
    ```
 
 2. **Permission Errors**: If you encounter permission errors during installation, try:
@@ -95,6 +97,8 @@ hdu.writeto('test.fits', overwrite=True)
    ```bash
    conda install sep
    ```
+
+4. **Config Drift**: The supported config surface is the canonical one in `weightmask.yml`. Older sections such as `background` or legacy streak keys are rejected by config validation.
 
 ### Getting Help
 

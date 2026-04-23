@@ -1,0 +1,30 @@
+{
+  "suite": "acs_compare",
+  "description": "ACS/WFC comparator cases for published trail baselines. Populate local files under benchmark_data/acs/ to activate.",
+  "cases": [
+    {
+      "case_id": "acs_bright_trail",
+      "source_identifier": "jc8m32j5q_flc.fits (ACS/WFC example used in acstools documentation)",
+      "download_url": "https://acstools.readthedocs.io/en/latest/findsat_mrt.html",
+      "download_source": "mast",
+      "mast_id": "jc8m32j5q",
+      "mast_proposal_id": "13498",
+      "mast_product": "jc8m32j5q_flc.fits",
+      "local_path": "benchmark_data/acs/jc8m32j5q_flc.fits",
+      "label_recipe": "manual_streak_mask",
+      "comparators": ["acstools_detsat", "acstools_findsat_mrt"]
+    },
+    {
+      "case_id": "acs_faint_trail",
+      "source_identifier": "j97006j5q_flc.fits (ACS/WFC example used in acstools MRT docs)",
+      "download_url": "https://acstools.readthedocs.io/en/latest/findsat_mrt.html",
+      "download_source": "mast",
+      "mast_id": "j97006j5q",
+      "mast_proposal_id": "10420",
+      "mast_product": "j97006j5q_flc.fits",
+      "local_path": "benchmark_data/acs/j97006j5q_flc.fits",
+      "label_recipe": "manual_streak_mask",
+      "comparators": ["acstools_detsat", "acstools_findsat_mrt"]
+    }
+  ]
+}
