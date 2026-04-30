@@ -35,7 +35,10 @@ def create_binary_mask(mask_data, bit_flag):
     Returns:
         ndarray: Binary mask (0=not set, 1=set)
     """
-    return np.where((mask_data & bit_flag) > 0, 1, 0).astype(np.uint8)
+    # Performance optimization: Use direct boolean casting instead of np.where.
+    # This avoids allocating unnecessary intermediate arrays and executes
+    # significantly faster.
+    return ((mask_data & bit_flag) > 0).astype(np.uint8)
 
 
 def _parse_config_value(val):
