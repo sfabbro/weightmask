@@ -17,6 +17,21 @@ jobs:
         with:
           pixi-version: latest
 
+      - name: Run pre-commit
+        uses: pre-commit/action@v3.0.1
+
+      - name: Run Ruff autofix
+        run: pixi run ruff check . --fix
+
+      - name: Ensure no pending autofixes
+        run: git diff --exit-code
+
+      - name: Run Ruff format check
+        run: pixi run ruff format --check .
+
+      - name: Byte-compile (syntax parity with pre-push)
+        run: pixi run python -m compileall -q weightmask tests
+
       - name: Run lint
         run: pixi run lint
 
