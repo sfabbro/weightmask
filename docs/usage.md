@@ -233,7 +233,7 @@ weightmask science.fits --individual_masks
 ## Benchmark Runner
 
 ```bash
-uv run python -m tests.benchmarks.run --suite synthetic_v2 --with-baselines
-uv run python -m tests.benchmarks.run --suite megacam_real
-uv run python -m tests.benchmarks.run --suite acs_compare
+pixi run benchmark-synthetic
+pixi run benchmark-megacam
+pixi run benchmark-acs
 ```

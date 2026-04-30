@@ -22,7 +22,7 @@ It runs the full `weightmask` pipeline and produces a summary of precision and r
 Ensure you are in the project root and have the virtual environment activated:
 
 ```bash
-uv run python examples/complex_simulation_example.py
+pixi run example-complex
 ```
 
 ## What it Produces

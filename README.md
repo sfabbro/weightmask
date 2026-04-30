@@ -58,9 +58,9 @@ Generated products from the synthetic examples and benchmark harness belong unde
 The repo now includes a benchmark runner with synthetic-v2 and manifest-driven real-data suites:
 
 ```bash
-uv run python -m tests.benchmarks.run --suite synthetic_v2 --with-baselines
-uv run python -m tests.benchmarks.run --suite megacam_real
-uv run python -m tests.benchmarks.run --suite acs_compare
+pixi run benchmark-synthetic
+pixi run benchmark-megacam
+pixi run benchmark-acs
 ```
 
 ## License

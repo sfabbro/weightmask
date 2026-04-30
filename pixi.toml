@@ -7,6 +7,10 @@ platforms = ["osx-arm64", "linux-64"]
 lint = "ruff check ."
 format = "ruff format ."
 test = "pytest"
+benchmark-synthetic = "python -m tests.benchmarks.run --suite synthetic_v2 --with-baselines"
+benchmark-megacam = "python -m tests.benchmarks.run --suite megacam_real"
+benchmark-acs = "python -m tests.benchmarks.run --suite acs_compare"
+example-complex = "python examples/complex_simulation_example.py"
 
 [dependencies]
 python = ">=3.10"

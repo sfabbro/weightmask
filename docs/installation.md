@@ -22,12 +22,12 @@ cd weightmask
 pip install -e .
 ```
 
-### Method 2: Install with `uv`
+### Method 2: Install with Pixi (recommended)
 
 ```bash
 git clone https://github.com/sfabbro/weightmask.git
 cd weightmask
-uv sync
+pixi install
 ```
 
 ### Method 3: Install with conda
@@ -53,7 +53,7 @@ weightmask --help
 You can also verify the test suite on a source checkout:
 
 ```bash
-uv run pytest -q
+pixi run test
 ```
 
 ## Testing the Installation
