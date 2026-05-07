@@ -45,22 +45,30 @@ def estimate_saturation_robust_clump(data, min_adu=None, max_adu=None):
             # Heuristic: start halfway between the 99th percentile and max,
             # or 80% of the 99.9th percentile, whichever is more conservative.
             auto_min_adu = min(p99 + (p_max - p99) * 0.3, p99_9 * 0.8)
-            auto_max_adu = min(p_max * 1.01, p99_9 * 1.5)  # Allow some room above 99.9th
+            auto_max_adu = min(
+                p_max * 1.01, p99_9 * 1.5
+            )  # Allow some room above 99.9th
 
             min_adu = min_adu if min_adu is not None else auto_min_adu
             max_adu = max_adu if max_adu is not None else auto_max_adu
 
             # Absolute sanity check: if max is small, we shouldn't be looking for saturation
             if p_max < 10000:
-                print(f"  Robust Clump: Max ADU ({p_max:.1f}) is very low. Assuming no saturation.")
+                print(
+                    f"  Robust Clump: Max ADU ({p_max:.1f}) is very low. Assuming no saturation."
+                )
                 return None
 
             if max_adu <= min_adu:
                 max_adu = min_adu + 100.0
 
-            print(f"  Auto-determined histogram range: [{min_adu:.1f}, {max_adu:.1f}] ADU")
+            print(
+                f"  Auto-determined histogram range: [{min_adu:.1f}, {max_adu:.1f}] ADU"
+            )
 
-        print(f"  Attempting robust clump analysis: range=[{min_adu:.1f}, {max_adu:.1f}]")
+        print(
+            f"  Attempting robust clump analysis: range=[{min_adu:.1f}, {max_adu:.1f}]"
+        )
 
         # Bin the extreme tail into ~100 bins.
         # This prevents the histogram from dissolving into noise for smeared clumps.
@@ -69,11 +77,15 @@ def estimate_saturation_robust_clump(data, min_adu=None, max_adu=None):
         bin_centers = (bin_edges[:-1] + bin_edges[1:]) / 2
 
         if np.sum(counts) < 20:
-            print("  Robust Clump: Not enough pixels in extreme tail (empty field). No saturation detected.")
+            print(
+                "  Robust Clump: Not enough pixels in extreme tail (empty field). No saturation detected."
+            )
             return None
 
         # Smooth the histogram heavily to find the macro-structure (the clump)
-        smoothed_counts = scipy.ndimage.gaussian_filter1d(counts.astype(float), sigma=2.0)
+        smoothed_counts = scipy.ndimage.gaussian_filter1d(
+            counts.astype(float), sigma=2.0
+        )
 
         # Find peaks.
         # Expected prominence is at least a few percent of the max smoothed count in this tail.
@@ -82,7 +94,9 @@ def estimate_saturation_robust_clump(data, min_adu=None, max_adu=None):
         peaks, properties = find_peaks(smoothed_counts, prominence=min_prominence)
 
         if len(peaks) == 0:
-            print("  Robust Clump: Smooth intensity tail with no anomalous clumps. No saturation detected.")
+            print(
+                "  Robust Clump: Smooth intensity tail with no anomalous clumps. No saturation detected."
+            )
             return None
 
         # The saturation clump is usually the most prominent peak in this extreme tail
@@ -99,7 +113,9 @@ def estimate_saturation_robust_clump(data, min_adu=None, max_adu=None):
         estimated_level = max(estimated_level, min_adu + (peak_adu - min_adu) * 0.2)
 
         print(f"  Robust Clump: Found anomalous clump at ~{peak_adu:.1f} ADU.")
-        print(f"  Robust Clump: Setting threshold near the base of the clump: {estimated_level:.1f} ADU.")
+        print(
+            f"  Robust Clump: Setting threshold near the base of the clump: {estimated_level:.1f} ADU."
+        )
 
         return float(estimated_level)
 
@@ -114,12 +130,16 @@ def estimate_saturation_robust_clump(data, min_adu=None, max_adu=None):
 def _get_saturation_from_header(sci_hdr, header_keyword):
     """Attempt to extract saturation level from the header."""
     if not header_keyword or sci_hdr is None or header_keyword not in sci_hdr:
-        print(f"  Header advisory unavailable (keyword '{header_keyword}' missing or not specified).")
+        print(
+            f"  Header advisory unavailable (keyword '{header_keyword}' missing or not specified)."
+        )
         return None
 
     try:
         saturation_level = float(sci_hdr[header_keyword])
-        print(f"  Header advisory from keyword '{header_keyword}': {saturation_level:.1f} ADU.")
+        print(
+            f"  Header advisory from keyword '{header_keyword}': {saturation_level:.1f} ADU."
+        )
         return saturation_level
     except (ValueError, TypeError):
         print(f"  Header advisory failed (parse error for keyword '{header_keyword}').")
@@ -185,7 +205,9 @@ def _estimate_plateau_tail(sci_data, effective_full_scale, config):
     return estimate
 
 
-def _choose_saturation_level(hist_level, plateau_level, effective_full_scale, advisory, config):
+def _choose_saturation_level(
+    hist_level, plateau_level, effective_full_scale, advisory, config
+):
     """Pick the final saturation level using guarded histogram logic."""
     hist_params = config.get("histogram_params", {})
     guard_fraction = float(hist_params.get("guard_fraction", 0.75))
@@ -236,10 +258,15 @@ def detect_saturated_pixels(sci_data, sci_hdr, config):
     header_keyword = config.get("keyword")
 
     if method not in {"histogram", "header"}:
-        warnings.warn(f"Unknown saturation method '{method}', using guarded histogram logic.", RuntimeWarning)
+        warnings.warn(
+            f"Unknown saturation method '{method}', using guarded histogram logic.",
+            RuntimeWarning,
+        )
 
     print("Attempting guarded histogram-based saturation detection...")
-    effective_full_scale, advisory = _estimate_effective_full_scale(sci_data, sci_hdr, config, header_keyword)
+    effective_full_scale, advisory = _estimate_effective_full_scale(
+        sci_data, sci_hdr, config, header_keyword
+    )
     hist_level = estimate_saturation_robust_clump(
         sci_data,
         min_adu=hist_params.get("hist_min_adu"),
@@ -255,7 +282,9 @@ def detect_saturated_pixels(sci_data, sci_hdr, config):
         config,
     )
     if sat_method_used == "default guarded fallback":
-        print(f"  WARNING: Falling back to guarded full-scale saturation level: {saturation_level:.1f} ADU.")
+        print(
+            f"  WARNING: Falling back to guarded full-scale saturation level: {saturation_level:.1f} ADU."
+        )
 
     # Ensure saturation_level is a float before comparison
     saturation_level = float(saturation_level)
@@ -265,7 +294,9 @@ def detect_saturated_pixels(sci_data, sci_hdr, config):
     with np.errstate(invalid="ignore"):  # Suppress warnings from comparing with NaN/Inf
         sat_mask_bool = (sci_data >= saturation_level) & np.isfinite(sci_data)
 
-    print(f"  Final saturation level used: {saturation_level:.1f} ADU (Method: {sat_method_used})")
+    print(
+        f"  Final saturation level used: {saturation_level:.1f} ADU (Method: {sat_method_used})"
+    )
 
     return saturation_level, sat_method_used, sat_mask_bool
 
@@ -358,7 +389,9 @@ def grow_bleed_trails(sci_data, sat_mask, sky_map, bkg_rms_map, config):
 
         # Find contiguous vertical segments in 2D to avoid 1D looping overhead
         struct = np.array([[0, 1, 0], [0, 1, 0], [0, 1, 0]])
-        labeled_mask, num_features = scipy.ndimage.label(sliced_sat_mask, structure=struct)
+        labeled_mask, num_features = scipy.ndimage.label(
+            sliced_sat_mask, structure=struct
+        )
         slices = scipy.ndimage.find_objects(labeled_mask)
 
         # Pre-allocate config constants and fallback arrays outside the loop
@@ -391,5 +424,7 @@ def grow_bleed_trails(sci_data, sat_mask, sky_map, bkg_rms_map, config):
         selem = np.ones((1, 2 * h_dilation + 1), dtype=bool)
         new_mask = scipy.ndimage.binary_dilation(new_mask, structure=selem)
 
-    print(f"    Bleed trail growth added {np.sum(new_mask & ~sat_mask)} pixels.")
+    print(
+        f"    Bleed trail growth added {np.count_nonzero(new_mask & ~sat_mask)} pixels."
+    )
     return new_mask
