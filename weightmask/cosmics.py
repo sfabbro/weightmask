@@ -5,9 +5,7 @@ from scipy.ndimage import convolve
 
 try:
     from astroscrappy import detect_cosmics
-except (
-    Exception
-):  # pragma: no cover - exercised indirectly in environments without astroscrappy
+except Exception:  # pragma: no cover - exercised indirectly in environments without astroscrappy
     detect_cosmics = None
 
 
@@ -38,9 +36,7 @@ def _adjust_dynamic_sigclip(config, bkg_rms_map, default_sigclip):
         if np.isfinite(median_rms) and median_rms > 0.1:
             dynamic_clip = 4.5 * (10.0 / (median_rms + 1.0))
             sigclip = np.clip(dynamic_clip, 3.0, 8.0)
-            print(
-                f"    Dynamically adjusted sigclip to {sigclip:.2f} based on background RMS of {median_rms:.2f}"
-            )
+            print(f"    Dynamically adjusted sigclip to {sigclip:.2f} based on background RMS of {median_rms:.2f}")
     except Exception as e:
         warnings.warn(f"Dynamic sigclip adjustment failed: {e}", RuntimeWarning)
 
@@ -57,9 +53,7 @@ def _adjust_dynamic_objlim(config, existing_mask, default_objlim):
     if coverage <= 0:
         return objlim
     objlim *= 1.0 + min(coverage * 4.0, 1.5)
-    print(
-        f"    Dynamically adjusted objlim to {objlim:.2f} based on pre-mask coverage {coverage:.2%}"
-    )
+    print(f"    Dynamically adjusted objlim to {objlim:.2f} based on pre-mask coverage {coverage:.2%}")
     return float(objlim)
 
 
@@ -87,15 +81,11 @@ def _apply_psf_protection(crmask_bool, sci_data, config, gain, read_noise, bkg_r
         snr_map = sci_sub / (bkg_rms_map / gain)
         star_protection_mask = (peakiness < cr_thresh) & (snr_map > 5.0)
     else:
-        star_protection_mask = (peakiness < cr_thresh) & (
-            sci_sub > 5.0 * read_noise / gain
-        )
+        star_protection_mask = (peakiness < cr_thresh) & (sci_sub > 5.0 * read_noise / gain)
 
     protected_count = np.count_nonzero(crmask_bool.astype(bool) & star_protection_mask)
     if protected_count > 0:
-        print(
-            f"    PSF protection: Saved {protected_count} pixels (likely star cores) from CR flagging."
-        )
+        print(f"    PSF protection: Saved {protected_count} pixels (likely star cores) from CR flagging.")
         crmask_bool = crmask_bool.astype(bool) & (~star_protection_mask)
 
     return crmask_bool
@@ -178,12 +168,8 @@ def detect_cosmic_rays(
         print("  Astroscrappy is unavailable; returning empty cosmic-ray mask.")
         return np.zeros(sci_data.shape, dtype=bool)
 
-    sigclip = _adjust_dynamic_sigclip(
-        config, bkg_rms_map, default_sigclip=config.get("sigclip", 4.5)
-    )
-    objlim = _adjust_dynamic_objlim(
-        config, existing_mask, default_objlim=config.get("objlim", 5.0)
-    )
+    sigclip = _adjust_dynamic_sigclip(config, bkg_rms_map, default_sigclip=config.get("sigclip", 4.5))
+    objlim = _adjust_dynamic_objlim(config, existing_mask, default_objlim=config.get("objlim", 5.0))
 
     try:
         # Use astroscrappy to detect cosmic rays
@@ -198,12 +184,8 @@ def detect_cosmic_rays(
             verbose=False,
         )
 
-        crmask_bool = _apply_psf_protection(
-            crmask_bool, sci_data, config, gain, read_noise, bkg_rms_map
-        )
-        crmask_bool = _post_filter_components(
-            crmask_bool.astype(bool), sci_data, bkg_rms_map, config
-        )
+        crmask_bool = _apply_psf_protection(crmask_bool, sci_data, config, gain, read_noise, bkg_rms_map)
+        crmask_bool = _post_filter_components(crmask_bool.astype(bool), sci_data, bkg_rms_map, config)
 
         crmask_bool = _apply_morphological_dilation(crmask_bool, config)
 

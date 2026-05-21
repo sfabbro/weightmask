@@ -10,9 +10,7 @@ from scipy.ndimage import median_filter
 def _estimate_global_sep(sci_data, mask):
     """Estimate a single global background using a single SEP box."""
     try:
-        bkg = sep.Background(
-            sci_data, mask=mask, bw=sci_data.shape[1], bh=sci_data.shape[0]
-        )
+        bkg = sep.Background(sci_data, mask=mask, bw=sci_data.shape[1], bh=sci_data.shape[0])
         if bkg.globalback == 0 and np.any(~mask):
             return None, None
         bkg_map = np.full(sci_data.shape, bkg.globalback, dtype=np.float32)
@@ -70,9 +68,7 @@ def _estimate_sep_tiered(sci_data, mask, box_size, filter_size, max_box_size):
             )
             bkg_map = bkg.back()
             bkg_rms_map = bkg.rms()
-            print(
-                f"    SEP background global RMS: {bkg.globalrms:.3f} (box={current_box})"
-            )
+            print(f"    SEP background global RMS: {bkg.globalrms:.3f} (box={current_box})")
 
             bkg_map = _check_and_fix_edge_artifacts(bkg_map, sci_data.shape)
             return bkg_map, bkg_rms_map
@@ -137,12 +133,8 @@ def _estimate_smooth_surface(sci_data, mask, config):
     sample_x = sample_x[::step]
     sample_v = sample_v[::step]
 
-    x_norm = (sample_x - 0.5 * (sci_data.shape[1] - 1)) / max(
-        float(sci_data.shape[1]), 1.0
-    )
-    y_norm = (sample_y - 0.5 * (sci_data.shape[0] - 1)) / max(
-        float(sci_data.shape[0]), 1.0
-    )
+    x_norm = (sample_x - 0.5 * (sci_data.shape[1] - 1)) / max(float(sci_data.shape[1]), 1.0)
+    y_norm = (sample_y - 0.5 * (sci_data.shape[0] - 1)) / max(float(sci_data.shape[0]), 1.0)
     design = np.column_stack(
         [
             np.ones_like(x_norm),
@@ -159,12 +151,8 @@ def _estimate_smooth_surface(sci_data, mask, config):
         warnings.warn(f"Smooth-surface background fit failed: {e}", RuntimeWarning)
         return None, None
 
-    full_x = (x_idx - 0.5 * (sci_data.shape[1] - 1)) / max(
-        float(sci_data.shape[1]), 1.0
-    )
-    full_y = (y_idx - 0.5 * (sci_data.shape[0] - 1)) / max(
-        float(sci_data.shape[0]), 1.0
-    )
+    full_x = (x_idx - 0.5 * (sci_data.shape[1] - 1)) / max(float(sci_data.shape[1]), 1.0)
+    full_y = (y_idx - 0.5 * (sci_data.shape[0] - 1)) / max(float(sci_data.shape[0]), 1.0)
     full_design = np.stack(
         [
             np.ones_like(full_x),
@@ -207,9 +195,7 @@ def estimate_background_with_diagnostics(sci_data, mask, config):
         "fallback": None,
         "box_size": None,
     }
-    bkg_map, bkg_rms_map = estimate_background(
-        sci_data, mask, {**config, "_diagnostics": diagnostics}
-    )
+    bkg_map, bkg_rms_map = estimate_background(sci_data, mask, {**config, "_diagnostics": diagnostics})
     return bkg_map, bkg_rms_map, diagnostics
 
 
@@ -235,16 +221,12 @@ def estimate_background(sci_data, mask, config):
         mask_fraction = np.mean(mask)
         mask_threshold = float(config.get("mask_threshold", 0.8))
         if mask_fraction > mask_threshold:
-            print(
-                f"    WARNING: High mask coverage ({mask_fraction:.1%}). Proactively falling back to global mode."
-            )
+            print(f"    WARNING: High mask coverage ({mask_fraction:.1%}). Proactively falling back to global mode.")
             bkg_map, bkg_rms_map = _estimate_global_sep(sci_data, mask)
             if diagnostics is not None:
                 diagnostics["fallback"] = "global_sep"
             if bkg_map is None:
-                print(
-                    "    Global SEP fallback failed; switching to robust median fallback."
-                )
+                print("    Global SEP fallback failed; switching to robust median fallback.")
                 method = "robust_median_fallback"
         else:
             box_size = (
@@ -256,13 +238,9 @@ def estimate_background(sci_data, mask, config):
             max_box_size = config.get("max_box_size", max(box_size, 1024))
             if diagnostics is not None:
                 diagnostics["box_size"] = int(box_size)
-            bkg_map, bkg_rms_map = _estimate_sep_tiered(
-                sci_data, mask, box_size, filter_size, max_box_size
-            )
+            bkg_map, bkg_rms_map = _estimate_sep_tiered(sci_data, mask, box_size, filter_size, max_box_size)
             if bkg_map is None:
-                print(
-                    "    SEP tiered retries failed; switching to robust median fallback."
-                )
+                print("    SEP tiered retries failed; switching to robust median fallback.")
                 method = "robust_median_fallback"
 
     if method in ("robust_median_fallback", "median_filter"):
@@ -271,9 +249,7 @@ def estimate_background(sci_data, mask, config):
             bkg_map, bkg_rms_map = _estimate_smooth_surface(sci_data, mask, config)
             method = "smooth_surface"
     elif method != "sep":
-        warnings.warn(
-            f"Unknown background estimation method: '{method}'", RuntimeWarning
-        )
+        warnings.warn(f"Unknown background estimation method: '{method}'", RuntimeWarning)
         return None, None
 
     if bkg_rms_map is not None:
