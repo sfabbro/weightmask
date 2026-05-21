@@ -43,10 +43,13 @@ def _detect_bad_pixels_local(flat_data, config, global_med):
 
         # Flag pixels where the ratio is outside the acceptable bounds
         pixel_mask_bool = (
-            (ratio <= local_low_thresh) | (ratio >= local_high_thresh) | (flat_data <= 0) | (~np.isfinite(flat_data))
+            (ratio <= local_low_thresh)
+            | (ratio >= local_high_thresh)
+            | (flat_data <= 0)
+            | (~np.isfinite(flat_data))
         )
         print(
-            f"    Found {np.sum(pixel_mask_bool)} bad pixels (Ratio < {local_low_thresh:.2f} or > {local_high_thresh:.2f})."
+            f"    Found {np.count_nonzero(pixel_mask_bool)} bad pixels (Ratio < {local_low_thresh:.2f} or > {local_high_thresh:.2f})."
         )
 
     except Exception as e:
@@ -77,7 +80,7 @@ def _detect_bad_columns_derivative(flat_data, config, global_med):
         # Mask entirely NaN/Inf columns immediately
         invalid_cols = ~np.isfinite(column_medians)
         column_mask_bool[:, invalid_cols] = True
-        num_invalid = np.sum(invalid_cols)
+        num_invalid = np.count_nonzero(invalid_cols)
 
         if num_invalid < len(column_medians):
             # Calculate horizontal derivative (difference between adjacent columns)
@@ -102,7 +105,9 @@ def _detect_bad_columns_derivative(flat_data, config, global_med):
             dead_thresh = config.get("col_dead_thresh", 0.1) * global_med
             dead_cols_idx = np.where(valid_medians < dead_thresh)[0]
 
-            bad_cols_combined = np.unique(np.concatenate([jump_cols_idx, dead_cols_idx]))
+            bad_cols_combined = np.unique(
+                np.concatenate([jump_cols_idx, dead_cols_idx])
+            )
 
             if len(bad_cols_combined) > 0:
                 column_mask_bool[:, bad_cols_combined] = True
@@ -110,7 +115,9 @@ def _detect_bad_columns_derivative(flat_data, config, global_med):
                     f"    Found {len(bad_cols_combined)} bad columns (Deriv > {thresh:.3g} or Med < {dead_thresh:.3g})"
                 )
                 if num_invalid > 0:
-                    print(f"    Plus {num_invalid} columns masked due to being mostly NaNs/Infs.")
+                    print(
+                        f"    Plus {num_invalid} columns masked due to being mostly NaNs/Infs."
+                    )
             else:
                 print("    No bad columns detected.")
 
@@ -141,7 +148,9 @@ def detect_bad_pixels(flat_data, config, using_unit_flat=False):
         ndarray: Boolean mask of bad pixels and columns (True = bad).
     """
     if not np.isfinite(flat_data).any():
-        warnings.warn("Flat data contains no finite values. Returning empty mask.", RuntimeWarning)
+        warnings.warn(
+            "Flat data contains no finite values. Returning empty mask.", RuntimeWarning
+        )
         return np.zeros(flat_data.shape, dtype=bool)
 
     if using_unit_flat:
@@ -158,7 +167,7 @@ def detect_bad_pixels(flat_data, config, using_unit_flat=False):
 
     # --- 3. Combine Masks ---
     final_mask_bool = pixel_mask_bool | column_mask_bool
-    total_bad = np.sum(final_mask_bool)
+    total_bad = np.count_nonzero(final_mask_bool)
     print(f"  Total BAD pixels/columns identified in flat: {total_bad}")
 
     return final_mask_bool
