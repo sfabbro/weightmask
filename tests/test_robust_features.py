@@ -140,7 +140,10 @@ class TestRobustFeatures(unittest.TestCase):
                 "min_interior_span": 30.0,
                 "confidence_threshold": 0.15,
             },
-            "mrt_rescue_params": {"peak_threshold_sig": 3.0, "confidence_threshold": 0.15},
+            "mrt_rescue_params": {
+                "peak_threshold_sig": 3.0,
+                "confidence_threshold": 0.15,
+            },
             "mask_params": {
                 "strip_length": 128,
                 "strip_width": 32,

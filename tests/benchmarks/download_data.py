@@ -50,10 +50,20 @@ def validate_case_file(case, path):
 
     inst_values = _collect_header_values(path, "INSTRUME")
     det_values = _collect_header_values(path, "DETECTOR")
-    if expected_instrument and not any(expected_instrument.lower() in value.lower() for value in inst_values):
-        return False, f"expected instrument '{expected_instrument}', got {sorted(set(inst_values)) or 'none'}"
-    if expected_detector and not any(expected_detector.lower() in value.lower() for value in det_values):
-        return False, f"expected detector '{expected_detector}', got {sorted(set(det_values)) or 'none'}"
+    if expected_instrument and not any(
+        expected_instrument.lower() in value.lower() for value in inst_values
+    ):
+        return (
+            False,
+            f"expected instrument '{expected_instrument}', got {sorted(set(inst_values)) or 'none'}",
+        )
+    if expected_detector and not any(
+        expected_detector.lower() in value.lower() for value in det_values
+    ):
+        return (
+            False,
+            f"expected detector '{expected_detector}', got {sorted(set(det_values)) or 'none'}",
+        )
     return True, None
 
 
@@ -145,15 +155,21 @@ def download_mast(mast_id, product_name, out_path, proposal_id=None):
     try:
         # Search by proposal_id if available to narrow down
         if proposal_id:
-            obs_table = Observations.query_criteria(proposal_id=proposal_id, instrument_name="ACS/WFC")
+            obs_table = Observations.query_criteria(
+                proposal_id=proposal_id, instrument_name="ACS/WFC"
+            )
             # Filter for the specific rootname if possible
             if len(obs_table) > 0:
-                mask = [mast_id.upper() in str(oid).upper() for oid in obs_table["obs_id"]]
+                mask = [
+                    mast_id.upper() in str(oid).upper() for oid in obs_table["obs_id"]
+                ]
                 if any(mask):
                     obs_table = obs_table[mask]
                 else:
                     # Try searching for everything in the proposal if the rootname isn't in obs_id
-                    print(f"  Warning: Rootname {mast_id} not found in proposal {proposal_id} obs_id column.")
+                    print(
+                        f"  Warning: Rootname {mast_id} not found in proposal {proposal_id} obs_id column."
+                    )
         else:
             # Search by obs_id or rootname directly
             obs_table = Observations.query_criteria(obs_id=mast_id)
@@ -166,12 +182,17 @@ def download_mast(mast_id, product_name, out_path, proposal_id=None):
 
         products = Observations.get_product_list(obs_table)
         # Search for product in the product table
-        mask = [product_name.lower() in str(pf).lower() for pf in products["productFilename"]]
+        mask = [
+            product_name.lower() in str(pf).lower()
+            for pf in products["productFilename"]
+        ]
         filtered = products[mask]
 
         if len(filtered) == 0:
             # Try exact match or contains
-            filtered = products[[product_name in f for f in products["productFilename"]]]
+            filtered = products[
+                [product_name in f for f in products["productFilename"]]
+            ]
 
         if len(filtered) == 0:
             print(f"  Product {product_name} not found in MAST observation {mast_id}")
@@ -220,7 +241,10 @@ def process_suite(suite_name):
             success = download_cadc_query(case["cadc_query"], out_path)
         elif source == "mast":
             success = download_mast(
-                case["mast_id"], case["mast_product"], out_path, proposal_id=case.get("mast_proposal_id")
+                case["mast_id"],
+                case["mast_product"],
+                out_path,
+                proposal_id=case.get("mast_proposal_id"),
             )
         else:
             print(f"  No automated download source for {case_id}")
@@ -238,8 +262,12 @@ def process_suite(suite_name):
 
 
 def main():
-    parser = argparse.ArgumentParser(description="Download real benchmark data for WeightMask.")
-    parser.add_argument("--suite", choices=["megacam_real", "acs_compare", "all"], default="all")
+    parser = argparse.ArgumentParser(
+        description="Download real benchmark data for WeightMask."
+    )
+    parser.add_argument(
+        "--suite", choices=["megacam_real", "acs_compare", "all"], default="all"
+    )
     args = parser.parse_args()
 
     if args.suite == "all":

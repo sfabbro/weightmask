@@ -1,7 +1,9 @@
 import os
 import sys
 
-sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))  # noqa: E402
+sys.path.append(
+    os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+)  # noqa: E402
 import yaml
 from astropy.io import fits
 
@@ -32,7 +34,9 @@ def evaluate_real_mef():
             data = hdul[ext_idx].data
 
             print(f"Data shape: {data.shape}")
-            print(f"Gain: {header.get('GAIN', 'N/A')}, Readnoise: {header.get('RDNOISE', 'N/A')}")
+            print(
+                f"Gain: {header.get('GAIN', 'N/A')}, Readnoise: {header.get('RDNOISE', 'N/A')}"
+            )
 
             # The pipeline handles background subtraction internally
             result = wg.process(data, header=header)
@@ -44,7 +48,9 @@ def evaluate_real_mef():
             if bkg_rms is not None:
                 print(f"Global Background RMS approx: {bkg_rms.mean():.2f}")
 
-            print(f"Done. Calculated weight map min/max: {wmap.min():.2e} / {wmap.max():.2e}")
+            print(
+                f"Done. Calculated weight map min/max: {wmap.min():.2e} / {wmap.max():.2e}"
+            )
             print(f"Total masked pixels: {(flag_map > 0).sum()} / {flag_map.size}")
 
 

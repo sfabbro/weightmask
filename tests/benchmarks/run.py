@@ -47,8 +47,14 @@ def _mask_stats(pred_mask, gt_mask):
         "f1": float(_f1(precision, recall)),
         "pred_area": int(np.sum(pred_mask)),
         "gt_area": int(np.sum(gt_mask)),
-        "overmask_fraction": float(fp / (np.sum(pred_mask) + 1e-9)) if np.sum(pred_mask) > 0 else 0.0,
-        "width_ratio": float(np.sum(pred_mask) / (np.sum(gt_mask) + 1e-9)) if np.sum(gt_mask) > 0 else 0.0,
+        "overmask_fraction": (
+            float(fp / (np.sum(pred_mask) + 1e-9)) if np.sum(pred_mask) > 0 else 0.0
+        ),
+        "width_ratio": (
+            float(np.sum(pred_mask) / (np.sum(gt_mask) + 1e-9))
+            if np.sum(gt_mask) > 0
+            else 0.0
+        ),
     }
 
 
@@ -91,7 +97,9 @@ def _simple_hough_baseline(data_sub, bkg_rms):
             "max_support_width": 18,
         },
     }
-    return detect_streaks(data_sub, bkg_rms, np.zeros_like(data_sub, dtype=bool), config)
+    return detect_streaks(
+        data_sub, bkg_rms, np.zeros_like(data_sub, dtype=bool), config
+    )
 
 
 def _rubin_compatible_baseline(data_sub, bkg_rms):
@@ -139,7 +147,9 @@ def _rubin_compatible_baseline(data_sub, bkg_rms):
             "max_support_width": 20,
         },
     }
-    return detect_streaks(data_sub, bkg_rms, np.zeros_like(data_sub, dtype=bool), config)
+    return detect_streaks(
+        data_sub, bkg_rms, np.zeros_like(data_sub, dtype=bool), config
+    )
 
 
 def _benchmark_synthetic_bad_pixels(seed, size):
@@ -236,19 +246,27 @@ def run_synthetic_v2(with_baselines=False, selected_cases=None):
         if selected_cases and case["name"] not in selected_cases:
             continue
         args = SimpleNamespace(**case)
-        metrics, products = run_masking_test(str(ROOT / "weightmask.yml"), args, save_fits=False, return_products=True)
+        metrics, products = run_masking_test(
+            str(ROOT / "weightmask.yml"), args, save_fits=False, return_products=True
+        )
         case_result = {"weightmask": metrics}
-        streak_stats = _mask_stats(products["masks"]["streaks"], products["ground_truth"]["streak"])
+        streak_stats = _mask_stats(
+            products["masks"]["streaks"], products["ground_truth"]["streak"]
+        )
         case_result["streak_stats"] = streak_stats
-        case_result["bad_pixel_stats"] = _benchmark_synthetic_bad_pixels(case["seed"], case["size"])
+        case_result["bad_pixel_stats"] = _benchmark_synthetic_bad_pixels(
+            case["seed"], case["size"]
+        )
         if with_baselines:
             data_sub = products["science"] - np.nanmedian(products["science"])
             case_result["baselines"] = {
                 "simple_hough": _mask_stats(
-                    _simple_hough_baseline(data_sub, products["bkg_rms"]), products["ground_truth"]["streak"]
+                    _simple_hough_baseline(data_sub, products["bkg_rms"]),
+                    products["ground_truth"]["streak"],
                 ),
                 "rubin_compatible_kht": _mask_stats(
-                    _rubin_compatible_baseline(data_sub, products["bkg_rms"]), products["ground_truth"]["streak"]
+                    _rubin_compatible_baseline(data_sub, products["bkg_rms"]),
+                    products["ground_truth"]["streak"],
                 ),
             }
         results[case["name"]] = case_result
@@ -262,14 +280,22 @@ def run_synthetic_v2(with_baselines=False, selected_cases=None):
     failures = []
     if not selected_cases and results:
         streak_f1 = [result["streak_stats"]["f1"] for result in results.values()]
-        object_recall = [result["weightmask"]["Objects"][1] for result in results.values()]
+        object_recall = [
+            result["weightmask"]["Objects"][1] for result in results.values()
+        ]
         bad_pixel_f1 = [result["bad_pixel_stats"]["f1"] for result in results.values()]
         if float(np.mean(streak_f1)) < 0.20:
-            failures.append(f"Synthetic-v2 average streak F1 {float(np.mean(streak_f1)):.3f} < 0.200")
+            failures.append(
+                f"Synthetic-v2 average streak F1 {float(np.mean(streak_f1)):.3f} < 0.200"
+            )
         if float(np.mean(object_recall)) < 0.90:
-            failures.append(f"Synthetic-v2 average object recall {float(np.mean(object_recall)):.3f} < 0.900")
+            failures.append(
+                f"Synthetic-v2 average object recall {float(np.mean(object_recall)):.3f} < 0.900"
+            )
         if float(np.mean(bad_pixel_f1)) < 0.50:
-            failures.append(f"Synthetic-v2 average bad-pixel F1 {float(np.mean(bad_pixel_f1)):.3f} < 0.500")
+            failures.append(
+                f"Synthetic-v2 average bad-pixel F1 {float(np.mean(bad_pixel_f1)):.3f} < 0.500"
+            )
     return {"suite": "synthetic_v2", "results": results, "gate_failures": failures}
 
 
@@ -373,7 +399,12 @@ def _center_crop(data, crop_shape):
     cw = min(cw, w)
     y0 = max(0, (h - ch) // 2)
     x0 = max(0, (w - cw) // 2)
-    return data[y0 : y0 + ch, x0 : x0 + cw], {"y0": y0, "x0": x0, "height": ch, "width": cw}
+    return data[y0 : y0 + ch, x0 : x0 + cw], {
+        "y0": y0,
+        "x0": x0,
+        "height": ch,
+        "width": cw,
+    }
 
 
 def _random_crop(data, crop_shape, seed):
@@ -384,7 +415,12 @@ def _random_crop(data, crop_shape, seed):
     rng = np.random.default_rng(seed)
     y0 = 0 if h == ch else int(rng.integers(0, h - ch + 1))
     x0 = 0 if w == cw else int(rng.integers(0, w - cw + 1))
-    return data[y0 : y0 + ch, x0 : x0 + cw], {"y0": y0, "x0": x0, "height": ch, "width": cw}
+    return data[y0 : y0 + ch, x0 : x0 + cw], {
+        "y0": y0,
+        "x0": x0,
+        "height": ch,
+        "width": cw,
+    }
 
 
 def _select_case_cutout(case, data):
@@ -417,7 +453,13 @@ def _evaluate_blank_control(data, bkg_rms, with_baselines):
         data - np.nanmedian(data),
         bkg_rms,
         np.zeros_like(data, dtype=bool),
-        {**streak_cfg, "enable": True, "mode": "auto_ground", "debug": True, "enable_sparse_ransac": True},
+        {
+            **streak_cfg,
+            "enable": True,
+            "mode": "auto_ground",
+            "debug": True,
+            "enable_sparse_ransac": True,
+        },
     )
     metrics = {
         "weightmask": {
@@ -428,10 +470,14 @@ def _evaluate_blank_control(data, bkg_rms, with_baselines):
     baselines = {}
     if with_baselines:
         baselines["simple_hough"] = {
-            "streak_pixels": int(np.sum(_simple_hough_baseline(data - np.nanmedian(data), bkg_rms)))
+            "streak_pixels": int(
+                np.sum(_simple_hough_baseline(data - np.nanmedian(data), bkg_rms))
+            )
         }
         baselines["rubin_compatible_kht"] = {
-            "streak_pixels": int(np.sum(_rubin_compatible_baseline(data - np.nanmedian(data), bkg_rms)))
+            "streak_pixels": int(
+                np.sum(_rubin_compatible_baseline(data - np.nanmedian(data), bkg_rms))
+            )
         }
     return metrics, streak_mask, baselines
 
@@ -462,7 +508,9 @@ def _evaluate_dark_injection(case, data, hdr, with_baselines):
         )
 
     science = data.astype(np.float32)
-    dark = _match_dark_to_science(dark.astype(np.float32), science.shape, _stable_seed(case["case_id"] + "_dark"))
+    dark = _match_dark_to_science(
+        dark.astype(np.float32), science.shape, _stable_seed(case["case_id"] + "_dark")
+    )
     injected = science + dark
     finite_dark = dark[np.isfinite(dark)]
     if finite_dark.size == 0:
@@ -471,7 +519,9 @@ def _evaluate_dark_injection(case, data, hdr, with_baselines):
         truth = dark > np.percentile(finite_dark, 99.5)
 
     pred_bad = detect_bad_pixels(
-        np.where(np.isfinite(dark), 1.0 + dark / max(np.nanmax(np.abs(dark)), 1.0), 1.0).astype(np.float32),
+        np.where(
+            np.isfinite(dark), 1.0 + dark / max(np.nanmax(np.abs(dark)), 1.0), 1.0
+        ).astype(np.float32),
         {
             "local_filter_size": 9,
             "local_low_thresh": 0.5,
@@ -489,8 +539,16 @@ def _evaluate_dark_injection(case, data, hdr, with_baselines):
         float(hdr.get("SATURATE", 65535.0)),
         float(hdr.get("GAIN", 1.5)),
         float(hdr.get("RDNOISE", 5.0)),
-        {"sigclip": 5.0, "objlim": 5.0, "dynamic_objlim": True, "psf_aware": True, "dilate_cr": False},
-        bkg_rms_map=np.full_like(injected, np.nanstd(injected - np.nanmedian(injected)) + 1e-3),
+        {
+            "sigclip": 5.0,
+            "objlim": 5.0,
+            "dynamic_objlim": True,
+            "psf_aware": True,
+            "dilate_cr": False,
+        },
+        bkg_rms_map=np.full_like(
+            injected, np.nanstd(injected - np.nanmedian(injected)) + 1e-3
+        ),
     )
     metrics = {
         "weightmask": {
@@ -503,7 +561,11 @@ def _evaluate_dark_injection(case, data, hdr, with_baselines):
         dark_thresh = truth
         baselines["dark_threshold_baseline"] = _mask_stats(dark_thresh, truth)
         baselines["astroscrappy_only"] = _mask_stats(pred_cr, truth)
-    return metrics, {"pred_bad": pred_bad, "pred_cr": pred_cr, "truth": truth}, baselines
+    return (
+        metrics,
+        {"pred_bad": pred_bad, "pred_cr": pred_cr, "truth": truth},
+        baselines,
+    )
 
 
 def _evaluate_streak_case(case, data, hdr, with_baselines):
@@ -514,7 +576,13 @@ def _evaluate_streak_case(case, data, hdr, with_baselines):
         data_sub,
         bkg_rms,
         np.zeros_like(data, dtype=bool),
-        {**streak_cfg, "enable": True, "mode": "auto_ground", "debug": True, "enable_sparse_ransac": True},
+        {
+            **streak_cfg,
+            "enable": True,
+            "mode": "auto_ground",
+            "debug": True,
+            "enable_sparse_ransac": True,
+        },
     )
     metrics = {
         "weightmask": {
@@ -553,26 +621,41 @@ def _evaluate_real_case(case, data, hdr, with_baselines=False):
     suite_name = "megacam_real" if "megacam" in case["case_id"] else "acs_compare"
     if case["label_recipe"] == "blank_control":
         bkg_rms = np.full_like(data, np.nanstd(data - np.nanmedian(data)) + 1e-3)
-        metrics, streak_mask, baselines = _evaluate_blank_control(data, bkg_rms, with_baselines)
-        _write_debug_mask(
-            case["case_id"], suite_name, science=data.astype(np.float32), streak_pred=streak_mask.astype(np.uint8)
+        metrics, streak_mask, baselines = _evaluate_blank_control(
+            data, bkg_rms, with_baselines
         )
-        metrics["baselines"] = baselines
-        return metrics
-    if case["label_recipe"] == "dark_injection_v1":
-        metrics, arrays, baselines = _evaluate_dark_injection(case, data, hdr, with_baselines)
         _write_debug_mask(
             case["case_id"],
             suite_name,
             science=data.astype(np.float32),
-            **{k: v.astype(np.uint8) if v.dtype == bool else v for k, v in arrays.items()},
+            streak_pred=streak_mask.astype(np.uint8),
+        )
+        metrics["baselines"] = baselines
+        return metrics
+    if case["label_recipe"] == "dark_injection_v1":
+        metrics, arrays, baselines = _evaluate_dark_injection(
+            case, data, hdr, with_baselines
+        )
+        _write_debug_mask(
+            case["case_id"],
+            suite_name,
+            science=data.astype(np.float32),
+            **{
+                k: v.astype(np.uint8) if v.dtype == bool else v
+                for k, v in arrays.items()
+            },
         )
         metrics["baselines"] = baselines
         return metrics
 
-    metrics, streak_mask, baselines = _evaluate_streak_case(case, data, hdr, with_baselines)
+    metrics, streak_mask, baselines = _evaluate_streak_case(
+        case, data, hdr, with_baselines
+    )
     _write_debug_mask(
-        case["case_id"], suite_name, science=data.astype(np.float32), streak_pred=streak_mask.astype(np.uint8)
+        case["case_id"],
+        suite_name,
+        science=data.astype(np.float32),
+        streak_pred=streak_mask.astype(np.uint8),
     )
     metrics["baselines"] = baselines
     return metrics
@@ -602,17 +685,26 @@ def _write_suite_outputs(summary):
 
 def run_suite(suite, with_baselines=False, selected_cases=None, download=False):
     if suite == "synthetic_v2":
-        return run_synthetic_v2(with_baselines=with_baselines, selected_cases=selected_cases)
+        return run_synthetic_v2(
+            with_baselines=with_baselines, selected_cases=selected_cases
+        )
     if suite in {"megacam_real", "acs_compare"}:
         if download:
             process_suite(suite)
         manifest = load_manifest(suite)
-        return _run_manifest_suite(manifest, with_baselines=with_baselines, selected_cases=selected_cases)
+        return _run_manifest_suite(
+            manifest, with_baselines=with_baselines, selected_cases=selected_cases
+        )
     if suite == "all":
         combined = {}
         failures = []
         for item in ("synthetic_v2", "megacam_real", "acs_compare"):
-            summary = run_suite(item, with_baselines=with_baselines, selected_cases=selected_cases, download=download)
+            summary = run_suite(
+                item,
+                with_baselines=with_baselines,
+                selected_cases=selected_cases,
+                download=download,
+            )
             combined[item] = summary["results"]
             failures.extend(summary.get("gate_failures", []))
             _write_suite_outputs(summary)
@@ -622,14 +714,23 @@ def run_suite(suite, with_baselines=False, selected_cases=None, download=False):
 
 def main():
     parser = argparse.ArgumentParser(description="Run WeightMask benchmark suites.")
-    parser.add_argument("--suite", required=True, choices=["synthetic_v2", "megacam_real", "acs_compare", "all"])
+    parser.add_argument(
+        "--suite",
+        required=True,
+        choices=["synthetic_v2", "megacam_real", "acs_compare", "all"],
+    )
     parser.add_argument("--with-baselines", action="store_true")
-    parser.add_argument("--download", action="store_true", help="Attempt to download missing real data")
+    parser.add_argument(
+        "--download", action="store_true", help="Attempt to download missing real data"
+    )
     parser.add_argument("--case", action="append", default=[])
     args = parser.parse_args()
 
     summary = run_suite(
-        args.suite, with_baselines=args.with_baselines, selected_cases=set(args.case) or None, download=args.download
+        args.suite,
+        with_baselines=args.with_baselines,
+        selected_cases=set(args.case) or None,
+        download=args.download,
     )
     json_path, md_path = _write_suite_outputs(summary)
     print(f"Wrote benchmark metrics to {json_path}")

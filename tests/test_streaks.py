@@ -64,9 +64,14 @@ class TestStreaks(unittest.TestCase):
         data_sub = np.zeros(self.shape, dtype=np.float32)
         for x in range(20, 236):
             y = 80 + int(0.35 * (x - 20))
-            data_sub[max(0, y - 1) : min(self.shape[0], y + 2), max(0, x - 1) : min(self.shape[1], x + 2)] = 80.0
+            data_sub[
+                max(0, y - 1) : min(self.shape[0], y + 2),
+                max(0, x - 1) : min(self.shape[1], x + 2),
+            ] = 80.0
 
-        mask = detect_streaks(data_sub, self.rms, self.empty_mask, self._satdet_config())
+        mask = detect_streaks(
+            data_sub, self.rms, self.empty_mask, self._satdet_config()
+        )
 
         self.assertTrue(np.sum(mask) > 0)
         self.assertTrue(mask[120, 135] or mask[121, 135])
@@ -79,7 +84,9 @@ class TestStreaks(unittest.TestCase):
             data_sub[max(0, y1 - 1) : min(self.shape[0], y1 + 2), x] = 60.0
             data_sub[max(0, y2 - 1) : min(self.shape[0], y2 + 2), x] = 60.0
 
-        mask = detect_streaks(data_sub, self.rms, self.empty_mask, self._satdet_config())
+        mask = detect_streaks(
+            data_sub, self.rms, self.empty_mask, self._satdet_config()
+        )
 
         self.assertTrue(np.sum(mask) > 0)
         self.assertTrue(mask[80, 200])
@@ -93,7 +100,10 @@ class TestStreaks(unittest.TestCase):
         data_sub[ys, xs] += 30.0
         existing_mask = np.zeros(self.shape, dtype=bool)
         for y, x in zip(ys, xs):
-            existing_mask[max(0, y - 1) : min(self.shape[0], y + 2), max(0, x - 1) : min(self.shape[1], x + 2)] = True
+            existing_mask[
+                max(0, y - 1) : min(self.shape[0], y + 2),
+                max(0, x - 1) : min(self.shape[1], x + 2),
+            ] = True
 
         config = self._satdet_config()
         config["satdet_params"].update(
@@ -104,7 +114,9 @@ class TestStreaks(unittest.TestCase):
                 "confidence_threshold": 0.55,
             }
         )
-        config["mask_params"].update({"max_support_width": 6, "min_row_hit_fraction": 0.5})
+        config["mask_params"].update(
+            {"max_support_width": 6, "min_row_hit_fraction": 0.5}
+        )
 
         masked = detect_streaks(data_sub, self.rms, existing_mask, config)
 
@@ -115,7 +127,10 @@ class TestStreaks(unittest.TestCase):
         for x in range(20, 220, 18):
             y = 20 + x
             if y < self.shape[0]:
-                data_sub[max(0, y - 1) : min(self.shape[0], y + 2), max(0, x - 1) : min(self.shape[1], x + 2)] = 120.0
+                data_sub[
+                    max(0, y - 1) : min(self.shape[0], y + 2),
+                    max(0, x - 1) : min(self.shape[1], x + 2),
+                ] = 120.0
 
         config = self._satdet_config(
             enable_sparse_ransac=True,

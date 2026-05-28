@@ -70,14 +70,20 @@ class TestVariance(unittest.TestCase):
         # Top-left: sky=100, flat=1. variance_e = (100/1)*2 + 4^2 = 200 + 16 = 216. inv_var = 2^2 / 216 = 4/216 = 1/54
         # Top-right: sky=100, flat=0.5. variance_e = (100/0.5)*2 + 4^2 = 200*2 + 16 = 416. inv_var = 4 / 416 = 1/104
         # Bottom-left/right: same as Top-left
-        expected_inv_var = np.array([[4.0 / 216.0, 4.0 / 416.0], [4.0 / 216.0, 4.0 / 216.0]], dtype=np.float32)
+        expected_inv_var = np.array(
+            [[4.0 / 216.0, 4.0 / 416.0], [4.0 / 216.0, 4.0 / 216.0]], dtype=np.float32
+        )
 
         np.testing.assert_allclose(inv_var, expected_inv_var, rtol=1e-5)
 
     def test__calculate_inverse_variance_theoretical_edge_cases(self):
         """Test internal theoretical inverse variance logic with edge cases like negative sky and zero flat."""
-        sky_map = np.array([[100.0, -50.0], [100.0, 100.0]], dtype=np.float32)  # Negative sky
-        flat_map = np.array([[1.0, 1.0], [1e-10, -1.0]], dtype=np.float32)  # Flat <= epsilon and negative flat
+        sky_map = np.array(
+            [[100.0, -50.0], [100.0, 100.0]], dtype=np.float32
+        )  # Negative sky
+        flat_map = np.array(
+            [[1.0, 1.0], [1e-10, -1.0]], dtype=np.float32
+        )  # Flat <= epsilon and negative flat
         gain = 2.0
         read_noise_e = 4.0
         epsilon = 1e-9
@@ -239,7 +245,9 @@ class TestVariance(unittest.TestCase):
         inv_variance = np.ones((10, 10))
         sci_data = np.ones((10, 10))
         sky_map = np.ones((10, 10))
-        result = _unbias_variance(inv_variance, sci_data, sky_map, gain=0.0, epsilon=1e-9)
+        result = _unbias_variance(
+            inv_variance, sci_data, sky_map, gain=0.0, epsilon=1e-9
+        )
         np.testing.assert_array_equal(result, inv_variance)
 
     def test_unbias_variance_negative_gain(self):
@@ -247,7 +255,9 @@ class TestVariance(unittest.TestCase):
         inv_variance = np.ones((10, 10))
         sci_data = np.ones((10, 10))
         sky_map = np.ones((10, 10))
-        result = _unbias_variance(inv_variance, sci_data, sky_map, gain=-1.0, epsilon=1e-9)
+        result = _unbias_variance(
+            inv_variance, sci_data, sky_map, gain=-1.0, epsilon=1e-9
+        )
         np.testing.assert_array_equal(result, inv_variance)
 
     def test_rescale_variance_robust_ignores_invalid_inverse_variance(self):
@@ -260,7 +270,9 @@ class TestVariance(unittest.TestCase):
 
         with warnings.catch_warnings(record=True) as caught:
             warnings.simplefilter("always")
-            scaled = _rescale_variance_robust(inv_variance, sci_data, sky_map, obj_mask, 1e-9)
+            scaled = _rescale_variance_robust(
+                inv_variance, sci_data, sky_map, obj_mask, 1e-9
+            )
 
         self.assertEqual(scaled.shape, inv_variance.shape)
         self.assertFalse(
@@ -292,11 +304,15 @@ class TestVariance(unittest.TestCase):
                 var_adu = true_rn_adu**2 + median_signal / true_gain
                 std_adu = np.sqrt(var_adu)
 
-                noise = np.random.normal(loc=0, scale=std_adu, size=(patch_size, patch_size))
+                noise = np.random.normal(
+                    loc=0, scale=std_adu, size=(patch_size, patch_size)
+                )
                 patch_data = median_signal + noise
                 sci_data[y : y + patch_size, x : x + patch_size] = patch_data
 
-        emp_gain, emp_rn_e = _calculate_empirical_noise_params(sci_data, obj_mask, patch_size, robust_sigma_clip=3.0)
+        emp_gain, emp_rn_e = _calculate_empirical_noise_params(
+            sci_data, obj_mask, patch_size, robust_sigma_clip=3.0
+        )
 
         # Verify that we got a result
         self.assertIsNotNone(emp_gain)
@@ -318,7 +334,9 @@ class TestVariance(unittest.TestCase):
         # Mask almost everything so valid_pixels.size < 100
         obj_mask = np.ones(shape, dtype=bool)
 
-        emp_gain, emp_rn_e = _calculate_empirical_noise_params(sci_data, obj_mask, patch_size, robust_sigma_clip=3.0)
+        emp_gain, emp_rn_e = _calculate_empirical_noise_params(
+            sci_data, obj_mask, patch_size, robust_sigma_clip=3.0
+        )
 
         self.assertIsNone(emp_gain)
         self.assertIsNone(emp_rn_e)
@@ -333,7 +351,9 @@ class TestVariance(unittest.TestCase):
         sci_data = np.random.normal(100, 10, shape).astype(np.float32)
         obj_mask = np.zeros(shape, dtype=bool)
 
-        emp_gain, emp_rn_e = _calculate_empirical_noise_params(sci_data, obj_mask, patch_size, robust_sigma_clip=3.0)
+        emp_gain, emp_rn_e = _calculate_empirical_noise_params(
+            sci_data, obj_mask, patch_size, robust_sigma_clip=3.0
+        )
 
         self.assertIsNone(emp_gain)
         self.assertIsNone(emp_rn_e)
@@ -348,7 +368,9 @@ class TestVariance(unittest.TestCase):
         sci_data = np.ones(shape, dtype=np.float32) * 100.0
         obj_mask = np.zeros(shape, dtype=bool)
 
-        emp_gain, emp_rn_e = _calculate_empirical_noise_params(sci_data, obj_mask, patch_size, robust_sigma_clip=3.0)
+        emp_gain, emp_rn_e = _calculate_empirical_noise_params(
+            sci_data, obj_mask, patch_size, robust_sigma_clip=3.0
+        )
 
         self.assertIsNone(emp_gain)
         self.assertIsNone(emp_rn_e)
@@ -375,11 +397,15 @@ class TestVariance(unittest.TestCase):
                 var_adu = 1000.0 / median_signal
                 std_adu = np.sqrt(var_adu)
 
-                noise = np.random.normal(loc=0, scale=std_adu, size=(patch_size, patch_size))
+                noise = np.random.normal(
+                    loc=0, scale=std_adu, size=(patch_size, patch_size)
+                )
                 patch_data = median_signal + noise
                 sci_data[y : y + patch_size, x : x + patch_size] = patch_data
 
-        emp_gain, emp_rn_e = _calculate_empirical_noise_params(sci_data, obj_mask, patch_size, robust_sigma_clip=3.0)
+        emp_gain, emp_rn_e = _calculate_empirical_noise_params(
+            sci_data, obj_mask, patch_size, robust_sigma_clip=3.0
+        )
 
         self.assertIsNone(emp_gain)
         self.assertIsNone(emp_rn_e)
@@ -398,11 +424,15 @@ class TestVariance(unittest.TestCase):
         self.assertIsNone(res)
 
         # Test None sci_data
-        res = _rescale_variance_robust(inv_variance, None, sky_map, obj_mask, epsilon=1e-9)
+        res = _rescale_variance_robust(
+            inv_variance, None, sky_map, obj_mask, epsilon=1e-9
+        )
         np.testing.assert_array_equal(res, inv_variance)
 
         # Test None obj_mask
-        res = _rescale_variance_robust(inv_variance, sci_data, sky_map, None, epsilon=1e-9)
+        res = _rescale_variance_robust(
+            inv_variance, sci_data, sky_map, None, epsilon=1e-9
+        )
         np.testing.assert_array_equal(res, inv_variance)
 
     def test_rescale_variance_robust_few_valid_pixels(self):
@@ -414,7 +444,9 @@ class TestVariance(unittest.TestCase):
         sky_map = np.zeros((10, 10))
         obj_mask = np.ones((10, 10), dtype=bool)  # All masked
 
-        res = _rescale_variance_robust(inv_variance, sci_data, sky_map, obj_mask, epsilon=1e-9)
+        res = _rescale_variance_robust(
+            inv_variance, sci_data, sky_map, obj_mask, epsilon=1e-9
+        )
         np.testing.assert_array_equal(res, inv_variance)
 
     def test_rescale_variance_robust_zero_stdev(self):
@@ -427,7 +459,9 @@ class TestVariance(unittest.TestCase):
         sky_map = np.zeros((20, 20))
         obj_mask = np.zeros((20, 20), dtype=bool)
 
-        res = _rescale_variance_robust(inv_variance, sci_data, sky_map, obj_mask, epsilon=1e-9)
+        res = _rescale_variance_robust(
+            inv_variance, sci_data, sky_map, obj_mask, epsilon=1e-9
+        )
         np.testing.assert_array_equal(res, inv_variance)
 
     def test_rescale_variance_robust_success(self):
@@ -449,7 +483,9 @@ class TestVariance(unittest.TestCase):
         inv_variance = np.ones(shape)
         obj_mask = np.zeros(shape, dtype=bool)
 
-        res = _rescale_variance_robust(inv_variance, sci_data, sky_map, obj_mask, epsilon=1e-9)
+        res = _rescale_variance_robust(
+            inv_variance, sci_data, sky_map, obj_mask, epsilon=1e-9
+        )
 
         # The scale factor should be 1.0 / (robust_stdev**2)
         # We know robust_stdev ~ 2.0, so scale_factor ~ 1.0 / 4.0 = 0.25
@@ -483,7 +519,9 @@ class TestVariance(unittest.TestCase):
         # which yields NaN in sqrt.
         inv_variance[0:5, 0:5] = -1.0
 
-        res = _rescale_variance_robust(inv_variance, sci_data, sky_map, obj_mask, epsilon=1e-9)
+        res = _rescale_variance_robust(
+            inv_variance, sci_data, sky_map, obj_mask, epsilon=1e-9
+        )
 
         # Should still run successfully and scale using the valid parts
         self.assertIsNotNone(res)

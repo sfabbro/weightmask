@@ -75,7 +75,14 @@ class TestUtils(unittest.TestCase):
 
     def test_clean_config_dict_numbers(self):
         """Test clean_config_dict with numeric strings."""
-        config = {"int1": "42", "int2": "-10", "float1": "3.14", "float2": "-0.001", "sci1": "1e-5", "sci2": "2.5E4"}
+        config = {
+            "int1": "42",
+            "int2": "-10",
+            "float1": "3.14",
+            "float2": "-0.001",
+            "sci1": "1e-5",
+            "sci2": "2.5E4",
+        }
         cleaned = clean_config_dict(config)
         self.assertEqual(cleaned["int1"], 42)
         self.assertEqual(cleaned["int2"], -10)
@@ -104,7 +111,13 @@ class TestUtils(unittest.TestCase):
 
     def test_clean_config_dict_nested_dict(self):
         """Test clean_config_dict with nested dictionaries."""
-        config = {"level1": {"val_str": "123", "val_bool": "true", "level2": {"val_float": "1.23"}}}
+        config = {
+            "level1": {
+                "val_str": "123",
+                "val_bool": "true",
+                "level2": {"val_float": "1.23"},
+            }
+        }
         cleaned = clean_config_dict(config)
         self.assertEqual(cleaned["level1"]["val_str"], 123)
         self.assertTrue(cleaned["level1"]["val_bool"])

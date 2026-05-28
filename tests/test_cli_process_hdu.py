@@ -76,12 +76,14 @@ class TestProcessHDU(unittest.TestCase):
         )
 
         # Run process_hdu
-        mask_data, inv_var_data, weight_map, confidence_map, sky_map, header_info = process_hdu(
-            self.mock_hdu_sci,
-            self.mock_hdu_flat,
-            self.config,
-            hdu_index=1,
-            tile_size=100,
+        mask_data, inv_var_data, weight_map, confidence_map, sky_map, header_info = (
+            process_hdu(
+                self.mock_hdu_sci,
+                self.mock_hdu_flat,
+                self.config,
+                hdu_index=1,
+                tile_size=100,
+            )
         )
 
         # Assert returns are correct
@@ -99,8 +101,8 @@ class TestProcessHDU(unittest.TestCase):
         # Simulate OSError when reading science data
         self.mock_hdu_sci.read.side_effect = OSError("Mock error")
 
-        mask_data, inv_var_data, weight_map, confidence_map, sky_map, header_info = process_hdu(
-            self.mock_hdu_sci, self.mock_hdu_flat, self.config, hdu_index=1
+        mask_data, inv_var_data, weight_map, confidence_map, sky_map, header_info = (
+            process_hdu(self.mock_hdu_sci, self.mock_hdu_flat, self.config, hdu_index=1)
         )
 
         self.assertIsNone(weight_map)
@@ -111,8 +113,8 @@ class TestProcessHDU(unittest.TestCase):
         # Simulate OSError when reading flat data
         self.mock_hdu_flat.read.side_effect = OSError("Mock flat error")
 
-        mask_data, inv_var_data, weight_map, confidence_map, sky_map, header_info = process_hdu(
-            self.mock_hdu_sci, self.mock_hdu_flat, self.config, hdu_index=1
+        mask_data, inv_var_data, weight_map, confidence_map, sky_map, header_info = (
+            process_hdu(self.mock_hdu_sci, self.mock_hdu_flat, self.config, hdu_index=1)
         )
 
         self.assertIsNone(weight_map)
@@ -123,8 +125,8 @@ class TestProcessHDU(unittest.TestCase):
         # Simulate flat data with wrong shape
         self.mock_hdu_flat.read.return_value = np.ones((50, 50), dtype=np.float32)
 
-        mask_data, inv_var_data, weight_map, confidence_map, sky_map, header_info = process_hdu(
-            self.mock_hdu_sci, self.mock_hdu_flat, self.config, hdu_index=1
+        mask_data, inv_var_data, weight_map, confidence_map, sky_map, header_info = (
+            process_hdu(self.mock_hdu_sci, self.mock_hdu_flat, self.config, hdu_index=1)
         )
 
         self.assertIsNone(weight_map)
@@ -168,8 +170,10 @@ class TestProcessHDU(unittest.TestCase):
         )
 
         # Run process_hdu with hdu_flat = None
-        mask_data, inv_var_data, weight_map, confidence_map, sky_map, header_info = process_hdu(
-            self.mock_hdu_sci, None, self.config, hdu_index=1, tile_size=100
+        mask_data, inv_var_data, weight_map, confidence_map, sky_map, header_info = (
+            process_hdu(
+                self.mock_hdu_sci, None, self.config, hdu_index=1, tile_size=100
+            )
         )
 
         # Assert returns are correct
@@ -179,7 +183,9 @@ class TestProcessHDU(unittest.TestCase):
         # Verify using_unit_flat flag logic
         # When flat is None, using_unit_flat is True
         mock_detect_bad.assert_called()
-        self.assertTrue(mock_detect_bad.call_args[0][2])  # The third argument to detect_bad_pixels is using_unit_flat
+        self.assertTrue(
+            mock_detect_bad.call_args[0][2]
+        )  # The third argument to detect_bad_pixels is using_unit_flat
 
     @patch("weightmask.cli.detect_bad_pixels")
     @patch("weightmask.cli.detect_saturated_pixels")
@@ -224,12 +230,14 @@ class TestProcessHDU(unittest.TestCase):
         )
 
         # Run process_hdu
-        mask_data, inv_var_data, weight_map, confidence_map, sky_map, header_info = process_hdu(
-            self.mock_hdu_sci,
-            self.mock_hdu_flat,
-            self.config,
-            hdu_index=1,
-            tile_size=100,
+        mask_data, inv_var_data, weight_map, confidence_map, sky_map, header_info = (
+            process_hdu(
+                self.mock_hdu_sci,
+                self.mock_hdu_flat,
+                self.config,
+                hdu_index=1,
+                tile_size=100,
+            )
         )
 
         # Assert streaks were detected
@@ -279,12 +287,14 @@ class TestProcessHDU(unittest.TestCase):
         )
 
         # Run process_hdu
-        mask_data, inv_var_data, weight_map, confidence_map, sky_map, header_info = process_hdu(
-            self.mock_hdu_sci,
-            self.mock_hdu_flat,
-            self.config,
-            hdu_index=1,
-            tile_size=100,
+        mask_data, inv_var_data, weight_map, confidence_map, sky_map, header_info = (
+            process_hdu(
+                self.mock_hdu_sci,
+                self.mock_hdu_flat,
+                self.config,
+                hdu_index=1,
+                tile_size=100,
+            )
         )
 
         # Assert bleed trails were grown
@@ -321,12 +331,14 @@ class TestProcessHDU(unittest.TestCase):
         mock_est_bkg.return_value = (None, None)
 
         # Run process_hdu
-        mask_data, inv_var_data, weight_map, confidence_map, sky_map, header_info = process_hdu(
-            self.mock_hdu_sci,
-            self.mock_hdu_flat,
-            self.config,
-            hdu_index=1,
-            tile_size=100,
+        mask_data, inv_var_data, weight_map, confidence_map, sky_map, header_info = (
+            process_hdu(
+                self.mock_hdu_sci,
+                self.mock_hdu_flat,
+                self.config,
+                hdu_index=1,
+                tile_size=100,
+            )
         )
 
         self.assertIsNone(mask_data)

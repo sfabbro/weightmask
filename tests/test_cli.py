@@ -106,8 +106,7 @@ class TestRunPipeline(unittest.TestCase):
 
         self.config_file = os.path.join(self.workspace, "test_config.yml")
         with open(self.config_file, "w") as f:
-            f.write(
-                """
+            f.write("""
 flat_masking: {}
 saturation: {}
 sep_background: {}
@@ -119,8 +118,7 @@ variance:
 confidence_params: {}
 output_params:
   output_map_format: weight
-"""
-            )
+""")
 
     def tearDown(self):
         self.test_dir.cleanup()
@@ -173,8 +171,12 @@ output_params:
             result = run_pipeline()
             self.assertEqual(result, 0)
             self.assertTrue(os.path.exists(output_file))
-            self.assertTrue(os.path.exists(os.path.join(self.workspace, "output2.weight.bad.fits")))
-            self.assertTrue(os.path.exists(os.path.join(self.workspace, "output2.weight.sat.fits")))
+            self.assertTrue(
+                os.path.exists(os.path.join(self.workspace, "output2.weight.bad.fits"))
+            )
+            self.assertTrue(
+                os.path.exists(os.path.join(self.workspace, "output2.weight.sat.fits"))
+            )
 
     def test_run_pipeline_missing_config(self):
         with patch(
@@ -227,13 +229,17 @@ class TestCLIConfigFallback(unittest.TestCase):
         with patch("builtins.print") as mock_print:
             result = run_pipeline()
             self.assertEqual(result, 1)
-            mock_print.assert_any_call("ERROR: Config file not specified and no default found.")
+            mock_print.assert_any_call(
+                "ERROR: Config file not specified and no default found."
+            )
 
     @patch("weightmask.cli.validate_fits_file")
     @patch("os.path.exists")
     @patch("builtins.open")
     @patch.object(sys, "argv", ["weightmask", "dummy.fits"])
-    def test_first_fallback_config_found(self, mock_open, mock_exists, mock_validate_fits):
+    def test_first_fallback_config_found(
+        self, mock_open, mock_exists, mock_validate_fits
+    ):
         def exists_side_effect(path):
             if path == "dummy.fits":
                 return True
@@ -248,13 +254,17 @@ class TestCLIConfigFallback(unittest.TestCase):
         with patch("builtins.print") as mock_print:
             result = run_pipeline()
             self.assertEqual(result, 1)
-            mock_print.assert_any_call("Using default config file found at: weightmask.yml")
+            mock_print.assert_any_call(
+                "Using default config file found at: weightmask.yml"
+            )
 
     @patch("weightmask.cli.validate_fits_file")
     @patch("os.path.exists")
     @patch("builtins.open")
     @patch.object(sys, "argv", ["weightmask", "dummy.fits"])
-    def test_second_fallback_config_found(self, mock_open, mock_exists, mock_validate_fits):
+    def test_second_fallback_config_found(
+        self, mock_open, mock_exists, mock_validate_fits
+    ):
         def exists_side_effect(path):
             if path == "dummy.fits":
                 return True
@@ -275,7 +285,9 @@ class TestCLIConfigFallback(unittest.TestCase):
     @patch("os.path.exists")
     @patch("builtins.open")
     @patch.object(sys, "argv", ["weightmask", "dummy.fits"])
-    def test_third_fallback_config_found(self, mock_open, mock_exists, mock_validate_fits):
+    def test_third_fallback_config_found(
+        self, mock_open, mock_exists, mock_validate_fits
+    ):
         def exists_side_effect(path):
             if path == "dummy.fits":
                 return True
@@ -290,7 +302,9 @@ class TestCLIConfigFallback(unittest.TestCase):
         with patch("builtins.print") as mock_print:
             result = run_pipeline()
             self.assertEqual(result, 1)
-            mock_print.assert_any_call("Using default config file found at: .weightmask.yml")
+            mock_print.assert_any_call(
+                "Using default config file found at: .weightmask.yml"
+            )
 
 
 if __name__ == "__main__":

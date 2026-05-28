@@ -11,14 +11,20 @@ class TestBenchmarks(unittest.TestCase):
         self.assertTrue(len(manifest["cases"]) > 0)
 
     def test_run_synthetic_v2_smoke(self):
-        summary = run_suite("synthetic_v2", with_baselines=False, selected_cases={"synthetic_sparse"})
+        summary = run_suite(
+            "synthetic_v2", with_baselines=False, selected_cases={"synthetic_sparse"}
+        )
         self.assertEqual(summary["suite"], "synthetic_v2")
         self.assertIn("synthetic_sparse", summary["results"])
         self.assertIn("bad_pixel_stats", summary["results"]["synthetic_sparse"])
 
     def test_validate_case_file_rejects_wrong_instrument(self):
         manifest = load_manifest("megacam_real")
-        sparse_case = next(case for case in manifest["cases"] if case["case_id"] == "megacam_sparse_control")
+        sparse_case = next(
+            case
+            for case in manifest["cases"]
+            if case["case_id"] == "megacam_sparse_control"
+        )
         local_path = ROOT / sparse_case["local_path"]
         if local_path.exists():
             valid, reason = validate_case_file(sparse_case, local_path)

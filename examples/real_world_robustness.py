@@ -19,7 +19,9 @@ def demonstrate_robustness():
         regime_type = "complex"
 
     config_path = "weightmask.yml"
-    print(f"Goal: Detect artifacts in a field with {Args.stars} stars and Poisson noise.")
+    print(
+        f"Goal: Detect artifacts in a field with {Args.stars} stars and Poisson noise."
+    )
 
     # Run masking test
     metrics = run_masking_test(config_path, Args, save_fits=True)

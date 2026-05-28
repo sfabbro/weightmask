@@ -3,9 +3,15 @@ import sep
 from skimage.draw import ellipse
 
 
-def _adaptive_extract_threshold(data_sub, bkg_rms_map, existing_mask, base_extract_thresh):
+def _adaptive_extract_threshold(
+    data_sub, bkg_rms_map, existing_mask, base_extract_thresh
+):
     extract_thresh = base_extract_thresh
-    valid_mask = ~existing_mask if existing_mask is not None else np.ones(data_sub.shape, dtype=bool)
+    valid_mask = (
+        ~existing_mask
+        if existing_mask is not None
+        else np.ones(data_sub.shape, dtype=bool)
+    )
     if bkg_rms_map is not None:
         valid_mask &= np.isfinite(bkg_rms_map) & (bkg_rms_map > 0)
     valid_data = data_sub[valid_mask]
@@ -27,7 +33,15 @@ def _adaptive_extract_threshold(data_sub, bkg_rms_map, existing_mask, base_extra
     return extract_thresh
 
 
-def _run_sep_extract(data_sub, bkg_rms_map, existing_mask, thresh, min_area, config, segmentation_map=False):
+def _run_sep_extract(
+    data_sub,
+    bkg_rms_map,
+    existing_mask,
+    thresh,
+    min_area,
+    config,
+    segmentation_map=False,
+):
     return sep.extract(
         data_sub,
         thresh=thresh,
@@ -118,10 +132,22 @@ def detect_objects(data_sub, bkg_rms_map, existing_mask, config):
         if existing_mask is not None:
             m_in = np.require(existing_mask, dtype=np.bool_, requirements=["C", "A"])
 
-        extract_thresh = _adaptive_extract_threshold(d_sub, b_rms, m_in, base_extract_thresh)
+        extract_thresh = _adaptive_extract_threshold(
+            d_sub, b_rms, m_in, base_extract_thresh
+        )
 
-        seed_thresh = float(clean_config.get("seed_thresh_factor", 1.25)) * extract_thresh
-        seed_objects = _run_sep_extract(d_sub, b_rms, m_in, seed_thresh, min_area, clean_config, segmentation_map=False)
+        seed_thresh = (
+            float(clean_config.get("seed_thresh_factor", 1.25)) * extract_thresh
+        )
+        seed_objects = _run_sep_extract(
+            d_sub,
+            b_rms,
+            m_in,
+            seed_thresh,
+            min_area,
+            clean_config,
+            segmentation_map=False,
+        )
         seed_mask = np.zeros_like(object_mask, dtype=bool)
         if len(seed_objects) > 0:
             seed_scaled_a = np.maximum(seed_objects["a"], 1.0)
@@ -134,7 +160,9 @@ def detect_objects(data_sub, bkg_rms_map, existing_mask, config):
                 max(1.5, float(clean_config.get("ellipse_k", 2.0)) * 0.8),
             )
 
-        second_pass_mask = seed_mask | (m_in if m_in is not None else np.zeros_like(seed_mask))
+        second_pass_mask = seed_mask | (
+            m_in if m_in is not None else np.zeros_like(seed_mask)
+        )
         objects, segmap = _run_sep_extract(
             d_sub,
             b_rms,
@@ -155,7 +183,7 @@ def detect_objects(data_sub, bkg_rms_map, existing_mask, config):
                 elongation = objects["a"] / np.maximum(objects["b"], 1e-9)
             if clean_config.get("handoff_elongated_to_streak", True):
                 valid_obj = elongation < max_elongation
-                elongated_count = int(np.sum(~valid_obj))
+                elongated_count = int(np.count_nonzero(~valid_obj))
                 if elongated_count > 0:
                     print(
                         f"  Handing off {elongated_count} elongated detections to the streak pipeline "
@@ -170,8 +198,12 @@ def detect_objects(data_sub, bkg_rms_map, existing_mask, config):
 
         if len(keep_objects) > 0:
             base_k = float(clean_config.get("ellipse_k", 2.0))
-            halo_brightness_factor = float(clean_config.get("halo_brightness_factor", 0.15))
-            halo_flux_reference_percentile = float(clean_config.get("halo_flux_reference_percentile", 50.0))
+            halo_brightness_factor = float(
+                clean_config.get("halo_brightness_factor", 0.15)
+            )
+            halo_flux_reference_percentile = float(
+                clean_config.get("halo_flux_reference_percentile", 50.0)
+            )
             max_halo_multiplier = float(clean_config.get("max_halo_multiplier", 1.8))
             halo_enabled = bool(clean_config.get("dynamic_halo_scaling", True))
 
@@ -196,21 +228,29 @@ def detect_objects(data_sub, bkg_rms_map, existing_mask, config):
             if not object_mask.flags["C_CONTIGUOUS"]:
                 object_mask = np.ascontiguousarray(object_mask)
 
-            object_mask = _apply_vectorized_ellipse_mask(object_mask, keep_objects, scaled_a, scaled_b, base_k)
+            object_mask = _apply_vectorized_ellipse_mask(
+                object_mask, keep_objects, scaled_a, scaled_b, base_k
+            )
 
             if halo_enabled:
-                print(f"    Halo scaling multiplier range: 1.0x to {np.max(scale_multiplier):.2f}x")
+                print(
+                    f"    Halo scaling multiplier range: 1.0x to {np.max(scale_multiplier):.2f}x"
+                )
 
             # --- 2. Diffraction Spike Masking ---
             if clean_config.get("spike_enable", True):
                 spike_thresh = float(clean_config.get("spike_flux_thresh", 1e5))
                 with np.errstate(divide="ignore", invalid="ignore"):
-                    compactness = keep_objects["a"] / np.maximum(keep_objects["b"], 1e-9)
-                bright_mask = (keep_objects["flux"] > spike_thresh) & (compactness < 1.8)
+                    compactness = keep_objects["a"] / np.maximum(
+                        keep_objects["b"], 1e-9
+                    )
+                bright_mask = (keep_objects["flux"] > spike_thresh) & (
+                    compactness < 1.8
+                )
 
                 if np.any(bright_mask):
                     print(
-                        f"    Applying diffraction spike masking to {np.sum(bright_mask)} bright stars (Flux > {spike_thresh:.2e})..."
+                        f"    Applying diffraction spike masking to {np.count_nonzero(bright_mask)} bright stars (Flux > {spike_thresh:.2e})..."
                     )
                     spike_length_base = int(clean_config.get("spike_length_base", 100))
                     spike_width = int(clean_config.get("spike_width", 3))
@@ -218,21 +258,32 @@ def detect_objects(data_sub, bkg_rms_map, existing_mask, config):
                     h, w = object_mask.shape
                     for obj in keep_objects[bright_mask]:
                         # Scale spike length slightly by flux
-                        s_len = int(spike_length_base * (1.0 + 0.2 * np.log10(obj["flux"] / spike_thresh)))
+                        s_len = int(
+                            spike_length_base
+                            * (1.0 + 0.2 * np.log10(obj["flux"] / spike_thresh))
+                        )
                         xc, yc = int(obj["x"] + 0.5), int(obj["y"] + 0.5)
 
                         hw = spike_width // 2
 
                         # Horizontal spike
                         xstart, xend = max(0, xc - s_len), min(w - 1, xc + s_len)
-                        object_mask[max(0, yc - hw) : min(h, yc + hw + 1), xstart : xend + 1] = True
+                        object_mask[
+                            max(0, yc - hw) : min(h, yc + hw + 1), xstart : xend + 1
+                        ] = True
 
                         # Vertical spike
                         ystart, yend = max(0, yc - s_len), min(h - 1, yc + s_len)
-                        object_mask[ystart : yend + 1, max(0, xc - hw) : min(w, xc + hw + 1)] = True
+                        object_mask[
+                            ystart : yend + 1, max(0, xc - hw) : min(w, xc + hw + 1)
+                        ] = True
 
             # Only return newly detected pixels (not already in existing_mask)
-            m_orig = existing_mask.astype(bool) if existing_mask is not None else np.zeros_like(object_mask)
+            m_orig = (
+                existing_mask.astype(bool)
+                if existing_mask is not None
+                else np.zeros_like(object_mask)
+            )
             obj_add_mask = object_mask & (~m_orig)
             return obj_add_mask
 

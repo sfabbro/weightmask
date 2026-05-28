@@ -23,7 +23,9 @@ class TestSaturation(unittest.TestCase):
             "fallback_level": 65000.0,
         }
 
-        saturation_level, sat_method_used, mask = detect_saturated_pixels(sci_data, sci_hdr, config)
+        saturation_level, sat_method_used, mask = detect_saturated_pixels(
+            sci_data, sci_hdr, config
+        )
 
         # Check that we got a result
         self.assertIsNotNone(saturation_level)
@@ -46,12 +48,21 @@ class TestSaturation(unittest.TestCase):
 
         config = {"method": "header", "keyword": "SATURATE", "fallback_level": 65000.0}
 
-        saturation_level, sat_method_used, mask = detect_saturated_pixels(sci_data, sci_hdr, config)
+        saturation_level, sat_method_used, mask = detect_saturated_pixels(
+            sci_data, sci_hdr, config
+        )
 
         # Guarded histogram logic may still accept the header as an advisory fallback,
         # but it should never yield a nonsensical value below the upper tail.
         self.assertGreaterEqual(saturation_level, 60000.0)
-        self.assertIn(sat_method_used, {"histogram (guarded)", "header advisory fallback", "plateau-tail fallback"})
+        self.assertIn(
+            sat_method_used,
+            {
+                "histogram (guarded)",
+                "header advisory fallback",
+                "plateau-tail fallback",
+            },
+        )
 
         # Check that saturated pixels are identified
         self.assertTrue(np.any(mask[10:20, 10:20]))
@@ -69,11 +80,15 @@ class TestSaturation(unittest.TestCase):
 
         config = {"method": "header", "keyword": "SATURATE", "fallback_level": 65000.0}
 
-        saturation_level, sat_method_used, mask = detect_saturated_pixels(sci_data, sci_hdr, config)
+        saturation_level, sat_method_used, mask = detect_saturated_pixels(
+            sci_data, sci_hdr, config
+        )
 
         # Check that we fell back to a guarded high-end estimate
         self.assertGreaterEqual(saturation_level, 65000.0)
-        self.assertIn(sat_method_used, {"plateau-tail fallback", "default guarded fallback"})
+        self.assertIn(
+            sat_method_used, {"plateau-tail fallback", "default guarded fallback"}
+        )
 
         # Check that saturated pixels are identified
         self.assertTrue(np.any(mask[10:20, 10:20]))
@@ -97,7 +112,9 @@ class TestSaturation(unittest.TestCase):
             "fallback_level": 65000.0,
         }
 
-        saturation_level, sat_method_used, mask = detect_saturated_pixels(sci_data, sci_hdr, config)
+        saturation_level, sat_method_used, mask = detect_saturated_pixels(
+            sci_data, sci_hdr, config
+        )
 
         # Check that we got a result
         self.assertIsNotNone(saturation_level)
@@ -133,7 +150,9 @@ class TestGrowBleedTrails(unittest.TestCase):
         # Set values that would normally trigger growth
         self.sci_data[40:60, 50] = 1000.0
 
-        mask = grow_bleed_trails(self.sci_data, self.sat_mask, self.sky_map, self.bkg_rms_map, self.config)
+        mask = grow_bleed_trails(
+            self.sci_data, self.sat_mask, self.sky_map, self.bkg_rms_map, self.config
+        )
         np.testing.assert_array_equal(mask, self.sat_mask)
 
     def test_grow_bleed_trails_basic_vertical(self):
@@ -145,7 +164,9 @@ class TestGrowBleedTrails(unittest.TestCase):
         # Threshold is 0 + 5 * 10 = 50
         self.sci_data[45:56, 50] = 100.0
 
-        mask = grow_bleed_trails(self.sci_data, self.sat_mask, self.sky_map, self.bkg_rms_map, self.config)
+        mask = grow_bleed_trails(
+            self.sci_data, self.sat_mask, self.sky_map, self.bkg_rms_map, self.config
+        )
 
         # Should have grown to cover 45:56
         expected_indices = np.arange(45, 56)
@@ -166,7 +187,9 @@ class TestGrowBleedTrails(unittest.TestCase):
         self.sci_data[47, 50] = 0.0
         self.sci_data[53, 50] = 0.0
 
-        mask = grow_bleed_trails(self.sci_data, self.sat_mask, self.sky_map, self.bkg_rms_map, self.config)
+        mask = grow_bleed_trails(
+            self.sci_data, self.sat_mask, self.sky_map, self.bkg_rms_map, self.config
+        )
 
         self.assertTrue(np.all(mask[48:53, 50]))
         self.assertFalse(mask[47, 50])
@@ -181,7 +204,9 @@ class TestGrowBleedTrails(unittest.TestCase):
         # Trail extends very far
         self.sci_data[:, 50] = 100.0
 
-        mask = grow_bleed_trails(self.sci_data, self.sat_mask, self.sky_map, self.bkg_rms_map, self.config)
+        mask = grow_bleed_trails(
+            self.sci_data, self.sat_mask, self.sky_map, self.bkg_rms_map, self.config
+        )
 
         # Saturated core is at 50. Max grow 5 up and 5 down.
         # Should cover 45 to 55 inclusive (50-5=45, 50+5=55)
@@ -195,7 +220,9 @@ class TestGrowBleedTrails(unittest.TestCase):
         self.sat_mask[50, 50] = True
         self.sci_data[50, 50] = 60000.0
 
-        mask = grow_bleed_trails(self.sci_data, self.sat_mask, self.sky_map, self.bkg_rms_map, self.config)
+        mask = grow_bleed_trails(
+            self.sci_data, self.sat_mask, self.sky_map, self.bkg_rms_map, self.config
+        )
 
         # Saturated pixel at (50, 50).
         # Horizontal dilation of 2 should mark (50, 48) to (50, 52)
@@ -205,7 +232,9 @@ class TestGrowBleedTrails(unittest.TestCase):
 
     def test_grow_bleed_trails_no_saturation(self):
         """Test behavior when there are no saturated pixels."""
-        mask = grow_bleed_trails(self.sci_data, self.sat_mask, self.sky_map, self.bkg_rms_map, self.config)
+        mask = grow_bleed_trails(
+            self.sci_data, self.sat_mask, self.sky_map, self.bkg_rms_map, self.config
+        )
         self.assertFalse(np.any(mask))
 
     def test_grow_bleed_trails_image_boundaries(self):
@@ -220,7 +249,9 @@ class TestGrowBleedTrails(unittest.TestCase):
         self.sci_data[99, 20] = 60000.0
         self.sci_data[90:99, 20] = 100.0
 
-        mask = grow_bleed_trails(self.sci_data, self.sat_mask, self.sky_map, self.bkg_rms_map, self.config)
+        mask = grow_bleed_trails(
+            self.sci_data, self.sat_mask, self.sky_map, self.bkg_rms_map, self.config
+        )
 
         # Check top growth (downwards)
         self.assertTrue(np.all(mask[0:10, 50]))
