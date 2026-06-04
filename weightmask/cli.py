@@ -205,7 +205,7 @@ def process_image(
         sat_mask |= new_bleed_pixels
         final_mask_int[new_bleed_pixels] |= MASK_BITS["SAT"]
         interim_mask_bool |= new_bleed_pixels
-        print(f"      Added {np.sum(new_bleed_pixels)} bleed trail pixels.")
+        print(f"      Added {np.count_nonzero(new_bleed_pixels)} bleed trail pixels.")
 
     # --- 2. First-Pass Cosmic Ray Detection ---
     print("  (2/7) Running first-pass Cosmic Ray detection...")
@@ -229,7 +229,7 @@ def process_image(
     cr_mask |= cr_add_mask
     final_mask_int[cr_add_mask] |= MASK_BITS["CR"]
     interim_mask_bool |= cr_add_mask
-    print(f"      Masked {np.sum(cr_add_mask)} new CR pixels.")
+    print(f"      Masked {np.count_nonzero(cr_add_mask)} new CR pixels.")
 
     # --- 3. Iterative Background and Object Detection ---
     print("  (3/7) Starting iterative Background/Object detection...")
@@ -248,14 +248,14 @@ def process_image(
         data_sub = sci_data_full - bkg_map
         new_obj_add_mask = detect_objects(data_sub, bkg_rms_map, total_mask_for_bg, object_cfg)
 
-        if np.sum(new_obj_add_mask) == 0 and i > 0:
+        if np.count_nonzero(new_obj_add_mask) == 0 and i > 0:
             print("      No new objects found, ending iteration.")
             break
         current_obj_mask |= new_obj_add_mask
 
     obj_mask |= current_obj_mask
     final_mask_int[current_obj_mask] |= MASK_BITS["DETECTED"]
-    print(f"      Masked {np.sum(current_obj_mask)} DETECTED pixels total.")
+    print(f"      Masked {np.count_nonzero(current_obj_mask)} DETECTED pixels total.")
 
     # --- 4. Final Sky Maps and Object Mask ---
     print("  (4/7) Finalizing sky maps and object mask...")
@@ -289,7 +289,7 @@ def process_image(
         streak_mask |= streak_add_mask
         final_mask_int[streak_add_mask] |= MASK_BITS["STREAK"]
         final_full_mask |= streak_add_mask
-        print(f"      Masked {np.sum(streak_add_mask)} new STREAK pixels.")
+        print(f"      Masked {np.count_nonzero(streak_add_mask)} new STREAK pixels.")
 
     # --- 7. Generate Final Weight and Confidence Maps ---
     print("  (7/7) Generating final weight and confidence maps...")

@@ -83,7 +83,7 @@ def _apply_psf_protection(crmask_bool, sci_data, config, gain, read_noise, bkg_r
     else:
         star_protection_mask = (peakiness < cr_thresh) & (sci_sub > 5.0 * read_noise / gain)
 
-    protected_count = np.sum(crmask_bool.astype(bool) & star_protection_mask)
+    protected_count = np.count_nonzero(crmask_bool.astype(bool) & star_protection_mask)
     if protected_count > 0:
         print(f"    PSF protection: Saved {protected_count} pixels (likely star cores) from CR flagging.")
         crmask_bool = crmask_bool.astype(bool) & (~star_protection_mask)
@@ -188,7 +188,7 @@ def detect_cosmic_rays(
         # Only return newly detected pixels (not already in existing_mask)
         cr_add_mask = crmask_bool & (~existing_mask)
 
-        num_new_pixels = np.sum(cr_add_mask)
+        num_new_pixels = np.count_nonzero(cr_add_mask)
         if num_new_pixels > 0:
             print(f"  Detected {num_new_pixels} new cosmic ray pixels.")
 
