@@ -57,7 +57,7 @@ def generate_weight_and_confidence(inv_variance_map, final_mask_int, config):
     # Ensure non-finite inv_var values also result in zero weight
     weight_map[~np.isfinite(weight_map)] = 0.0
     weight_map[bad_pixel_mask] = 0.0
-    num_masked = np.sum(bad_pixel_mask)
+    num_masked = np.count_nonzero(bad_pixel_mask)
     print(f"    Masked {num_masked} pixels in weight map.")
 
     # --- 2. Create Confidence Map (Normalized Weight Map) ---

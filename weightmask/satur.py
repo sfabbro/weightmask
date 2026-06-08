@@ -391,5 +391,5 @@ def grow_bleed_trails(sci_data, sat_mask, sky_map, bkg_rms_map, config):
         selem = np.ones((1, 2 * h_dilation + 1), dtype=bool)
         new_mask = scipy.ndimage.binary_dilation(new_mask, structure=selem)
 
-    print(f"    Bleed trail growth added {np.sum(new_mask & ~sat_mask)} pixels.")
+    print(f"    Bleed trail growth added {np.count_nonzero(new_mask & ~sat_mask)} pixels.")
     return new_mask

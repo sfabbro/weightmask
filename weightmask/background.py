@@ -121,7 +121,7 @@ def _estimate_robust_median(sci_data, mask, method, config):
 def _estimate_smooth_surface(sci_data, mask, config):
     """Estimate a smooth low-order background surface for gradient-dominated fields."""
     valid = np.isfinite(sci_data) & (~mask)
-    if np.sum(valid) < 100:
+    if np.count_nonzero(valid) < 100:
         return None, None
 
     y_idx, x_idx = np.indices(sci_data.shape, dtype=np.float32)

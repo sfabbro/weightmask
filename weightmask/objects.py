@@ -155,7 +155,7 @@ def detect_objects(data_sub, bkg_rms_map, existing_mask, config):
                 elongation = objects["a"] / np.maximum(objects["b"], 1e-9)
             if clean_config.get("handoff_elongated_to_streak", True):
                 valid_obj = elongation < max_elongation
-                elongated_count = int(np.sum(~valid_obj))
+                elongated_count = int(np.count_nonzero(~valid_obj))
                 if elongated_count > 0:
                     print(
                         f"  Handing off {elongated_count} elongated detections to the streak pipeline "
@@ -210,7 +210,7 @@ def detect_objects(data_sub, bkg_rms_map, existing_mask, config):
 
                 if np.any(bright_mask):
                     print(
-                        f"    Applying diffraction spike masking to {np.sum(bright_mask)} bright stars (Flux > {spike_thresh:.2e})..."
+                        f"    Applying diffraction spike masking to {np.count_nonzero(bright_mask)} bright stars (Flux > {spike_thresh:.2e})..."
                     )
                     spike_length_base = int(clean_config.get("spike_length_base", 100))
                     spike_width = int(clean_config.get("spike_width", 3))

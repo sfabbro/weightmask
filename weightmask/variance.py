@@ -96,7 +96,7 @@ def _calculate_empirical_noise_params(sci_data, obj_mask, patch_size, robust_sig
     std_var = mad_std(patch_variances)
     good_patches_mask = patch_variances < med_var + robust_sigma_clip * std_var
 
-    if np.sum(good_patches_mask) < 10:
+    if np.count_nonzero(good_patches_mask) < 10:
         print("    ERROR: Not enough stable patches after outlier clipping.")
         return None, None
 
@@ -163,7 +163,7 @@ def _rescale_variance_robust(inv_variance, sci_data, sky_map, obj_mask, epsilon)
     # Background should have SNR stdev of 1.0
     data_sub = sci_data - sky_map
     valid = (~obj_mask) & np.isfinite(data_sub) & np.isfinite(inv_variance) & (inv_variance > epsilon)
-    if np.sum(valid) < 100:
+    if np.count_nonzero(valid) < 100:
         return inv_variance
 
     snr = data_sub[valid] * np.sqrt(inv_variance[valid])
