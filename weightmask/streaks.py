@@ -493,7 +493,7 @@ def _refine_trail_mask(data_sub, bkg_rms_map, candidate, mask_cfg, existing_mask
         }
 
     hot_pixels = hot_pixels & support_cols[np.newaxis, :]
-    row_hits = np.sum(hot_pixels, axis=1) > 0
+    row_hits = np.any(hot_pixels, axis=1)
     row_hits = ndi.binary_closing(row_hits, structure=np.ones(2 * padding + 1, dtype=bool))
     row_hits = _largest_contiguous_run(row_hits)
     if np.count_nonzero(row_hits) < min_row_hits:
