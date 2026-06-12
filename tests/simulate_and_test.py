@@ -245,6 +245,18 @@ def evaluate_mask(pred_mask, gt_mask, name, pre_mask=None):
         from scipy.ndimage import binary_dilation
 
         g_mask_eval = binary_dilation(g_mask, iterations=6)  # Allow up to 6px radius of 'true' halo
+    elif name == "Saturation":
+        # Saturation bleed trails are grown and dilated horizontally by 2px for safety.
+        # Dilate ground truth horizontally by 2px for evaluation.
+        from scipy.ndimage import binary_dilation
+
+        g_mask_eval = binary_dilation(g_mask, structure=np.ones((1, 5), dtype=bool))
+    elif name == "Streaks":
+        # Streaks are dilated by 2px for safety.
+        # Dilate ground truth by 2px for evaluation.
+        from scipy.ndimage import binary_dilation
+
+        g_mask_eval = binary_dilation(g_mask, iterations=2)
     else:
         g_mask_eval = g_mask
 

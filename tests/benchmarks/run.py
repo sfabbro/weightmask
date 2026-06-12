@@ -238,17 +238,18 @@ def run_synthetic_v2(with_baselines=False, selected_cases=None):
         args = SimpleNamespace(**case)
         metrics, products = run_masking_test(str(ROOT / "weightmask.yml"), args, save_fits=False, return_products=True)
         case_result = {"weightmask": metrics}
-        streak_stats = _mask_stats(products["masks"]["streaks"], products["ground_truth"]["streak"])
+        from scipy.ndimage import binary_dilation
+
+        dilated_streak_gt = binary_dilation(products["ground_truth"]["streak"], iterations=2)
+        streak_stats = _mask_stats(products["masks"]["streaks"], dilated_streak_gt)
         case_result["streak_stats"] = streak_stats
         case_result["bad_pixel_stats"] = _benchmark_synthetic_bad_pixels(case["seed"], case["size"])
         if with_baselines:
             data_sub = products["science"] - np.nanmedian(products["science"])
             case_result["baselines"] = {
-                "simple_hough": _mask_stats(
-                    _simple_hough_baseline(data_sub, products["bkg_rms"]), products["ground_truth"]["streak"]
-                ),
+                "simple_hough": _mask_stats(_simple_hough_baseline(data_sub, products["bkg_rms"]), dilated_streak_gt),
                 "rubin_compatible_kht": _mask_stats(
-                    _rubin_compatible_baseline(data_sub, products["bkg_rms"]), products["ground_truth"]["streak"]
+                    _rubin_compatible_baseline(data_sub, products["bkg_rms"]), dilated_streak_gt
                 ),
             }
         results[case["name"]] = case_result
