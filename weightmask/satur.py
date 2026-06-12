@@ -45,7 +45,7 @@ def estimate_saturation_robust_clump(data, min_adu=None, max_adu=None):
             # Heuristic: start halfway between the 99th percentile and max,
             # or 80% of the 99.9th percentile, whichever is more conservative.
             auto_min_adu = min(p99 + (p_max - p99) * 0.3, p99_9 * 0.8)
-            auto_max_adu = min(p_max * 1.01, p99_9 * 1.5)  # Allow some room above 99.9th
+            auto_max_adu = p_max * 1.01  # Allow the histogram analysis to cover the entire tail up to max ADU
 
             min_adu = min_adu if min_adu is not None else auto_min_adu
             max_adu = max_adu if max_adu is not None else auto_max_adu

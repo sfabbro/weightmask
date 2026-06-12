@@ -219,11 +219,11 @@ def create_simulated_data(size=1024, noise_level=10.0, num_stars=50, streak_flux
 
     _add_stars(data, gt, size, x, y, num_stars, regime_type, rng)
     _add_saturated_stars(data, gt, size, x, y, regime_type)
-    data, bkg_rms = _apply_noise(data, bkg_map, size, noise_level, regime_type, rng)
     _add_cosmic_rays(data, gt, size, rng)
     _add_streaks(data, gt, size, noise_level, regime_type)
     if regime_type in {"complex", "extreme_gradient", "amplifier_step", "variable_width_streak"}:
         _inject_dark_defects(data, gt, size, noise_level, rng)
+    data, bkg_rms = _apply_noise(data, bkg_map, size, noise_level, regime_type, rng)
 
     return data, bkg_rms, gt
 
