@@ -67,10 +67,10 @@ class TestVariance(unittest.TestCase):
         )
 
         # Calculate expected values manually
-        # Top-left: sky=100, flat=1. variance_e = (100/1)*2 + 4^2 = 200 + 16 = 216. inv_var = 2^2 / 216 = 4/216 = 1/54
-        # Top-right: sky=100, flat=0.5. variance_e = (100/0.5)*2 + 4^2 = 200*2 + 16 = 416. inv_var = 4 / 416 = 1/104
+        # Top-left: sky=100, flat=1. inv_var = 2^2 * 1^2 / (100*2 + 4^2) = 4 / 216 = 1/54
+        # Top-right: sky=100, flat=0.5. inv_var = 2^2 * 0.5^2 / (100*2 + 4^2) = 1.0 / 216
         # Bottom-left/right: same as Top-left
-        expected_inv_var = np.array([[4.0 / 216.0, 4.0 / 416.0], [4.0 / 216.0, 4.0 / 216.0]], dtype=np.float32)
+        expected_inv_var = np.array([[4.0 / 216.0, 1.0 / 216.0], [4.0 / 216.0, 4.0 / 216.0]], dtype=np.float32)
 
         np.testing.assert_allclose(inv_var, expected_inv_var, rtol=1e-5)
 

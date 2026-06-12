@@ -137,13 +137,14 @@ def _calculate_inverse_variance_theoretical(sky_map, flat_map, gain, read_noise_
     safe_flat = np.where(valid_flat_mask, flat_map, epsilon)
     safe_sky = np.maximum(sky_map, 0.0)
 
-    # Variance in electrons = (Signal in electrons from sky) + (Read Noise in electrons)^2
-    variance_e = (safe_sky / safe_flat) * gain + read_noise_e**2
+    # Variance in electrons before flat fielding = (Sky Signal in electrons) + (Read Noise in electrons)^2
+    # After flat fielding (division by flat), variance in electrons scales by 1 / flat^2.
+    # Inverse variance in ADU^2 = (gain^2 * safe_flat^2) / (safe_sky * gain + read_noise_e**2)
+    denom = safe_sky * gain + read_noise_e**2
+    inv_variance = np.zeros_like(denom)
 
-    # Inverse variance in ADU^2 = gain^2 / variance_e
-    inv_variance = np.zeros_like(variance_e)
-    valid_variance = variance_e > epsilon
-    inv_variance[valid_variance] = gain**2 / variance_e[valid_variance]
+    valid_variance = denom > epsilon
+    inv_variance[valid_variance] = (gain**2 * safe_flat[valid_variance] ** 2) / denom[valid_variance]
 
     # Mask out invalid regions
     inv_variance[~valid_flat_mask] = 0.0

@@ -546,12 +546,31 @@ def open_fits_files(input_path: str, flat_path: str):
 def get_hdus_to_process(hdul_input, input_hdu: int) -> list:
     if input_hdu is not None:
         if 0 <= input_hdu < len(hdul_input):
-            return [input_hdu]
+            try:
+                info = hdul_input[input_hdu].get_info()
+                if info.get("hdutype") == 0 and info.get("ndims") == 2:
+                    return [input_hdu]
+                else:
+                    print(
+                        f"ERROR: Specified HDU {input_hdu} is not a 2D image "
+                        f"(hdutype={info.get('hdutype')}, ndims={info.get('ndims')})."
+                    )
+                    return []
+            except Exception as e:
+                print(f"ERROR: Cannot inspect specified HDU {input_hdu}: {e}")
+                return []
         else:
             print(f"ERROR: Specified HDU {input_hdu} not found.")
             return []
     else:
-        hdus = list(range(len(hdul_input)))
+        hdus = []
+        for idx, hdu in enumerate(hdul_input):
+            try:
+                info = hdu.get_info()
+                if info.get("hdutype") == 0 and info.get("ndims") == 2:
+                    hdus.append(idx)
+            except Exception:
+                continue
         if not hdus:
             print("ERROR: No suitable Image HDUs found.")
         return hdus
@@ -753,7 +772,8 @@ def process_all_hdus(
 
 def write_single_output_file(out_path: str, output_data: dict, hdul_input, key: str):
     primary_data = hdul_input[0].read() if len(hdul_input) > 0 else None
-    fitsio.write(out_path, primary_data, clobber=True)
+    primary_hdr = hdul_input[0].read_header() if len(hdul_input) > 0 else None
+    fitsio.write(out_path, primary_data, header=primary_hdr, clobber=True)
     with fitsio.FITS(out_path, "rw") as f_out:
         for i in sorted(output_data.keys()):
             if key in output_data[i]:
@@ -769,7 +789,8 @@ def write_individual_mask_files(individual_mask_paths: dict, output_data: dict, 
         mask_path = individual_mask_paths.get(mask_type)
         if mask_path:
             primary_data = hdul_input[0].read() if len(hdul_input) > 0 else None
-            fitsio.write(mask_path, primary_data, clobber=True)
+            primary_hdr = hdul_input[0].read_header() if len(hdul_input) > 0 else None
+            fitsio.write(mask_path, primary_data, header=primary_hdr, clobber=True)
             with fitsio.FITS(mask_path, "rw") as f_out:
                 for i in sorted(output_data.keys()):
                     if "individual_masks" in output_data[i] and mask_type in output_data[i]["individual_masks"]:

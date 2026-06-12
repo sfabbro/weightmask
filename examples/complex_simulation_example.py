@@ -56,8 +56,12 @@ def run_complex_demonstration():
     print("\n==================================================")
     print("  COMPLEX REGIME PERFORMANCE")
     print("==================================================")
-    for name, (p, r) in metrics.items():
-        print(f"{name:12} | Precision: {p:.3f} | Recall: {r:.3f}")
+    for name, val in metrics.items():
+        if isinstance(val, (tuple, list)):
+            p, r = val
+            print(f"{name:12} | Precision: {p:.3f} | Recall: {r:.3f}")
+        else:
+            print(f"{name:12} | {val}")
 
     print("\nExample outputs saved in: test_outputs/")
 
