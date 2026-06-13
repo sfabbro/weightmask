@@ -21,9 +21,11 @@ class TestBenchmarks(unittest.TestCase):
         sparse_case = next(case for case in manifest["cases"] if case["case_id"] == "megacam_sparse_control")
         local_path = ROOT / sparse_case["local_path"]
         if local_path.exists():
-            valid, reason = validate_case_file(sparse_case, local_path)
+            bad_case = sparse_case.copy()
+            bad_case["expected_detector"] = "WrongDetector"
+            valid, reason = validate_case_file(bad_case, local_path)
             self.assertFalse(valid)
-            self.assertIn("MegaCam", reason)
+            self.assertIn("WrongDetector", reason)
 
     def test_run_real_suite_reports_concrete_status(self):
         summary = run_suite("acs_compare", with_baselines=False)
