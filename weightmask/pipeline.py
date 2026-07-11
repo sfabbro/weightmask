@@ -2,7 +2,9 @@ from typing import Optional
 
 import numpy as np
 
+from . import __version__
 from .cli import process_image, validate_config
+from .contract import ProducerMetadata, build_weight_product
 
 
 class WeightMapGenerator:
@@ -49,6 +51,19 @@ class WeightMapGenerator:
 
         mask_data, inv_var, weight, confidence, sky, info = result
 
+        confidence_percentile = self.config.get("confidence_params", {}).get("normalize_percentile", 99.0)
+        if not 0 < confidence_percentile <= 100:
+            confidence_percentile = 100.0
+
+        contract_product = build_weight_product(
+            inv_var,
+            mask_data,
+            exclude_detected=self.config.get("output_params", {}).get("mask_detected_in_weight", False),
+            confidence_percentile=confidence_percentile,
+            producer=ProducerMetadata(version=__version__),
+            provenance={"producer_stage": "WeightMapGenerator.process"},
+        )
+
         return {
             "weight_map": weight,
             "flag_map": mask_data,
@@ -59,4 +74,6 @@ class WeightMapGenerator:
                 "bkg_rms"
             ),  # May not be explicitly returned in this form
             "individual_masks": info.get("individual_masks", {}),
+            "contract_product": contract_product,
+            "artifact_metadata": contract_product.metadata,
         }

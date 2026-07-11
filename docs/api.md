@@ -13,6 +13,8 @@ WeightMask is organized into several modules, each responsible for a specific as
 - `weightmask.background`: Background estimation
 - `weightmask.variance`: Variance calculation
 - `weightmask.weight`: Weight and confidence map generation
+- `weightmask.contract`: Transport-neutral array/header interoperability contract
+- `weightmask.torchfits_adapter`: Optional public torchfits adapter
 - `weightmask.utils`: Utility functions
 
 ## CLI Module
@@ -167,6 +169,33 @@ Args:
 
 Returns:
 - `tuple`: (weight_map, confidence_map)
+
+## Array/Header Contract
+
+### build_weight_product()
+```python
+def build_weight_product(inverse_variance, quality_mask=None, *, exclude_detected=False,
+                         confidence_percentile=99.0, producer=None, provenance=None)
+```
+
+Builds the Wave 5 classical contract product. Quality masks are uint32 with
+`set_means_flagged` polarity. `QualityBit` names the conditions: `BAD_PIXEL`,
+`SATURATED`, `COSMIC_RAY`, `DETECTED`, `STREAK`, and `INVALID_VARIANCE`.
+NaN, infinite, zero, and negative inverse variance are marked
+`INVALID_VARIANCE` and yield zero inverse variance, weight, and confidence.
+Confidence is a percentile-normalized float32 array in `[0, 1]`.
+
+Each artifact has an `ArtifactMetadata` record containing the contract version,
+semantics, `ProducerMetadata`, and caller-supplied provenance. Producer
+metadata reserves model ID, model version, and inference backend fields for a
+future ML producer; this release only creates `kind="classical"` products.
+
+### ArrayHeaderIO
+
+`ArrayHeaderIO` is the minimal protocol: `read_array(path, hdu=0)` returns an
+array/header pair, and `write_array(path, array, header, overwrite=False)`
+writes one. `TorchfitsArrayHeaderIO` implements it when the optional torchfits
+package is available, exclusively through torchfits' public root APIs.
 
 ## Utility Functions
 

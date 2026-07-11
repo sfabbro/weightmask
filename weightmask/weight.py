@@ -1,6 +1,8 @@
 # weight.py
 import numpy as np
 
+from .contract import ProducerMetadata, build_weight_product
+
 # Import MASK_BITS from the main package level if possible,
 # otherwise define them here. Assuming they might be accessible via __init__.py
 try:
@@ -37,61 +39,43 @@ def generate_weight_and_confidence(inv_variance_map, final_mask_int, config):
 
     out_cfg = config.get("output_params", {})
     conf_cfg = config.get("confidence_params", {})
+    normalize_percentile = conf_cfg.get("normalize_percentile", 99.0)
+    scale_to_100 = conf_cfg.get("scale_to_100", False)
 
     # --- 1. Create Weight Map ---
     print("  Calculating weight map (masked inverse variance)...")
 
-    # Define which mask bits correspond to "bad" pixels that get zero weight
-    # By default, DETECTED objects *keep* their weight. Add MASK_BITS['DETECTED']
-    # here if detected objects should also be zeroed in the weight map.
-    zero_weight_mask_bits = MASK_BITS["BAD"] | MASK_BITS["SAT"] | MASK_BITS["CR"] | MASK_BITS["STREAK"]
-    # Add DETECTED bit if configured
-    if out_cfg.get("mask_detected_in_weight", False):
+    mask_detected = out_cfg.get("mask_detected_in_weight", False)
+    if mask_detected:
         print("    NOTE: Detected objects will be masked (zero weight).")
-        zero_weight_mask_bits |= MASK_BITS["DETECTED"]
 
-    bad_pixel_mask = (final_mask_int & zero_weight_mask_bits) > 0
-
-    # Create weight map from inverse variance but mask out problematic pixels
-    weight_map = inv_variance_map.copy()
-    # Ensure non-finite inv_var values also result in zero weight
-    weight_map[~np.isfinite(weight_map)] = 0.0
-    weight_map[bad_pixel_mask] = 0.0
-    num_masked = np.count_nonzero(bad_pixel_mask)
+    # The legacy API used an out-of-range percentile to request max-based
+    # normalization.  Keep that behavior while the contract API stays strict.
+    contract_percentile = normalize_percentile if 0 < normalize_percentile <= 100 else 100.0
+    product = build_weight_product(
+        inv_variance_map,
+        final_mask_int,
+        exclude_detected=mask_detected,
+        confidence_percentile=contract_percentile,
+        producer=ProducerMetadata(version="1.0.0"),
+    )
+    weight_map = product.weight
+    num_masked = np.count_nonzero(weight_map == 0.0)
     print(f"    Masked {num_masked} pixels in weight map.")
 
     # --- 2. Create Confidence Map (Normalized Weight Map) ---
     print("  Calculating continuous confidence map (normalized weight map)...")
     conf_dtype_str = conf_cfg.get("dtype", "float32")
     conf_dtype = getattr(np, conf_dtype_str, np.float32)  # Default to float32
-    normalize_percentile = conf_cfg.get("normalize_percentile", 99.0)  # Percentile for normalization
-    scale_to_100 = conf_cfg.get("scale_to_100", False)  # Option for 0-100 range
 
-    confidence_map = np.zeros_like(weight_map, dtype=conf_dtype)
-    valid_weights = weight_map[weight_map > 0]
-
-    if valid_weights.size > 0:
-        # Determine normalization factor
-        if 0 < normalize_percentile <= 100:
-            # ⚡ Bolt: Subsample large arrays before calculating global robust statistics
-            step = max(1, valid_weights.size // 100000)
-            norm_factor = np.percentile(valid_weights[::step], normalize_percentile)
-            print(f"    Normalizing using {normalize_percentile:.1f}th percentile weight: {norm_factor:.4g}")
+    confidence_map = product.confidence
+    if np.any(weight_map > 0):
+        print(f"    Normalizing using {normalize_percentile:.1f}th percentile weight.")
+        if scale_to_100:
+            confidence_map = confidence_map * 100.0
+            print("    Scaled confidence map to 0-100 range.")
         else:
-            norm_factor = np.max(valid_weights)
-            print(f"    Normalizing using maximum weight: {norm_factor:.4g}")
-
-        if norm_factor > 1e-12:  # Use a slightly more generous epsilon for normalization factor
-            # Normalize the weight map (clipping at 1.0)
-            confidence_map = np.clip(weight_map / norm_factor, 0.0, 1.0)
-
-            if scale_to_100:
-                confidence_map *= 100.0
-                print("    Scaled confidence map to 0-100 range.")
-            else:
-                print("    Confidence map range: 0-1.")
-        else:
-            print("    WARNING: Normalization factor is near zero. Confidence map will be zeros.")
+            print("    Confidence map range: 0-1.")
     else:
         print("    WARNING: No positive weights found. Confidence map will be zeros.")
 

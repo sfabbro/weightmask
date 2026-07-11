@@ -12,11 +12,18 @@ import fitsio
 import numpy as np
 import yaml
 
-from . import MASK_BITS, MASK_DTYPE  # Import from __init__.py
+from . import MASK_BITS, MASK_DTYPE, __version__  # Import from __init__.py
 from .background import estimate_background
 
 # Import from other modules within the package using relative imports
 from .bad import detect_bad_pixels
+from .contract import (
+    CONFIDENCE_SEMANTICS,
+    INVERSE_VARIANCE_SEMANTICS,
+    MASK_POLARITY,
+    ArtifactMetadata,
+    ProducerMetadata,
+)
 from .cosmics import detect_cosmic_rays
 from .objects import detect_objects
 from .satur import detect_saturated_pixels, grow_bleed_trails
@@ -650,6 +657,23 @@ def _assign_map_if_valid(output_data, i, key, data, header, hdu_name):
         }
 
 
+def _header_with_contract_metadata(header, artifact_type: str, *, mask: bool = False, semantics: str | None = None):
+    """Copy a FITS-style header and add portable Wave 5 contract metadata."""
+    try:
+        output_header = dict(header or {})
+    except (TypeError, ValueError):
+        output_header = {}
+    metadata = ArtifactMetadata(
+        artifact_type,
+        ProducerMetadata(version=__version__),
+        provenance={"producer_stage": "weightmask.cli"},
+        mask_polarity=MASK_POLARITY if mask else None,
+        semantics=semantics,
+    )
+    output_header.update(metadata.to_header())
+    return output_header
+
+
 def _store_output_maps(
     output_data,
     i,
@@ -672,11 +696,33 @@ def _store_output_maps(
     if paths["out_map_path"]:
         output_format = config.get("output_params", {}).get("output_map_format", "weight").lower()
         map_data = confidence_map if output_format == "confidence" else weight_map
-        _assign_map_if_valid(output_data, i, "map", map_data, hdu_header, hdu_name)
+        semantics = CONFIDENCE_SEMANTICS if output_format == "confidence" else "masked_inverse_variance"
+        _assign_map_if_valid(
+            output_data,
+            i,
+            "map",
+            map_data,
+            _header_with_contract_metadata(hdu_header, output_format, semantics=semantics),
+            hdu_name,
+        )
     if paths["out_mask_path"]:
-        _assign_map_if_valid(output_data, i, "mask", mask_data, hdu_header, hdu_name)
+        _assign_map_if_valid(
+            output_data,
+            i,
+            "mask",
+            mask_data,
+            _header_with_contract_metadata(hdu_header, "quality_mask", mask=True, semantics="named_quality_bits"),
+            hdu_name,
+        )
     if paths["out_invvar_path"]:
-        _assign_map_if_valid(output_data, i, "invvar", inv_var_data, hdu_header, hdu_name)
+        _assign_map_if_valid(
+            output_data,
+            i,
+            "invvar",
+            inv_var_data,
+            _header_with_contract_metadata(hdu_header, "inverse_variance", semantics=INVERSE_VARIANCE_SEMANTICS),
+            hdu_name,
+        )
     if paths["out_sky_path"]:
         _assign_map_if_valid(output_data, i, "sky", sky_map, hdu_header, hdu_name)
     if paths["out_weight_raw_path"] and weight_map is not None:
@@ -684,7 +730,7 @@ def _store_output_maps(
             output_data[i] = {}
         output_data[i]["weight_raw"] = {
             "data": weight_map,
-            "header": hdu_header,
+            "header": _header_with_contract_metadata(hdu_header, "weight", semantics="masked_inverse_variance"),
             "name": f"WEIGHT_{hdu_name}",
         }
     if args.individual_masks and mask_data is not None:

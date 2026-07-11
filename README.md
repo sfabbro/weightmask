@@ -8,6 +8,7 @@ WeightMask builds weight maps, confidence maps, and defect masks for astronomica
 - Detects bad pixels from flats, saturation and bleed trails, cosmic rays, astronomical objects, and linear streaks.
 - Supports MEF inputs through the CLI.
 - Uses a canonical YAML config surface centered on `flat_masking`, `sep_background`, `sep_objects`, `streak_masking`, and `variance`.
+- Publishes a NumPy array/header contract with named quality bits, explicit `set_means_flagged` mask polarity, and versioned provenance metadata.
 
 ## Streak Detection
 
@@ -46,6 +47,17 @@ Useful outputs:
 - `weightmask.yml`: canonical example configuration
 
 Generated products from the synthetic examples and benchmark harness belong under `test_outputs/`; they are not source files.
+
+## Array/Header Contract
+
+`weightmask.contract` is a small, transport-neutral interoperability layer.
+`build_weight_product()` returns uint32 quality flags, non-negative inverse
+variance and weight arrays, normalized `[0, 1]` confidence, and metadata for
+each artifact. Set quality bits mean the named condition is present; detected
+objects remain informative by default, while defects and invalid variance have
+zero weight. `TorchfitsArrayHeaderIO` is an optional adapter that uses only the
+public `torchfits.read` and `torchfits.write` APIs when torchfits is installed.
+It does not add a torchfits dependency or generate learned masks or weights.
 
 ## Documentation
 
