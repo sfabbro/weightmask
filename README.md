@@ -77,4 +77,4 @@ pixi run benchmark-acs
 
 ## License
 
-GPL-3.0
+MIT
