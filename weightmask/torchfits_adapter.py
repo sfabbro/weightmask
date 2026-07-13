@@ -25,10 +25,16 @@ def _load_torchfits() -> Any:
 
 
 def torchfits_available() -> bool:
-    """Return whether the optional public torchfits module imports successfully."""
+    """Return whether the optional adapter can perform a real tensor I/O call."""
     try:
         _load_torchfits()
     except TorchfitsUnavailableError:
+        return False
+    try:
+        importlib.import_module("torch")
+    except (ImportError, AssertionError):
+        # AssertionError keeps the absence probe deterministic when tests stub
+        # importlib to reject any import beyond torchfits itself.
         return False
     return True
 
