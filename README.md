@@ -41,7 +41,7 @@ Useful outputs:
 
 - `weightmask/`: library code
 - `tests/`: unit tests and synthetic benchmark harness
-- `docs/`: installation, usage, and API notes
+- `docs/`: installation, usage, API notes, and research plans
 - `examples/`: runnable synthetic and robustness examples
 - `weightmask.yml`: canonical example configuration
 
@@ -52,6 +52,7 @@ Generated products from the synthetic examples and benchmark harness belong unde
 - Usage: `docs/usage.md`
 - Installation: `docs/installation.md`
 - API: `docs/api.md`
+- Next-generation research and implementation plan: `docs/nextgen_weightmask.md`
 
 ## Benchmarks
 
