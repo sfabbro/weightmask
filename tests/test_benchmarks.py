@@ -1,7 +1,22 @@
+import tempfile
 import unittest
+from pathlib import Path
+from unittest.mock import patch
+
+import numpy as np
+from astropy.io import fits
 
 from tests.benchmarks.download_data import validate_case_file
-from tests.benchmarks.run import ROOT, load_manifest, run_suite
+from tests.benchmarks.run import (
+    ROOT,
+    _load_quality_reference,
+    _quality_gate_failures,
+    _quality_validation_metrics,
+    load_manifest,
+    main,
+    run_suite,
+)
+from weightmask.contract import INVERSE_VARIANCE_SEMANTICS, MASK_POLARITY
 
 
 class TestBenchmarks(unittest.TestCase):
@@ -32,10 +47,82 @@ class TestBenchmarks(unittest.TestCase):
         self.assertEqual(summary["suite"], "acs_compare")
         self.assertTrue(
             all(
-                result["status"] in {"missing_data", "loaded", "invalid_instrument"}
+                result["status"]
+                in {"missing_data", "missing_labels", "loaded", "invalid_instrument", "invalid_quality_reference"}
                 for result in summary["results"].values()
             )
         )
+
+    def test_real_suite_and_cli_fail_closed_without_inputs(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            with (
+                patch("tests.benchmarks.run.ROOT", root),
+                patch("tests.benchmarks.run.OUTPUT_ROOT", root / "outputs"),
+            ):
+                summary = run_suite("acs_compare", with_baselines=False)
+                self.assertEqual(len(summary["gate_failures"]), 2)
+                self.assertTrue(all(result["status"] == "missing_data" for result in summary["results"].values()))
+                self.assertEqual(main(["--suite", "acs_compare"]), 1)
+
+    def test_acs_err_and_dq_planes_preserve_native_semantics(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            path = Path(tmpdir) / "acs.fits"
+            primary = fits.PrimaryHDU()
+            science = fits.ImageHDU(np.ones((4, 5), dtype=np.float32), name="SCI")
+            error = fits.ImageHDU(np.full((4, 5), 2.0, dtype=np.float32), name="ERR")
+            dq_values = np.zeros((4, 5), dtype=np.uint16)
+            dq_values[1, 2] = 4
+            dq = fits.ImageHDU(dq_values, name="DQ")
+            for hdu in (science, error, dq):
+                hdu.header["EXTVER"] = 2
+            fits.HDUList([primary, science, error, dq]).writeto(path)
+
+            case = {"quality_reference": {"inverse_variance": "ERR", "quality_mask": "DQ"}}
+            crop = {"y0": 0, "x0": 0, "height": 4, "width": 5}
+            inverse_variance, quality_mask, reason = _load_quality_reference(case, path, science.header, crop)
+
+            self.assertIsNone(reason)
+            np.testing.assert_allclose(inverse_variance, 0.25)
+            self.assertEqual(np.count_nonzero(quality_mask), 1)
+            self.assertTrue(quality_mask[1, 2])
+
+    def test_quality_metrics_cover_w1_acceptance_semantics(self):
+        rng = np.random.default_rng(12)
+        data = rng.normal(0.0, 1.0, (64, 64)).astype(np.float32)
+        data[10, 10] = 20.0
+        prediction = np.zeros(data.shape, dtype=bool)
+        prediction[10, 10] = True
+        truth = np.zeros(data.shape, dtype=bool)
+        truth[30, 8:56] = True
+        native_quality = np.zeros(data.shape, dtype=bool)
+        native_quality[4, 4] = True
+        inverse_variance = np.ones(data.shape, dtype=np.float32)
+        inverse_variance[0, 0] = 0.0
+
+        metrics = _quality_validation_metrics(data, prediction, truth, inverse_variance, native_quality)
+
+        self.assertEqual(metrics["mask_polarity"], MASK_POLARITY)
+        self.assertEqual(metrics["inverse_variance_semantics"], INVERSE_VARIANCE_SEMANTICS)
+        self.assertTrue(metrics["flagged_pixels_have_zero_weight"])
+        self.assertTrue(metrics["clean_weight_matches_inverse_variance"])
+        self.assertTrue(metrics["invalid_variance_is_flagged"])
+        self.assertAlmostEqual(metrics["overmask_fraction"], 0.0)
+        self.assertGreater(metrics["flux_bias_fraction"], 0.9)
+        self.assertGreater(metrics["noise_scale"], 0.8)
+        self.assertLess(metrics["noise_scale"], 1.2)
+
+        failures = _quality_gate_failures(
+            "fixture",
+            metrics,
+            {
+                "max_overmask_fraction": 0.05,
+                "max_flux_bias_fraction": 0.02,
+                "noise_scale_min": 0.8,
+                "noise_scale_max": 1.2,
+            },
+        )
+        self.assertTrue(any("flux_bias_fraction" in failure for failure in failures))
 
 
 if __name__ == "__main__":

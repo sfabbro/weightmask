@@ -1,6 +1,12 @@
 {
   "suite": "acs_compare",
   "description": "ACS/WFC comparator cases for published trail baselines. Populate local files under benchmark_data/acs/ to activate.",
+  "quality_gates": {
+    "max_overmask_fraction": 0.05,
+    "max_flux_bias_fraction": 0.02,
+    "noise_scale_min": 0.8,
+    "noise_scale_max": 1.2
+  },
   "cases": [
     {
       "case_id": "acs_bright_trail",
@@ -12,6 +18,10 @@
       "mast_product": "jc8m32j5q_flc.fits",
       "local_path": "benchmark_data/acs/jc8m32j5q_flc.fits",
       "label_recipe": "manual_streak_mask",
+      "label_path": "benchmark_data/acs/labels/jc8m32j5q_trail_mask.fits",
+      "expected_instrument": "ACS",
+      "expected_detector": "WFC",
+      "quality_reference": {"inverse_variance": "ERR", "quality_mask": "DQ"},
       "comparators": ["acstools_detsat", "acstools_findsat_mrt"]
     },
     {
@@ -24,6 +34,10 @@
       "mast_product": "j97006j5q_flc.fits",
       "local_path": "benchmark_data/acs/j97006j5q_flc.fits",
       "label_recipe": "manual_streak_mask",
+      "label_path": "benchmark_data/acs/labels/j97006j5q_trail_mask.fits",
+      "expected_instrument": "ACS",
+      "expected_detector": "WFC",
+      "quality_reference": {"inverse_variance": "ERR", "quality_mask": "DQ"},
       "comparators": ["acstools_detsat", "acstools_findsat_mrt"]
     }
   ]

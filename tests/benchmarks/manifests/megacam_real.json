@@ -1,6 +1,12 @@
 {
   "suite": "megacam_real",
   "description": "Ground-based MegaCam benchmark cases. Populate local files under benchmark_data/megacam/ to activate these cases.",
+  "quality_gates": {
+    "max_overmask_fraction": 0.05,
+    "max_flux_bias_fraction": 0.02,
+    "noise_scale_min": 0.8,
+    "noise_scale_max": 1.2
+  },
   "cases": [
     {
       "case_id": "megacam_sparse_control",
@@ -24,6 +30,7 @@
       "cadc_id": "2079618p",
       "local_path": "benchmark_data/megacam/megacam_streak_case.fits",
       "label_recipe": "manual_streak_mask",
+      "label_path": "benchmark_data/megacam/labels/megacam_streak_case_mask.fits",
       "crop_mode": "random",
       "crop_shape": [768, 768],
       "comparators": ["rubin_compatible_kht", "simple_hough", "simple_radon"],
