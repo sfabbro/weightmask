@@ -75,6 +75,12 @@ pixi run benchmark-megacam
 pixi run benchmark-acs
 ```
 
+The real-data tasks are acceptance gates: they exit nonzero when a science
+exposure, required manual trail label, or matching ACS/WFC ERR/DQ plane is
+missing or invalid. Label paths and the polarity/inverse-variance,
+overmasking, flux-bias, and noise-calibration thresholds are fixed in the
+suite manifests under `tests/benchmarks/manifests/`.
+
 ## License
 
 MIT

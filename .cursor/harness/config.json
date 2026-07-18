@@ -1,0 +1,7 @@
+{
+  "verify_fast": ["pixi run lint"],
+  "verify": ["pixi run test"],
+  "verify_full": ["pixi run pre-commit run --all-files"],
+  "reflect_min_turns": 5,
+  "reflect_min_minutes": 45
+}
