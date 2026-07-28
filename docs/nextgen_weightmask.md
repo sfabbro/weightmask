@@ -1,7 +1,7 @@
 # Next-Generation WeightMask
 
-**Status:** research and implementation plan, July 2026  
-**Scope:** astronomical imaging, multi-extension FITS, calibration frames, and 2-D spectra  
+**Status:** research and implementation plan, July 2026
+**Scope:** astronomical imaging, multi-extension FITS, calibration frames, and 2-D spectra
 **Primary principle:** preserve the measured pixels and attach a calibrated defect/noise model; do not silently replace scientific data with a neural reconstruction.
 
 ## Executive summary
@@ -633,7 +633,7 @@ A calibration module should summarize a variable-length set of biases, darks, an
 - local covariance or PSD parameters;
 - calibration quality and age indicators.
 
-Initial implementation: robust NumPy/SciPy decomposition.  
+Initial implementation: robust NumPy/SciPy decomposition.
 Research implementation: Torch set/sequence encoder or unfolded low-rank-plus-sparse model.
 
 ### 10.3 Science-image encoder
