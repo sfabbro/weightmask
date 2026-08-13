@@ -201,13 +201,15 @@ def process_image(
 
     # Calculate preliminary background RMS for CR and Bleed masking
     print("  Calculating preliminary background RMS...")
-    _, prelim_bkg_rms = estimate_background(sci_data_full, interim_mask_bool, config.get("sep_background", {}))
+    prelim_bkg_map, prelim_bkg_rms = estimate_background(
+        sci_data_full, interim_mask_bool, config.get("sep_background", {})
+    )
 
     # --- 1.5 Bleed Trail (Blooming) Masking ---
     sat_cfg = config.get("saturation", {})
     if sat_cfg.get("mask_bleed_trails", True):
         print("  (1.5/7) Growing Bleed Trails for saturated stars...")
-        sat_mask_full = grow_bleed_trails(sci_data_full, sat_mask, prelim_bkg_rms * 0, prelim_bkg_rms, sat_cfg)
+        sat_mask_full = grow_bleed_trails(sci_data_full, sat_mask, prelim_bkg_map, prelim_bkg_rms, sat_cfg)
         new_bleed_pixels = sat_mask_full & ~sat_mask
         sat_mask |= new_bleed_pixels
         final_mask_int[new_bleed_pixels] |= MASK_BITS["SAT"]
@@ -218,11 +220,19 @@ def process_image(
     print("  (2/7) Running first-pass Cosmic Ray detection...")
     cosmic_cfg = config.get("cosmic_ray", {})
     variance_cfg = config.get("variance", {})
-    gain = sci_hdr.get(variance_cfg.get("gain_keyword", "GAIN"), variance_cfg.get("default_gain", 1.0))
-    read_noise_e = sci_hdr.get(
+    gain_raw = sci_hdr.get(variance_cfg.get("gain_keyword", "GAIN"), variance_cfg.get("default_gain", 1.0))
+    rdnoise_raw = sci_hdr.get(
         variance_cfg.get("rdnoise_keyword", "RDNOISE"),
         variance_cfg.get("default_rdnoise", 0.0),
     )
+    try:
+        gain = float(gain_raw)
+    except (ValueError, TypeError):
+        gain = float(variance_cfg.get("default_gain", 1.0))
+    try:
+        read_noise_e = float(rdnoise_raw)
+    except (ValueError, TypeError):
+        read_noise_e = float(variance_cfg.get("default_rdnoise", 0.0))
 
     cr_add_mask = detect_cosmic_rays(
         sci_data_full,
@@ -817,12 +827,30 @@ def process_all_hdus(
 
 
 def write_single_output_file(out_path: str, output_data: dict, hdul_input, key: str):
-    primary_data = hdul_input[0].read() if len(hdul_input) > 0 else None
+    valid_hdus = [i for i in sorted(output_data.keys()) if key in output_data[i]]
+    if not valid_hdus:
+        return
+
+    # If single standalone FITS image at HDU 0:
+    if len(valid_hdus) == 1 and valid_hdus[0] == 0 and len(hdul_input) == 1:
+        entry = output_data[0][key]
+        fitsio.write(out_path, entry["data"], header=entry["header"], clobber=True)
+        return
+
+    # For MEF or multi-HDU processing:
     primary_hdr = hdul_input[0].read_header() if len(hdul_input) > 0 else None
+    primary_data = None
+    remaining_hdus = list(valid_hdus)
+    if 0 in valid_hdus:
+        entry = output_data[0][key]
+        primary_data = entry["data"]
+        primary_hdr = entry["header"]
+        remaining_hdus.remove(0)
+
     fitsio.write(out_path, primary_data, header=primary_hdr, clobber=True)
-    with fitsio.FITS(out_path, "rw") as f_out:
-        for i in sorted(output_data.keys()):
-            if key in output_data[i]:
+    if remaining_hdus:
+        with fitsio.FITS(out_path, "rw") as f_out:
+            for i in remaining_hdus:
                 f_out.write(
                     output_data[i][key]["data"],
                     header=output_data[i][key]["header"],
@@ -833,20 +861,43 @@ def write_single_output_file(out_path: str, output_data: dict, hdul_input, key: 
 def write_individual_mask_files(individual_mask_paths: dict, output_data: dict, hdul_input):
     for mask_type in ["bad", "sat", "cr", "obj", "streak"]:
         mask_path = individual_mask_paths.get(mask_type)
-        if mask_path:
-            primary_data = hdul_input[0].read() if len(hdul_input) > 0 else None
-            primary_hdr = hdul_input[0].read_header() if len(hdul_input) > 0 else None
-            fitsio.write(mask_path, primary_data, header=primary_hdr, clobber=True)
-            with fitsio.FITS(mask_path, "rw") as f_out:
-                for i in sorted(output_data.keys()):
-                    if "individual_masks" in output_data[i] and mask_type in output_data[i]["individual_masks"]:
-                        mask_info = output_data[i]["individual_masks"][mask_type]
-                        f_out.write(
-                            mask_info["data"],
-                            header=mask_info["header"],
-                            extname=mask_info["name"],
-                        )
+        if not mask_path:
+            continue
+
+        valid_hdus = [
+            i
+            for i in sorted(output_data.keys())
+            if "individual_masks" in output_data[i] and mask_type in output_data[i]["individual_masks"]
+        ]
+        if not valid_hdus:
+            continue
+
+        if len(valid_hdus) == 1 and valid_hdus[0] == 0 and len(hdul_input) == 1:
+            mask_info = output_data[0]["individual_masks"][mask_type]
+            fitsio.write(mask_path, mask_info["data"], header=mask_info["header"], clobber=True)
             print(f"  {mask_type.capitalize()} mask file written: {mask_path}")
+            continue
+
+        primary_hdr = hdul_input[0].read_header() if len(hdul_input) > 0 else None
+        primary_data = None
+        remaining_hdus = list(valid_hdus)
+        if 0 in valid_hdus:
+            mask_info = output_data[0]["individual_masks"][mask_type]
+            primary_data = mask_info["data"]
+            primary_hdr = mask_info["header"]
+            remaining_hdus.remove(0)
+
+        fitsio.write(mask_path, primary_data, header=primary_hdr, clobber=True)
+        if remaining_hdus:
+            with fitsio.FITS(mask_path, "rw") as f_out:
+                for i in remaining_hdus:
+                    mask_info = output_data[i]["individual_masks"][mask_type]
+                    f_out.write(
+                        mask_info["data"],
+                        header=mask_info["header"],
+                        extname=mask_info["name"],
+                    )
+        print(f"  {mask_type.capitalize()} mask file written: {mask_path}")
 
 
 def write_all_output_files(paths: dict, output_data: dict, hdul_input, process_success_count: int) -> bool:

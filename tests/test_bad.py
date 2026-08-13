@@ -48,11 +48,11 @@ class TestBadPixels(unittest.TestCase):
         flat_data[:, 50] = 0.1
 
         config = {
-            "low_thresh": 0.5,
-            "high_thresh": 2.0,
+            "local_low_thresh": 0.5,
+            "local_high_thresh": 2.0,
             "col_enable": True,
-            "col_low_var_factor": 0.05,
-            "col_median_dev_factor": 0.1,
+            "col_deriv_sigma": 5.0,
+            "col_dead_thresh": 0.1,
         }
 
         mask = detect_bad_pixels(flat_data, config, using_unit_flat=False)

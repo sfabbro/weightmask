@@ -20,9 +20,9 @@ def _detect_bad_pixels_local(flat_data, config, global_med):
     try:
         from scipy.ndimage import median_filter
 
-        filter_size = config.get("local_filter_size", 15)
-        local_low_thresh = config.get("local_low_thresh", 0.5)
-        local_high_thresh = config.get("local_high_thresh", 2.0)
+        filter_size = config.get("local_filter_size", config.get("filter_size", 15))
+        local_low_thresh = config.get("local_low_thresh", config.get("low_thresh", 0.5))
+        local_high_thresh = config.get("local_high_thresh", config.get("high_thresh", 2.0))
 
         with warnings.catch_warnings():
             warnings.simplefilter("ignore", category=RuntimeWarning)
@@ -99,7 +99,7 @@ def _detect_bad_columns_derivative(flat_data, config, global_med):
             jump_cols_idx = np.where(col_diffs > thresh)[0]
 
             # Also catch columns that are completely dead (very close to 0)
-            dead_thresh = config.get("col_dead_thresh", 0.1) * global_med
+            dead_thresh = config.get("col_dead_thresh", config.get("col_median_dev_factor", 0.1)) * global_med
             dead_cols_idx = np.where(valid_medians < dead_thresh)[0]
 
             bad_cols_combined = np.unique(np.concatenate([jump_cols_idx, dead_cols_idx]))

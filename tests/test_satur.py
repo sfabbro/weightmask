@@ -227,6 +227,26 @@ class TestGrowBleedTrails(unittest.TestCase):
         # Check bottom growth (upwards)
         self.assertTrue(np.all(mask[90:100, 20]))
 
+    def test_grow_bleed_trails_with_nonzero_sky(self):
+        """Test bleed trail growth with realistic elevated sky background (e.g. 500 ADU)."""
+        sky_map = np.full(self.shape, 500.0, dtype=np.float32)
+        bkg_rms_map = np.full(self.shape, 10.0, dtype=np.float32)
+        sci_data = np.full(self.shape, 500.0, dtype=np.float32)
+
+        sat_mask = np.zeros(self.shape, dtype=bool)
+        sat_mask[50, 50] = True
+        sci_data[50, 50] = 60000.0
+
+        # Bleed trail extending from row 45 to row 55 (flux 600 ADU > 500 + 5*10 = 550 ADU)
+        sci_data[45:56, 50] = 600.0
+
+        mask = grow_bleed_trails(sci_data, sat_mask, sky_map, bkg_rms_map, self.config)
+
+        self.assertTrue(np.all(mask[45:56, 50]))
+        # Outside the trail is at sky (500 ADU < 550 ADU), should not be masked
+        self.assertFalse(mask[44, 50])
+        self.assertFalse(mask[56, 50])
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -155,6 +155,11 @@ output_params:
             result = run_pipeline()
             self.assertEqual(result, 0)
             self.assertTrue(os.path.exists(output_file))
+            with fitsio.FITS(output_file) as f:
+                self.assertEqual(len(f), 1)
+                data = f[0].read()
+                self.assertIsNotNone(data)
+                self.assertEqual(data.shape, (100, 100))
 
     def test_run_pipeline_individual_masks(self):
         output_file = os.path.join(self.workspace, "output2.weight.fits")

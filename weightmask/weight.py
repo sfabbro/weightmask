@@ -15,6 +15,7 @@ except ImportError:
         "CR": 1 << 2,  # 4
         "DETECTED": 1 << 3,  # 8  (NOTE: DETECTED objects usually KEEP their weight)
         "STREAK": 1 << 4,  # 16
+        "INVALID_VARIANCE": 1 << 5,  # 32
     }
 
 

@@ -147,8 +147,8 @@ def _add_streaks(data, gt, size, noise_level, regime_type):
                 gt["streak"][max(0, i - 1) : min(size, i + 2), max(0, j - 1) : min(size, j + 2)] = True
 
     dot_flux = 20.0 * noise_level
-    dots_y0, dots_x0 = 200, 800
-    dots_yf, dots_xf = 800, 200
+    dots_y0, dots_x0 = int(0.2 * size), int(0.8 * size)
+    dots_yf, dots_xf = int(0.8 * size), int(0.2 * size)
     rr, cc = line(dots_y0, dots_x0, dots_yf, dots_xf)
     for i, j in zip(rr, cc):
         if 0 <= i < size and 0 <= j < size:
@@ -168,8 +168,8 @@ def _add_streaks(data, gt, size, noise_level, regime_type):
             if flux > 0 and 0 <= i < size and 0 <= j < size:
                 data[i, j] += flux
 
-        dots_y0_2, dots_x0_2 = 100, 900
-        dots_yf_2, dots_xf_2 = 900, 100
+        dots_y0_2, dots_x0_2 = int(0.1 * size), int(0.9 * size)
+        dots_yf_2, dots_xf_2 = int(0.9 * size), int(0.1 * size)
         rr2, cc2 = line(dots_y0_2, dots_x0_2, dots_yf_2, dots_xf_2)
         faint_flux = 5.0 * noise_level
         for i, j in zip(rr2, cc2):

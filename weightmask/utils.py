@@ -46,23 +46,27 @@ def _parse_config_value(val):
     Parse a single configuration value, converting strings to
     bool/int/float if applicable.
     """
-    if not isinstance(val, (str, bytes)):
+    if isinstance(val, (bytes, bytearray)):
+        try:
+            val = val.decode("utf-8")
+        except UnicodeDecodeError:
+            return val
+    if not isinstance(val, str):
         return val
-    try:
-        if val.lower() in ("true", "yes", "on"):
-            return True
-        elif val.lower() in ("false", "no", "off"):
-            return False
-        else:
-            try:
-                if "." in val:
-                    return float(val)
-                else:
-                    return int(val)
-            except ValueError:
+
+    lowered = val.lower()
+    if lowered in ("true", "yes", "on"):
+        return True
+    elif lowered in ("false", "no", "off"):
+        return False
+    else:
+        try:
+            if "." in val or "e" in lowered:
                 return float(val)
-    except (ValueError, TypeError):
-        return val
+            else:
+                return int(val)
+        except ValueError:
+            return val
 
 
 def clean_config_dict(config: dict) -> dict:

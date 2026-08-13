@@ -490,6 +490,35 @@ class TestVariance(unittest.TestCase):
         # Check it's not the same as input
         self.assertFalse(np.allclose(res, inv_variance))
 
+    def test_unbias_variance_success(self):
+        """Test removing Poisson signal variance from total variance."""
+        from weightmask.variance import _unbias_variance
+
+        shape = (10, 10)
+        # Total variance = 125, signal = 100, gain = 1.0 -> expected bg variance = 25 -> inv_var = 0.04
+        inv_var_total = np.full(shape, 1.0 / 125.0, dtype=np.float32)
+        sci_data = np.full(shape, 100.0, dtype=np.float32)
+        sky_map = np.zeros(shape, dtype=np.float32)
+
+        unbiased_ivar = _unbias_variance(inv_var_total, sci_data, sky_map, gain=1.0, epsilon=1e-9)
+        self.assertIsNotNone(unbiased_ivar)
+        self.assertAlmostEqual(unbiased_ivar[0, 0], 1.0 / 25.0, places=5)
+
+    def test_unbias_variance_already_background_variance(self):
+        """Test that unbiasing does not floor to 1e-6 and spike when input is already background-only."""
+        from weightmask.variance import _unbias_variance
+
+        shape = (10, 10)
+        # Background variance = 25, signal = 100, gain = 1.0. Total minus signal is negative.
+        inv_var_bg = np.full(shape, 1.0 / 25.0, dtype=np.float32)
+        sci_data = np.full(shape, 100.0, dtype=np.float32)
+        sky_map = np.zeros(shape, dtype=np.float32)
+
+        unbiased_ivar = _unbias_variance(inv_var_bg, sci_data, sky_map, gain=1.0, epsilon=1e-9)
+        self.assertIsNotNone(unbiased_ivar)
+        # Should retain background variance (0.04) rather than spiking to 1,000,000
+        self.assertAlmostEqual(unbiased_ivar[0, 0], 1.0 / 25.0, places=5)
+
 
 if __name__ == "__main__":
     unittest.main()

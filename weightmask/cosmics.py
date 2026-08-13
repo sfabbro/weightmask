@@ -14,6 +14,7 @@ def _get_psf_peakiness(fwhm):
     Calculate the expected peakiness (ratio of central pixel to total 3x3 flux)
     of a 2D Gaussian PSF.
     """
+    fwhm = max(float(fwhm), 0.1)
     sigma = fwhm / 2.355
     # Create 3x3 Gaussian kernel
     x, y = np.mgrid[-1:2, -1:2]
@@ -65,7 +66,9 @@ def _apply_psf_protection(crmask_bool, sci_data, config, gain, read_noise, bkg_r
     psf_fwhm = config.get("psf_fwhm_guess", 3.0)
     print(f"    Applying PSF-aware protection (FWHM guess: {psf_fwhm:.1f} pix)")
 
-    sky_est = np.median(sci_data[::10, ::10])
+    sampled = sci_data[::10, ::10]
+    finite_sampled = sampled[np.isfinite(sampled)]
+    sky_est = np.median(finite_sampled) if finite_sampled.size > 0 else 0.0
     sci_sub = np.maximum(sci_data - sky_est, 0.0)
 
     uniform_3x3 = np.ones((3, 3), dtype=np.float32)
@@ -78,10 +81,11 @@ def _apply_psf_protection(crmask_bool, sci_data, config, gain, read_noise, bkg_r
     cr_thresh = psf_peak_thresh * 1.1
 
     if bkg_rms_map is not None:
-        snr_map = sci_sub / (bkg_rms_map / gain)
+        snr_map = sci_sub / np.maximum(bkg_rms_map, 1e-6)
         star_protection_mask = (peakiness < cr_thresh) & (snr_map > 5.0)
     else:
-        star_protection_mask = (peakiness < cr_thresh) & (sci_sub > 5.0 * read_noise / gain)
+        gain_val = max(float(gain), 1e-6)
+        star_protection_mask = (peakiness < cr_thresh) & (sci_sub > 5.0 * read_noise / gain_val)
 
     protected_count = np.count_nonzero(crmask_bool.astype(bool) & star_protection_mask)
     if protected_count > 0:

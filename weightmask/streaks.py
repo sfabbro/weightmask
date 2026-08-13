@@ -441,7 +441,7 @@ def _refine_trail_mask(data_sub, bkg_rms_map, candidate, mask_cfg, existing_mask
         interpolation_order,
     )
     if strip is None:
-        return np.zeros(data_sub.shape, dtype=bool)
+        return np.zeros(data_sub.shape, dtype=bool), {"support_width": 0, "row_hit_fraction": 0.0, "mask_pixels": 0}
 
     sampled = strip["sampled"]
     inside = strip["inside"]
@@ -461,6 +461,22 @@ def _refine_trail_mask(data_sub, bkg_rms_map, candidate, mask_cfg, existing_mask
         bg_std = np.nanstd(sampled)
     if not np.isfinite(bg_std) or bg_std <= 1e-6:
         bg_std = 1e-3
+
+    # Check for asymmetric step discontinuity (e.g. amplifier boundary) across the strip
+    left_band = sampled[:, : max(1, int(0.25 * sampled.shape[1]))]
+    right_band = sampled[:, max(1, int(0.75 * sampled.shape[1])) :]
+    left_finite = left_band[np.isfinite(left_band)]
+    right_finite = right_band[np.isfinite(right_band)]
+    left_med = np.median(left_finite) if left_finite.size > 0 else np.nan
+    right_med = np.median(right_finite) if right_finite.size > 0 else np.nan
+    if np.isfinite(left_med) and np.isfinite(right_med):
+        step_diff = abs(left_med - right_med)
+        if step_diff > 3.5 * bg_std:
+            return np.zeros(data_sub.shape, dtype=bool), {
+                "support_width": 0,
+                "row_hit_fraction": 0.0,
+                "mask_pixels": 0,
+            }
 
     with warnings.catch_warnings():
         warnings.simplefilter("ignore", category=RuntimeWarning)
@@ -912,7 +928,8 @@ def _detect_trails_sparse_ransac(data_sub, bkg_rms_map, existing_mask, config):
         rr, cc = line(int(p0[0]), int(p0[1]), int(p1[0]), int(p1[1]))
         current = np.zeros_like(trail_mask)
         current[rr, cc] = True
-        current = dilation(current, footprint=disk(int(config.get("dilation_radius", 3))))
+        dilation_r = int(cfg.get("dilation_radius", config.get("dilation_radius", 1)))
+        current = dilation(current, footprint=disk(dilation_r)) if dilation_r > 0 else current
         trail_mask |= current
         residual_mask &= ~current
         print(

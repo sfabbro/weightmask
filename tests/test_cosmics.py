@@ -63,6 +63,7 @@ class TestCosmics(unittest.TestCase):
 
         # Check that mask is boolean
         self.assertEqual(mask.dtype, bool)
+        self.assertTrue(mask[50, 50])
 
     def test_detect_cosmic_rays_with_existing_mask(self):
         """Test cosmic ray detection with existing masked pixels."""

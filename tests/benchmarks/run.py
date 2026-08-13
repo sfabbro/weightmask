@@ -43,12 +43,15 @@ def load_manifest(suite_name):
         return json.load(handle)
 
 
-def _mask_stats(pred_mask, gt_mask):
-    tp = int(np.sum(pred_mask & gt_mask))
-    fp = int(np.sum(pred_mask & (~gt_mask)))
+def _mask_stats(pred_mask, gt_mask, eval_gt_mask=None):
+    if eval_gt_mask is None:
+        eval_gt_mask = gt_mask
+    tp = int(np.sum(pred_mask & eval_gt_mask))
+    fp = int(np.sum(pred_mask & (~eval_gt_mask)))
     fn = int(np.sum((~pred_mask) & gt_mask))
     precision = tp / (tp + fp + 1e-9)
     recall = tp / (tp + fn + 1e-9)
+    recall = min(recall, 1.0)
     return {
         "precision": float(precision),
         "recall": float(recall),
@@ -249,15 +252,23 @@ def run_synthetic_v2(with_baselines=False, selected_cases=None):
         from scipy.ndimage import binary_dilation
 
         dilated_streak_gt = binary_dilation(products["ground_truth"]["streak"], iterations=2)
-        streak_stats = _mask_stats(products["masks"]["streaks"], dilated_streak_gt)
+        streak_stats = _mask_stats(
+            products["masks"]["streaks"], products["ground_truth"]["streak"], eval_gt_mask=dilated_streak_gt
+        )
         case_result["streak_stats"] = streak_stats
         case_result["bad_pixel_stats"] = _benchmark_synthetic_bad_pixels(case["seed"], case["size"])
         if with_baselines:
             data_sub = products["science"] - np.nanmedian(products["science"])
             case_result["baselines"] = {
-                "simple_hough": _mask_stats(_simple_hough_baseline(data_sub, products["bkg_rms"]), dilated_streak_gt),
+                "simple_hough": _mask_stats(
+                    _simple_hough_baseline(data_sub, products["bkg_rms"]),
+                    products["ground_truth"]["streak"],
+                    eval_gt_mask=dilated_streak_gt,
+                ),
                 "rubin_compatible_kht": _mask_stats(
-                    _rubin_compatible_baseline(data_sub, products["bkg_rms"]), dilated_streak_gt
+                    _rubin_compatible_baseline(data_sub, products["bkg_rms"]),
+                    products["ground_truth"]["streak"],
+                    eval_gt_mask=dilated_streak_gt,
                 ),
             }
         results[case["name"]] = case_result

@@ -81,7 +81,7 @@ class TestObjects(unittest.TestCase):
             "extract_thresh": 3.0,
             "min_area": 5,
             "dynamic_halo_scaling": True,
-            "halo_scale_factor": 0.5,
+            "halo_brightness_factor": 0.5,
             "spike_enable": False,
         }
 

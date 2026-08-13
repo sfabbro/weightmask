@@ -195,21 +195,23 @@ def _unbias_variance(inv_variance, sci_data, sky_map, gain, epsilon):
     if inv_variance is None or gain <= 0:
         return inv_variance
 
-    # Var_total = Var_bg + Signal/Gain
-    # 1/InvVar_total = 1/InvVar_bg + Signal/Gain
-    # 1/InvVar_bg = 1/InvVar_total - Signal/Gain
-
     # Signal is (sci_data - sky_map)
     signal = np.maximum(sci_data - sky_map, 0.0)
 
     # Work in variance space
     with np.errstate(divide="ignore", invalid="ignore"):
-        var_total = 1.0 / inv_variance
+        valid = (inv_variance > epsilon) & np.isfinite(inv_variance)
+        var_total = np.where(valid, 1.0 / inv_variance, np.inf)
         var_bg = var_total - (signal / gain)
 
-        # Ensure positivity
-        var_bg = np.maximum(var_bg, 1e-6)  # Floor at tiny noise
-        new_inv_variance = 1.0 / var_bg
+        # If var_bg is positive, unbiasing succeeded.
+        # If var_bg <= epsilon, var_total was already background-only; retain var_total.
+        effective_var = np.where(var_bg > epsilon, var_bg, var_total)
+        new_inv_variance = np.where(
+            valid & np.isfinite(effective_var) & (effective_var > 0),
+            1.0 / effective_var,
+            0.0,
+        )
 
     new_inv_variance[~np.isfinite(new_inv_variance)] = 0.0
     return new_inv_variance.astype(np.float32)

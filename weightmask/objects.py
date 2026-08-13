@@ -176,8 +176,12 @@ def detect_objects(data_sub, bkg_rms_map, existing_mask, config):
             halo_enabled = bool(clean_config.get("dynamic_halo_scaling", True))
 
             if segmap is not None and len(keep_seg_labels) > 0:
-                footprint_mask = np.isin(segmap, keep_seg_labels)
-                object_mask |= footprint_mask
+                max_label = int(np.max(segmap))
+                if max_label > 0:
+                    lookup = np.zeros(max_label + 1, dtype=bool)
+                    valid_labels = keep_seg_labels[(keep_seg_labels >= 0) & (keep_seg_labels <= max_label)]
+                    lookup[valid_labels] = True
+                    object_mask |= lookup[segmap]
 
             if halo_enabled:
                 print("  Applying capped brightness-aware halo masking...")

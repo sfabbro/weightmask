@@ -24,7 +24,7 @@ astroscrappy = "*"
 astroquery = "*"
 ruff = "*"
 pytest = "*"
-pre-commit = ">=4.5.1,<5"
+pre-commit = "*"
 
 [pypi-dependencies]
 weightmask = { path = ".", editable = true }

@@ -80,50 +80,51 @@ streak_masking:
     rescale_percentiles: [4.5, 93.0]
     gaussian_sigma: 2.0
     gaussian_sigmas: [1.5, 2.0, 3.0]
-    canny_low_threshold: 0.1
-    canny_high_threshold: 0.35
-    small_edge_perimeter: 60
-    hough_threshold: 10
-    hough_min_line_length: 120
-    hough_max_line_gap: 30
+    canny_low_threshold: 0.06
+    canny_high_threshold: 0.22
+    small_edge_perimeter: 40
+    hough_threshold: 6
+    hough_min_line_length: 65
+    hough_max_line_gap: 20
     hough_rng_seed: 0
-    cluster_angle_tol_deg: 3.0
+    cluster_angle_tol_deg: 2.5
     cluster_rho_tol_px: 30.0
-    min_cluster_segments: 3
-    edge_buffer: 32
-    min_edge_touches: 1
-    min_interior_span: 120.0
-    min_segment_density: 0.015
-    candidate_corridor_radius: 12
-    max_existing_mask_fraction: 0.6
+    min_cluster_segments: 2
+    edge_buffer: 16
+    min_edge_touches: 0
+    min_interior_span: 70.0
+    min_segment_density: 0.01
+    candidate_corridor_radius: 10
+    max_existing_mask_fraction: 0.8
     max_candidates: 8
-    min_segment_accept: 3
-    confidence_threshold: 0.4
+    min_segment_accept: 2
+    confidence_threshold: 0.22
   mrt_rescue_params:
     theta_step_deg: 1.0
-    peak_threshold_sig: 4.5
+    peak_threshold_sig: 4.2
     max_candidates: 4
-    confidence_threshold: 0.35
+    confidence_threshold: 0.25
   mask_params:
     strip_length: 256
-    strip_width: 96
-    profile_sigma_threshold: 3.0
-    profile_percentile: 85.0
+    strip_width: 80
+    profile_sigma_threshold: 1.5
+    profile_percentile: 72.0
     rotation_interpolation_order: 1
-    padding: 4
-    min_mask_pixels: 64
-    min_row_hits: 8
-    min_row_hit_fraction: 0.5
-    min_col_hit_fraction: 0.2
-    max_support_width: 16
+    padding: 2
+    min_mask_pixels: 24
+    min_row_hits: 4
+    min_row_hit_fraction: 0.20
+    min_col_hit_fraction: 0.10
+    max_support_width: 20
   enable_sparse_ransac: true
   sparse_on_primary_weak_only: true
   sparse_ransac_params:
-    detect_thresh_sig: 5.0
-    residual_threshold: 2.0
-    min_inliers: 10
+    detect_thresh_sig: 6.0
+    residual_threshold: 1.5
+    min_inliers: 25
     min_length: 100
-    min_line_density: 0.2
+    min_line_density: 0.6
+    dilation_radius: 1
     max_trials: 1000
     max_trails: 3
   frangi_legacy_params:
