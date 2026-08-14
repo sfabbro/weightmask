@@ -162,3 +162,23 @@ def detect_bad_pixels(flat_data, config, using_unit_flat=False):
     print(f"  Total BAD pixels/columns identified in flat: {total_bad}")
 
     return final_mask_bool
+
+
+def compute_flat_bad_mask(flat_data, config, tile_size=1024):
+    """Compute the full bad-pixel/column mask for one flat HDU, tiled.
+
+    Runs ``detect_bad_pixels`` over the same 1024x1024 tiles used by
+    ``process_image`` and ORs the results into a full-HDU mask. The result
+    depends only on the flat (and config), so callers cache it per flat and
+    reuse it across every exposure that shares that flat instead of
+    recomputing the expensive 15x15 median filter each time.
+    """
+    bad_mask = np.zeros(flat_data.shape, dtype=bool)
+    for y in range(0, flat_data.shape[0], tile_size):
+        for x in range(0, flat_data.shape[1], tile_size):
+            tile = (slice(y, y + tile_size), slice(x, x + tile_size))
+            flat_tile = flat_data[tile]
+            if not np.isfinite(flat_tile).any():
+                continue
+            bad_mask[tile] = detect_bad_pixels(flat_tile, config, using_unit_flat=False)
+    return bad_mask
