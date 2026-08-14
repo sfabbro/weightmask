@@ -699,7 +699,12 @@ def _strip_compression_keywords(header):
         return header
     out = dict(header)
     for key in list(out.keys()):
-        if key in _COMPRESSION_HEADER_KEYS or key.startswith("ZTILE") or key.startswith("ZNAME") or key.startswith("ZVAL"):
+        if (
+            key in _COMPRESSION_HEADER_KEYS
+            or key.startswith("ZTILE")
+            or key.startswith("ZNAME")
+            or key.startswith("ZVAL")
+        ):
             out.pop(key, None)
     return out
 
@@ -801,9 +806,18 @@ def process_all_hdus(
     config: dict,
     paths: dict,
     args: argparse.Namespace,
-) -> tuple:
+) -> int:
+    """Process every requested HDU, streaming each HDU's outputs to disk.
+
+    Each HDU's maps are written to their output files as soon as they are
+    produced instead of being accumulated in memory. A 36-CCD MegaPrime MEF
+    therefore only ever holds a single CCD's products at a time (~a few
+    hundred MB) rather than the whole MEF's (~7 GB), which previously blew
+    through the container memory limit when several exposures were processed
+    concurrently and OOM-killed the batch.
+    """
     process_success_count = 0
-    output_data = {}
+    writers = _make_output_writers(paths, hdul_input)
 
     for i in hdus_to_process:
         try:
@@ -836,8 +850,9 @@ def process_all_hdus(
                 hdu_header = fitsio.FITSHDR()
             hdu_header = _strip_compression_keywords(hdu_header)
 
+            hdu_output: dict = {}
             _store_output_maps(
-                output_data,
+                hdu_output,
                 i,
                 hdu_header,
                 hdu_name,
@@ -855,126 +870,99 @@ def process_all_hdus(
                 streak_mask,
                 paths,
             )
+            _flush_hdu_output(writers, hdu_output, i)
 
         except Exception as e:
             import traceback
 
             print(f"FATAL ERROR processing HDU {i}: {e}\n{traceback.format_exc()}")
 
-    return process_success_count, output_data
+    return process_success_count
 
 
-def write_single_output_file(out_path: str, output_data: dict, hdul_input, key: str):
-    valid_hdus = [i for i in sorted(output_data.keys()) if key in output_data[i]]
-    if not valid_hdus:
-        return
+class _StreamingMapWriter:
+    """Stream one map product (map/mask/invvar/sky/...) into a MEF file.
 
-    # If single standalone FITS image at HDU 0:
-    if len(valid_hdus) == 1 and valid_hdus[0] == 0 and len(hdul_input) == 1:
-        entry = output_data[0][key]
-        fitsio.write(out_path, entry["data"], header=entry["header"], clobber=True)
-        return
+    HDUs are appended as they are produced, so a large multi-extension input
+    never has to be held in memory at once. The on-disk layout matches the
+    previous buffered writer exactly:
 
-    # For MEF or multi-HDU processing:
-    primary_hdr = hdul_input[0].read_header() if len(hdul_input) > 0 else None
-    primary_data = None
-    remaining_hdus = list(valid_hdus)
-    if 0 in valid_hdus:
-        entry = output_data[0][key]
-        primary_data = entry["data"]
-        primary_hdr = entry["header"]
-        remaining_hdus.remove(0)
+    * a single-extension input with the image at HDU 0 -> a one-HDU file;
+    * a MEF whose primary is itself an image -> that image becomes the primary
+      and the remaining images are appended as extensions;
+    * a MEF whose primary is not an image -> an empty primary header is written
+      first, then every image is appended as an extension.
+    """
 
-    fitsio.write(out_path, primary_data, header=primary_hdr, clobber=True)
-    if remaining_hdus:
-        with fitsio.FITS(out_path, "rw") as f_out:
-            for i in remaining_hdus:
-                f_out.write(
-                    output_data[i][key]["data"],
-                    header=output_data[i][key]["header"],
-                    extname=output_data[i][key]["name"],
-                )
+    def __init__(self, out_path: str, hdul_input, primary_header):
+        self.out_path = out_path
+        self.hdul_input = hdul_input
+        self.primary_header = primary_header
+        self._opened = False
 
-
-def write_individual_mask_files(individual_mask_paths: dict, output_data: dict, hdul_input):
-    for mask_type in ["bad", "sat", "cr", "obj", "streak"]:
-        mask_path = individual_mask_paths.get(mask_type)
-        if not mask_path:
-            continue
-
-        valid_hdus = [
-            i
-            for i in sorted(output_data.keys())
-            if "individual_masks" in output_data[i] and mask_type in output_data[i]["individual_masks"]
-        ]
-        if not valid_hdus:
-            continue
-
-        if len(valid_hdus) == 1 and valid_hdus[0] == 0 and len(hdul_input) == 1:
-            mask_info = output_data[0]["individual_masks"][mask_type]
-            fitsio.write(mask_path, mask_info["data"], header=mask_info["header"], clobber=True)
-            print(f"  {mask_type.capitalize()} mask file written: {mask_path}")
-            continue
-
-        primary_hdr = hdul_input[0].read_header() if len(hdul_input) > 0 else None
-        primary_data = None
-        remaining_hdus = list(valid_hdus)
-        if 0 in valid_hdus:
-            mask_info = output_data[0]["individual_masks"][mask_type]
-            primary_data = mask_info["data"]
-            primary_hdr = mask_info["header"]
-            remaining_hdus.remove(0)
-
-        fitsio.write(mask_path, primary_data, header=primary_hdr, clobber=True)
-        if remaining_hdus:
-            with fitsio.FITS(mask_path, "rw") as f_out:
-                for i in remaining_hdus:
-                    mask_info = output_data[i]["individual_masks"][mask_type]
-                    f_out.write(
-                        mask_info["data"],
-                        header=mask_info["header"],
-                        extname=mask_info["name"],
-                    )
-        print(f"  {mask_type.capitalize()} mask file written: {mask_path}")
+    def write(self, hdu_index: int, data, header, extname: str) -> None:
+        if not self._opened:
+            single_hdu0 = hdu_index == 0 and len(self.hdul_input) == 1
+            if single_hdu0:
+                fitsio.write(self.out_path, data, header=header, clobber=True)
+                self._opened = True
+                return
+            if hdu_index == 0:
+                primary_data = data
+                primary_header = header
+            else:
+                primary_data = None
+                primary_header = self.primary_header
+            fitsio.write(self.out_path, primary_data, header=primary_header, clobber=True)
+            self._opened = True
+            if hdu_index == 0:
+                return
+        with fitsio.FITS(self.out_path, "rw") as f_out:
+            f_out.write(data, header=header, extname=extname)
 
 
-def write_all_output_files(paths: dict, output_data: dict, hdul_input, process_success_count: int) -> bool:
-    if process_success_count == 0:
-        print("\nNo HDUs processed successfully. No output files written.")
-        return True
+def _make_output_writers(paths: dict, hdul_input) -> dict:
+    """Build a streaming writer per requested output product."""
+    primary_header = None
+    if len(hdul_input) > 0:
+        try:
+            primary_header = _strip_compression_keywords(hdul_input[0].read_header())
+        except Exception:
+            primary_header = None
 
-    print("\nWriting output files...")
-    try:
-        if paths["out_map_path"] and output_data:
-            write_single_output_file(paths["out_map_path"], output_data, hdul_input, "map")
-            print(f"  Map file written: {paths['out_map_path']}")
+    writers: dict = {}
+    for key, path_key in (
+        ("map", "out_map_path"),
+        ("mask", "out_mask_path"),
+        ("invvar", "out_invvar_path"),
+        ("sky", "out_sky_path"),
+        ("weight_raw", "out_weight_raw_path"),
+    ):
+        out_path = paths.get(path_key)
+        if out_path:
+            writers[key] = _StreamingMapWriter(out_path, hdul_input, primary_header)
 
-        if paths["out_mask_path"] and output_data:
-            write_single_output_file(paths["out_mask_path"], output_data, hdul_input, "mask")
-            print(f"  Mask file written: {paths['out_mask_path']}")
+    for mask_type in ("bad", "sat", "cr", "obj", "streak"):
+        out_path = (paths.get("individual_mask_paths") or {}).get(mask_type)
+        if out_path:
+            writers[f"ind_{mask_type}"] = _StreamingMapWriter(out_path, hdul_input, primary_header)
+    return writers
 
-        if paths["out_invvar_path"] and output_data:
-            write_single_output_file(paths["out_invvar_path"], output_data, hdul_input, "invvar")
-            print(f"  Inverse variance file written: {paths['out_invvar_path']}")
 
-        if paths["out_sky_path"] and output_data:
-            write_single_output_file(paths["out_sky_path"], output_data, hdul_input, "sky")
-            print(f"  Sky file written: {paths['out_sky_path']}")
+def _flush_hdu_output(writers: dict, hdu_output: dict, hdu_index: int) -> None:
+    """Write a single HDU's buffered maps to their output files and release them."""
+    entry_map = hdu_output.get(hdu_index) or {}
+    for key in ("map", "mask", "invvar", "sky", "weight_raw"):
+        entry = entry_map.get(key)
+        if entry is not None and key in writers:
+            writers[key].write(hdu_index, entry["data"], entry["header"], entry["name"])
 
-        if paths["out_weight_raw_path"] and output_data:
-            write_single_output_file(paths["out_weight_raw_path"], output_data, hdul_input, "weight_raw")
-            print(f"  Raw weight file written: {paths['out_weight_raw_path']}")
-
-        if paths["individual_mask_paths"] and output_data:
-            write_individual_mask_files(paths["individual_mask_paths"], output_data, hdul_input)
-
-        return True
-    except OSError as e:
-        print(f"ERROR: Failed to write output files: {e}")
-        import traceback
-
-        traceback.print_exc()
-        return False
+    individual = entry_map.get("individual_masks") or {}
+    for mask_type in ("bad", "sat", "cr", "obj", "streak"):
+        entry = individual.get(mask_type)
+        writer_key = f"ind_{mask_type}"
+        if entry is not None and writer_key in writers:
+            writers[writer_key].write(hdu_index, entry["data"], entry["header"], entry["name"])
 
 
 def _cleanup_hdul(hdul_input, hdul_flat):
@@ -1015,9 +1003,7 @@ def run_pipeline() -> int:
         return 1
     print(f"Processing {len(hdus_to_process)} Image HDU(s): {hdus_to_process}")
 
-    process_success_count, output_data = process_all_hdus(hdus_to_process, hdul_input, hdul_flat, config, paths, args)
-
-    success = write_all_output_files(paths, output_data, hdul_input, process_success_count)
+    process_success_count = process_all_hdus(hdus_to_process, hdul_input, hdul_flat, config, paths, args)
 
     _cleanup_hdul(hdul_input, hdul_flat)
 
@@ -1026,7 +1012,8 @@ def run_pipeline() -> int:
     warnings.filterwarnings("default", category=UserWarning)
     warnings.filterwarnings("default", category=RuntimeWarning)
 
-    if not success:
+    if process_success_count == 0:
+        print("\nNo HDUs processed successfully. No output files written.")
         return 1
 
     print(f"\nPipeline finished in {time.time() - start_pipeline_time:.2f} seconds.")
