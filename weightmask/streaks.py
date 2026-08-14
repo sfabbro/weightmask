@@ -142,22 +142,92 @@ def _segment_angle_and_rho(segment):
 
 
 def _cluster_segments(segments, angle_tol_deg, rho_tol_px):
-    """Greedily cluster Hough segments by angle and offset."""
-    clusters = []
-    for segment in segments:
-        angle_deg, rho = _segment_angle_and_rho(segment)
+    """Greedily cluster Hough segments by angle and offset.
+
+    The original implementation rescanned every existing cluster per segment and
+    re-averaged each cluster's angle/rho over all its members on every
+    assignment -- O(n^2) and pathological for the ~10^4-10^5 Hough segments a
+    crowded real CCD produces (the probabilistic Hough step alone can return
+    tens of thousands of segments).
+
+    This version buckets segments by quantized (angle, rho) and compares each
+    segment only against clusters in the neighbouring buckets, maintaining each
+    cluster's running mean incrementally. The result is O(n) amortized with the
+    same greedy first-match-wins semantics.
+    """
+    if not segments:
+        return []
+
+    angle_bin_w = max(float(angle_tol_deg), 1e-6)
+    rho_bin_w = max(float(rho_tol_px), 1e-6)
+    n_angle_bins = max(1, int(round(180.0 / angle_bin_w)))
+
+    # Precompute line parameters once (the original recomputed them repeatedly).
+    params = [_segment_angle_and_rho(s) for s in segments]
+
+    clusters: list[dict] = []
+    # Quantized (angle_bin, rho_bin) -> list of cluster indices registered there.
+    bucket_map: dict[tuple[int, int], list[int]] = {}
+
+    def bucket_key(angle_deg: float, rho: float) -> tuple[int, int]:
+        a = int(round(angle_deg / angle_bin_w)) % n_angle_bins
+        r = int(round(rho / rho_bin_w))
+        return (a, r)
+
+    def register(ci: int, key: tuple[int, int]) -> None:
+        bucket_map.setdefault(key, []).append(ci)
+
+    def rekey(ci: int, old_key: tuple[int, int], new_key: tuple[int, int]) -> None:
+        if old_key == new_key:
+            return
+        lst = bucket_map.get(old_key)
+        if lst is not None:
+            try:
+                lst.remove(ci)
+            except ValueError:
+                pass
+        register(ci, new_key)
+
+    for segment, (angle_deg, rho) in zip(segments, params):
+        a, r = bucket_key(angle_deg, rho)
         assigned = False
-        for cluster in clusters:
-            angle_diff = abs(angle_deg - cluster["angle_deg"])
-            angle_diff = min(angle_diff, 180.0 - angle_diff)
-            if angle_diff <= angle_tol_deg and abs(rho - cluster["rho"]) <= rho_tol_px:
-                cluster["segments"].append(segment)
-                cluster["angle_deg"] = np.mean([_segment_angle_and_rho(s)[0] for s in cluster["segments"]])
-                cluster["rho"] = np.mean([_segment_angle_and_rho(s)[1] for s in cluster["segments"]])
-                assigned = True
+        for da in (-1, 0, 1):
+            aa = (a + da) % n_angle_bins
+            for dr in (-1, 0, 1):
+                for ci in bucket_map.get((aa, r + dr), ()):
+                    cluster = clusters[ci]
+                    angle_diff = abs(angle_deg - cluster["angle_deg"])
+                    angle_diff = min(angle_diff, 180.0 - angle_diff)
+                    if angle_diff <= angle_tol_deg and abs(rho - cluster["rho"]) <= rho_tol_px:
+                        cluster["segments"].append(segment)
+                        cluster["angle_sum"] += angle_deg
+                        cluster["rho_sum"] += rho
+                        n = len(cluster["segments"])
+                        cluster["angle_deg"] = cluster["angle_sum"] / n
+                        cluster["rho"] = cluster["rho_sum"] / n
+                        rekey(ci, cluster["bin"], bucket_key(cluster["angle_deg"], cluster["rho"]))
+                        cluster["bin"] = bucket_key(cluster["angle_deg"], cluster["rho"])
+                        assigned = True
+                        break
+                if assigned:
+                    break
+            if assigned:
                 break
         if not assigned:
-            clusters.append({"segments": [segment], "angle_deg": angle_deg, "rho": rho})
+            key = (a, r)
+            ci = len(clusters)
+            clusters.append(
+                {
+                    "segments": [segment],
+                    "angle_sum": angle_deg,
+                    "rho_sum": rho,
+                    "angle_deg": angle_deg,
+                    "rho": rho,
+                    "bin": key,
+                }
+            )
+            register(ci, key)
+
     return clusters
 
 
@@ -237,14 +307,33 @@ def _edges_touched(endpoints, shape, edge_buffer):
 
 
 def _line_corridor_mask(endpoints, shape, radius):
-    """Create a coarse corridor mask around a representative line."""
+    """Return the (rr, cc) pixel coordinates of a corridor around a line.
+
+    The corridor is the set of pixels within ``radius`` of the line segment.
+    It is computed on a tight bounding box so the per-candidate cost is
+    proportional to the corridor length rather than the full image area (the
+    previous full-image mask + dilation was O(width*height) per candidate, which
+    dominates when hundreds of Hough clusters reach this stage on a real CCD).
+    """
     (x0, y0), (x1, y1) = endpoints
+    h, w = shape
     rr, cc = line(int(round(y0)), int(round(x0)), int(round(y1)), int(round(x1)))
-    mask = np.zeros(shape, dtype=bool)
-    mask[rr, cc] = True
-    if radius > 0:
-        mask = dilation(mask, footprint=disk(radius))
-    return mask
+    if len(rr) == 0:
+        return np.array([], dtype=int), np.array([], dtype=int)
+
+    r = int(radius)
+    r0 = max(0, int(rr.min()) - r - 1)
+    r1 = min(h, int(rr.max()) + r + 2)
+    c0 = max(0, int(cc.min()) - r - 1)
+    c1 = min(w, int(cc.max()) + r + 2)
+
+    local = np.zeros((r1 - r0, c1 - c0), dtype=bool)
+    local[rr - r0, cc - c0] = True
+    if r > 0:
+        local = dilation(local, footprint=disk(r))
+
+    grr, gcc = np.nonzero(local)
+    return grr + r0, gcc + c0
 
 
 def _build_satdet_candidates(segments, data_sub, shape, cfg, existing_mask):
@@ -265,10 +354,17 @@ def _build_satdet_candidates(segments, data_sub, shape, cfg, existing_mask):
     prepared = _prepare_streak_image(data_sub, existing_mask)
     candidates = []
 
-    for cluster in clusters:
-        if len(cluster["segments"]) < min_segments:
-            continue
+    # Only ``max_candidates`` clusters survive the final sort, but every
+    # qualifying cluster triggers an expensive corridor dilation. On a
+    # streak-free star field the Hough step yields tens of thousands of
+    # spurious segments -> thousands of clusters, making this loop the dominant
+    # runtime. Real trails produce many collinear segments, so evaluate only the
+    # largest ``corridor_work_cap`` clusters and rank those by corridor signal.
+    corridor_work_cap = max(int(max_candidates), 1) * 10
+    qualifying = [c for c in clusters if len(c["segments"]) >= min_segments]
+    qualifying.sort(key=lambda c: len(c["segments"]), reverse=True)
 
+    for cluster in qualifying[:corridor_work_cap]:
         rep = _representative_line(cluster, shape)
         clipped = rep["clipped_endpoints"]
         if clipped is None:
@@ -286,16 +382,14 @@ def _build_satdet_candidates(segments, data_sub, shape, cfg, existing_mask):
         if raw_edge_touches < min_edge_touches and raw_span < min_interior_span:
             continue
 
-        if existing_mask is not None:
-            corridor = _line_corridor_mask(clipped, shape, corridor_radius)
-            masked_fraction = np.mean(existing_mask[corridor]) if np.any(corridor) else 0.0
-            if masked_fraction > max_existing_mask_fraction:
-                continue
-        else:
-            corridor = _line_corridor_mask(clipped, shape, corridor_radius)
-            masked_fraction = 0.0
+        corridor_rr, corridor_cc = _line_corridor_mask(clipped, shape, corridor_radius)
+        masked_fraction = 0.0
+        if existing_mask is not None and corridor_rr.size:
+            masked_fraction = float(np.mean(existing_mask[corridor_rr, corridor_cc]))
+        if masked_fraction > max_existing_mask_fraction:
+            continue
 
-        corridor_signal = prepared[corridor]
+        corridor_signal = prepared[corridor_rr, corridor_cc]
         corridor_signal = corridor_signal[np.isfinite(corridor_signal)]
         if corridor_signal.size > 0:
             corridor_response = float(np.percentile(corridor_signal, 90))
