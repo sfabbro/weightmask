@@ -667,6 +667,43 @@ def _assign_map_if_valid(output_data, i, key, data, header, hdu_name):
         }
 
 
+# FITS reserved keywords from the tiled-image compression (fpack) convention.
+# They describe the *on-disk* encoding of the input image, not the science
+# pixels; copying them onto an uncompressed output makes readers apply the
+# compression scaling a second time and corrupts every output value.
+_COMPRESSION_HEADER_KEYS = (
+    "BZERO",
+    "BSCALE",
+    "BITPIX",
+    "ZQUANTIZ",
+    "ZBLANK",
+    "ZSIMPLE",
+    "ZCMPTYPE",
+    "ZNAXIS",
+    "ZBITPIX",
+    "ZDITHER0",
+)
+
+
+def _strip_compression_keywords(header):
+    """Remove fpack/quantization keywords from an output header.
+
+    The input HDU header is reused for the output products, but the outputs are
+    written as ordinary (uncompressed) FITS. The input's ``BZERO``/``BSCALE``/
+    ``BITPIX`` (and the ``Z*`` tile-compression cards) must not be copied,
+    otherwise fitsio applies the compression scaling to the already-scaled
+    output values -- e.g. a [0,1] weight map came back offset by ``BZERO=32668``
+    when the input was fpacked.
+    """
+    if header is None:
+        return header
+    out = dict(header)
+    for key in list(out.keys()):
+        if key in _COMPRESSION_HEADER_KEYS or key.startswith("ZTILE") or key.startswith("ZNAME") or key.startswith("ZVAL"):
+            out.pop(key, None)
+    return out
+
+
 def _header_with_contract_metadata(header, artifact_type: str, *, mask: bool = False, semantics: str | None = None):
     """Copy a FITS-style header and add portable Wave 5 contract metadata."""
     try:
@@ -797,6 +834,7 @@ def process_all_hdus(
                 hdu_header = None
             if hdu_header is None:
                 hdu_header = fitsio.FITSHDR()
+            hdu_header = _strip_compression_keywords(hdu_header)
 
             _store_output_maps(
                 output_data,
