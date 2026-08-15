@@ -33,44 +33,113 @@ from .utils import clean_config_dict, extract_hdu_spec
 from .variance import calculate_inverse_variance
 from .weight import generate_weight_and_confidence
 
+_CFG_HASH_KEY = "WMCFGH"
 
-def _flat_bad_mask_cache_path(flat_path: str, hdu_index: int, flat_cfg: dict) -> str:
-    """Deterministic on-disk cache path for a flat's bad-pixel mask."""
-    cfg_hash = hashlib.md5(repr(sorted(flat_cfg.items())).encode("utf-8")).hexdigest()[:8]
-    return os.path.join(f"{flat_path}.badmask_cache", f"hdu{hdu_index}.{cfg_hash}.npy")
+
+def flat_bad_mask_cache_path(flat_path: str) -> str:
+    """On-disk cache path for a flat's bad-pixel mask: ``<flat>.mask.fits``.
+
+    The cache is a MEF whose image HDUs line up one-to-one with the flat's, so
+    an exposure's HDU index maps straight onto the cached mask for that CCD.
+    """
+    for suffix in (".fits.fz", ".fits"):
+        if flat_path.endswith(suffix):
+            return flat_path[: -len(suffix)] + ".mask.fits"
+    return flat_path + ".mask.fits"
+
+
+def _flat_cfg_hash(flat_cfg: dict) -> str:
+    return hashlib.md5(repr(sorted(flat_cfg.items())).encode("utf-8")).hexdigest()[:8]
+
+
+def _flat_image_indices(hdul) -> list[int]:
+    return [
+        i for i in range(len(hdul)) if hdul[i].get_info().get("hdutype") == 0 and hdul[i].get_info().get("ndims") == 2
+    ]
+
+
+def _write_flat_bad_mask_cache(cache_path: str, flat_path: str, flat_cfg: dict, tile_size: int) -> None:
+    """Compute every HDU's bad mask for one flat and write them to ``cache_path`` atomically."""
+    masks: dict[int, np.ndarray] = {}
+    with fitsio.FITS(flat_path, "r") as ff:
+        for i in _flat_image_indices(ff):
+            masks[i] = compute_flat_bad_mask(ff[i].read().astype(np.float32), flat_cfg, tile_size)
+
+    os.makedirs(os.path.dirname(cache_path) or ".", exist_ok=True)
+    tmp_path = f"{cache_path}.tmp.{os.getpid()}"
+    primary_header = {_CFG_HASH_KEY: _flat_cfg_hash(flat_cfg)}
+    idxs = sorted(masks)
+    if idxs and idxs[0] == 0:
+        # Single-image primary (not the MegaCam layout, but be safe).
+        fitsio.write(tmp_path, masks[0].astype(np.uint8), header=primary_header, clobber=True)
+        idxs = idxs[1:]
+    else:
+        fitsio.write(tmp_path, None, header=primary_header, clobber=True)
+    for i in idxs:
+        with fitsio.FITS(tmp_path, "rw") as f:
+            f.write(masks[i].astype(np.uint8), extname=f"BAD_{i}")
+    os.replace(tmp_path, cache_path)
+
+
+def load_flat_bad_mask(flat_path: str, hdu_index: int, config: dict) -> Optional[np.ndarray]:
+    """Load one HDU's bad mask from the ``<flat>.mask.fits`` cache, or None if missing/stale."""
+    cache_path = flat_bad_mask_cache_path(flat_path)
+    if not os.path.exists(cache_path):
+        return None
+    try:
+        with fitsio.FITS(cache_path, "r") as f:
+            if hdu_index >= len(f):
+                return None
+            if f[0].read_header().get(_CFG_HASH_KEY) != _flat_cfg_hash(config.get("flat_masking", {})):
+                return None
+            info = f[hdu_index].get_info()
+            if info.get("hdutype") != 0 or info.get("ndims") != 2:
+                return None
+            return f[hdu_index].read().astype(bool)
+    except OSError:
+        return None
+
+
+def ensure_flat_bad_mask_cache(flat_path: str, config: dict, tile_size: int = 1024) -> str:
+    """Compute (or reuse) a flat's full bad-pixel mask cache and return its path."""
+    cache_path = flat_bad_mask_cache_path(flat_path)
+    expected_hash = _flat_cfg_hash(config.get("flat_masking", {}))
+    try:
+        with fitsio.FITS(cache_path, "r") as f:
+            if f[0].read_header().get(_CFG_HASH_KEY) == expected_hash:
+                return cache_path
+    except OSError:
+        pass
+    try:
+        _write_flat_bad_mask_cache(cache_path, flat_path, config.get("flat_masking", {}), tile_size)
+    except OSError as e:
+        print(f"  WARNING: could not write badmask cache {cache_path}: {e}")
+    return cache_path
 
 
 def get_or_compute_flat_bad_mask(
     flat_path: str, hdu_index: int, flat_data: np.ndarray, config: dict, tile_size: int = 1024
 ) -> np.ndarray:
-    """Return the bad-pixel/column mask for one flat HDU, cached on disk.
+    """Return the bad-pixel/column mask for one flat HDU, cached in ``<flat>.mask.fits``.
 
     The mask depends only on the flat (and ``flat_masking`` config), so it is
-    computed once per (flat, HDU) and reused across every exposure that shares
-    that flat. Computing it from scratch dominates weightmask runtime (~77% of
-    it, a 15x15 median filter per tile), so this cache is the single biggest
-    speedup. The write is atomic (temp file + rename) so concurrent workers on
-    the same flat never observe a half-written cache file.
+    computed once per flat and reused across every exposure that shares that
+    flat. Computing it from scratch dominates weightmask runtime (a 15x15
+    median filter per tile), so this cache is the single biggest speedup. The
+    cache is written atomically (temp file + rename) so concurrent workers never
+    observe a half-written file.
     """
-    flat_cfg = config.get("flat_masking", {})
-    cache_path = _flat_bad_mask_cache_path(flat_path, hdu_index, flat_cfg)
-    if os.path.exists(cache_path):
-        try:
-            mask = np.load(cache_path)
-            if mask.shape == flat_data.shape and mask.dtype == bool:
-                return mask
-        except (OSError, ValueError):
-            pass
+    mask = load_flat_bad_mask(flat_path, hdu_index, config)
+    if mask is not None and mask.shape == flat_data.shape:
+        return mask
 
-    mask = compute_flat_bad_mask(flat_data, flat_cfg, tile_size)
-    try:
-        os.makedirs(os.path.dirname(cache_path), exist_ok=True)
-        tmp_path = f"{cache_path}.tmp.{os.getpid()}.npy"
-        np.save(tmp_path, mask)
-        os.replace(tmp_path, cache_path)
-    except OSError as e:
-        print(f"  WARNING: could not write badmask cache {cache_path}: {e}")
-    return mask
+    ensure_flat_bad_mask_cache(flat_path, config, tile_size)
+    mask = load_flat_bad_mask(flat_path, hdu_index, config)
+    if mask is not None and mask.shape == flat_data.shape:
+        return mask
+
+    # Cache unavailable (e.g. read-only disk): fall back to computing this HDU inline.
+    return compute_flat_bad_mask(flat_data, config.get("flat_masking", {}), tile_size)
 
 
 def validate_fits_file(file_path: str) -> bool:
