@@ -172,7 +172,11 @@ def detect_cosmic_rays(
     objlim = _adjust_dynamic_objlim(config, existing_mask, default_objlim=config.get("objlim", 5.0))
 
     try:
-        # Use astroscrappy to detect cosmic rays
+        # Use astroscrappy (L.A.Cosmic) to detect cosmic rays. The dominant
+        # cost knob is ``niter``: every iteration re-runs the median/Laplacian
+        # filters over the whole CCD, and the later iterations only add the
+        # faintest marginal detections. The remaining knobs are forwarded so
+        # callers can tune the speed/quality tradeoff without code changes.
         crmask_bool, _ = detect_cosmics(
             sci_data,
             inmask=existing_mask,
@@ -181,6 +185,12 @@ def detect_cosmic_rays(
             readnoise=read_noise,
             sigclip=sigclip,
             objlim=objlim,
+            niter=int(config.get("niter", 4)),
+            sepmed=bool(config.get("sepmed", True)),
+            cleantype=config.get("cleantype", "meanmask"),
+            fsmode=config.get("fsmode", "median"),
+            psffwhm=float(config.get("psffwhm", 2.5)),
+            psfsize=int(config.get("psfsize", 7)),
             verbose=False,
         )
 
