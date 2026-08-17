@@ -237,3 +237,17 @@ pixi run benchmark-synthetic
 pixi run benchmark-megacam
 pixi run benchmark-acs
 ```
+
+The three manual trail labels are external evidence, not repository fixtures.
+Create finite binary 0/1 FITS masks in the full coordinate frame of their
+source exposure and place them at the paths declared by `label_artifact` in:
+
+- `tests/benchmarks/manifests/megacam_real.json`
+- `tests/benchmarks/manifests/acs_compare.json`
+
+The source-exposure SHA-256 values are already pinned. After a label has been
+reviewed, compute its byte-exact digest with `shasum -a 256 <label.fits>` and
+replace that case's null `label_artifact.sha256`. The real-suite command remains
+nonzero if a source or label hash differs, a mask is not full-frame finite
+binary data, the selected cutout has no labeled trail, or a scientific quality
+gate fails. The emitted `metrics.json` records both accepted hashes.

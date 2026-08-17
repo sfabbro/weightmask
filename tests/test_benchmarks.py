@@ -1,3 +1,4 @@
+import hashlib
 import tempfile
 import unittest
 from pathlib import Path
@@ -9,6 +10,7 @@ from astropy.io import fits
 from tests.benchmarks.download_data import validate_case_file
 from tests.benchmarks.run import (
     ROOT,
+    _load_case_label,
     _load_quality_reference,
     _quality_gate_failures,
     _quality_validation_metrics,
@@ -48,7 +50,16 @@ class TestBenchmarks(unittest.TestCase):
         self.assertTrue(
             all(
                 result["status"]
-                in {"missing_data", "missing_labels", "loaded", "invalid_instrument", "invalid_quality_reference"}
+                in {
+                    "missing_data",
+                    "missing_labels",
+                    "invalid_labels",
+                    "invalid_label_provenance",
+                    "invalid_science_provenance",
+                    "loaded",
+                    "invalid_instrument",
+                    "invalid_quality_reference",
+                }
                 for result in summary["results"].values()
             )
         )
@@ -86,6 +97,52 @@ class TestBenchmarks(unittest.TestCase):
             np.testing.assert_allclose(inverse_variance, 0.25)
             self.assertEqual(np.count_nonzero(quality_mask), 1)
             self.assertTrue(quality_mask[1, 2])
+
+    def test_manual_label_requires_exact_hash_full_frame_and_binary_values(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            label_path = root / "label.fits"
+            label = np.zeros((6, 8), dtype=np.uint8)
+            label[2, 3:6] = 1
+            fits.PrimaryHDU(label).writeto(label_path)
+            digest = hashlib.sha256(label_path.read_bytes()).hexdigest()
+            case = {
+                "label_artifact": {
+                    "path": "label.fits",
+                    "sha256": digest,
+                    "science_sha256": "a" * 64,
+                    "coordinate_frame": "science_full_frame",
+                    "polarity": "one_means_trail",
+                }
+            }
+            crop = {"y0": 1, "x0": 2, "height": 4, "width": 5}
+            with patch("tests.benchmarks.run.ROOT", root):
+                loaded, evidence, status, reason = _load_case_label(case, label.shape, crop)
+                self.assertIsNone(status)
+                self.assertIsNone(reason)
+                self.assertEqual(np.count_nonzero(loaded), 3)
+                self.assertEqual(evidence["sha256"], digest)
+
+                case["label_artifact"]["sha256"] = "0" * 64
+                loaded, evidence, status, reason = _load_case_label(case, label.shape, crop)
+                self.assertIsNone(loaded)
+                self.assertIsNone(evidence)
+                self.assertEqual(status, "invalid_label_provenance")
+                self.assertIn("SHA-256 mismatch", reason)
+
+                case["label_artifact"]["sha256"] = digest
+                loaded, evidence, status, reason = _load_case_label(case, (3, 4), crop)
+                self.assertIsNone(loaded)
+                self.assertEqual(status, "invalid_labels")
+                self.assertIn("does not match science shape", reason)
+
+                label[0, 0] = 2
+                fits.PrimaryHDU(label).writeto(label_path, overwrite=True)
+                case["label_artifact"]["sha256"] = hashlib.sha256(label_path.read_bytes()).hexdigest()
+                loaded, evidence, status, reason = _load_case_label(case, label.shape, crop)
+                self.assertIsNone(loaded)
+                self.assertEqual(status, "invalid_labels")
+                self.assertIn("finite binary 0/1", reason)
 
     def test_quality_metrics_cover_w1_acceptance_semantics(self):
         rng = np.random.default_rng(12)

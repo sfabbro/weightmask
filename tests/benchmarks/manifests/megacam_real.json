@@ -30,7 +30,13 @@
       "cadc_id": "2079618p",
       "local_path": "benchmark_data/megacam/megacam_streak_case.fits",
       "label_recipe": "manual_streak_mask",
-      "label_path": "benchmark_data/megacam/labels/megacam_streak_case_mask.fits",
+      "label_artifact": {
+        "path": "benchmark_data/megacam/labels/megacam_streak_case_mask.fits",
+        "sha256": null,
+        "science_sha256": "2fc392aa78f8f158b27ef0dd073c613c81b23d9b9293a7d777350607c44f9c1c",
+        "coordinate_frame": "science_full_frame",
+        "polarity": "one_means_trail"
+      },
       "crop_mode": "random",
       "crop_shape": [768, 768],
       "comparators": ["rubin_compatible_kht", "simple_hough", "simple_radon"],

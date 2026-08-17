@@ -18,7 +18,13 @@
       "mast_product": "jc8m32j5q_flc.fits",
       "local_path": "benchmark_data/acs/jc8m32j5q_flc.fits",
       "label_recipe": "manual_streak_mask",
-      "label_path": "benchmark_data/acs/labels/jc8m32j5q_trail_mask.fits",
+      "label_artifact": {
+        "path": "benchmark_data/acs/labels/jc8m32j5q_trail_mask.fits",
+        "sha256": null,
+        "science_sha256": "91ce4893ffcf3bf56d4dbe9f21f1e5b775105ff262cc1a7b506e167a4c9a7158",
+        "coordinate_frame": "science_full_frame",
+        "polarity": "one_means_trail"
+      },
       "expected_instrument": "ACS",
       "expected_detector": "WFC",
       "quality_reference": {"inverse_variance": "ERR", "quality_mask": "DQ"},
@@ -34,7 +40,13 @@
       "mast_product": "j97006j5q_flc.fits",
       "local_path": "benchmark_data/acs/j97006j5q_flc.fits",
       "label_recipe": "manual_streak_mask",
-      "label_path": "benchmark_data/acs/labels/j97006j5q_trail_mask.fits",
+      "label_artifact": {
+        "path": "benchmark_data/acs/labels/j97006j5q_trail_mask.fits",
+        "sha256": null,
+        "science_sha256": "f6e1d6275ba8fae4f96e70405af5e0dd8eb4aee28ed2b8b0bbf5ead76fb0072d",
+        "coordinate_frame": "science_full_frame",
+        "polarity": "one_means_trail"
+      },
       "expected_instrument": "ACS",
       "expected_detector": "WFC",
       "quality_reference": {"inverse_variance": "ERR", "quality_mask": "DQ"},

@@ -1,4 +1,5 @@
 import argparse
+import hashlib
 import json
 from pathlib import Path
 from types import SimpleNamespace
@@ -328,19 +329,33 @@ def _run_manifest_suite(manifest, with_baselines=False, selected_cases=None):
             suite_results[case["case_id"]] = result
             continue
 
+        science_sha256 = None
+        if case["label_recipe"] == "manual_streak_mask":
+            science_sha256, provenance_error = _validate_science_pin(case, case_path)
+            if science_sha256 is not None:
+                result["science_sha256"] = science_sha256
+            if provenance_error:
+                result["status"] = "invalid_science_provenance"
+                result["validation_error"] = provenance_error
+                failures.append(f"{case['case_id']}: {provenance_error}")
+                suite_results[case["case_id"]] = result
+                continue
+
         data, hdr = _load_case_image(case_path)
         if data is None:
             result["status"] = "load_failed"
             failures.append(f"{case['case_id']}: science image could not be loaded")
             suite_results[case["case_id"]] = result
             continue
+        science_shape = data.shape
         data, crop = _select_case_cutout(case, data)
 
         truth_mask = None
+        label_evidence = None
         if case["label_recipe"] == "manual_streak_mask":
-            truth_mask, label_error = _load_case_label(case, crop)
+            truth_mask, label_evidence, label_status, label_error = _load_case_label(case, science_shape, crop)
             if label_error:
-                result["status"] = "missing_labels"
+                result["status"] = label_status
                 result["validation_error"] = label_error
                 failures.append(f"{case['case_id']}: {label_error}")
                 suite_results[case["case_id"]] = result
@@ -362,6 +377,8 @@ def _run_manifest_suite(manifest, with_baselines=False, selected_cases=None):
         result["instrument"] = hdr.get("INSTRUME") or hdr.get("DETECTOR")
         result["extname"] = hdr.get("EXTNAME")
         result["exptime"] = hdr.get("EXPTIME")
+        if science_sha256 is not None:
+            result["label_artifact"] = label_evidence
         metrics = _evaluate_real_case(
             case,
             data,
@@ -479,24 +496,105 @@ def _crop_reference(array, crop):
     return array[y0:y1, x0:x1]
 
 
-def _load_case_label(case, crop):
-    """Load a required manual label, preserving the science cutout geometry."""
-    label_path_value = case.get("label_path")
-    if not label_path_value:
-        return None, "manual label recipe has no label_path"
+def _sha256_file(path):
+    digest = hashlib.sha256()
+    with open(path, "rb") as handle:
+        for chunk in iter(lambda: handle.read(1024 * 1024), b""):
+            digest.update(chunk)
+    return digest.hexdigest()
+
+
+def _label_artifact(case):
+    artifact = case.get("label_artifact")
+    if not isinstance(artifact, dict):
+        return None, "manual label recipe requires a label_artifact mapping"
+    required = {"path", "sha256", "science_sha256", "coordinate_frame", "polarity"}
+    missing = sorted(required - artifact.keys())
+    if missing:
+        return None, f"label_artifact is missing required fields: {', '.join(missing)}"
+    if artifact["coordinate_frame"] != "science_full_frame":
+        return None, "label_artifact coordinate_frame must be science_full_frame"
+    if artifact["polarity"] != "one_means_trail":
+        return None, "label_artifact polarity must be one_means_trail"
+    return artifact, None
+
+
+def _valid_sha256(value):
+    return isinstance(value, str) and len(value) == 64 and all(char in "0123456789abcdef" for char in value)
+
+
+def _validate_science_pin(case, case_path):
+    """Require an exact source-exposure pin before accepting a manual label."""
+    artifact, error = _label_artifact(case)
+    if error:
+        return None, error
+    expected = artifact["science_sha256"]
+    if not _valid_sha256(expected):
+        return None, "label_artifact science_sha256 is not a lowercase SHA-256 digest"
+    actual = _sha256_file(case_path)
+    if actual != expected:
+        return actual, f"science SHA-256 mismatch: expected {expected}, got {actual}"
+    return actual, None
+
+
+def _load_case_label(case, science_shape, crop):
+    """Load a provenance-pinned, full-science-frame binary manual label."""
+    artifact, error = _label_artifact(case)
+    if error:
+        return None, None, "invalid_label_provenance", error
+    label_path_value = artifact["path"]
+    if not isinstance(label_path_value, str) or not label_path_value:
+        return None, None, "invalid_label_provenance", "label_artifact path must be a non-empty string"
     label_path = ROOT / label_path_value
     if not label_path.exists():
-        return None, f"required label is unavailable at {label_path_value}"
+        return None, None, "missing_labels", f"required label is unavailable at {label_path_value}"
+    expected_hash = artifact["sha256"]
+    if not _valid_sha256(expected_hash):
+        return (
+            None,
+            None,
+            "invalid_label_provenance",
+            "label_artifact sha256 is not pinned to a lowercase SHA-256 digest",
+        )
+    actual_hash = _sha256_file(label_path)
+    if actual_hash != expected_hash:
+        return (
+            None,
+            None,
+            "invalid_label_provenance",
+            f"label SHA-256 mismatch: expected {expected_hash}, got {actual_hash}",
+        )
     label, _ = _load_case_image(label_path)
     if label is None:
-        return None, f"could not load required label at {label_path_value}"
+        return None, None, "invalid_labels", f"could not load required label at {label_path_value}"
+    if label.shape != tuple(science_shape):
+        return (
+            None,
+            None,
+            "invalid_labels",
+            f"full-frame label shape {label.shape} does not match science shape {tuple(science_shape)}",
+        )
+    if not np.all(np.isfinite(label)) or not np.all((label == 0) | (label == 1)):
+        return None, None, "invalid_labels", "manual label must be a finite binary 0/1 mask"
     try:
-        label = _crop_reference(label, crop) != 0
+        label = _crop_reference(label, crop).astype(bool)
     except ValueError as exc:
-        return None, str(exc)
+        return None, None, "invalid_labels", str(exc)
     if not np.any(label):
-        return None, f"required manual label at {label_path_value} contains no flagged pixels"
-    return label, None
+        return (
+            None,
+            None,
+            "invalid_labels",
+            f"required manual label at {label_path_value} contains no flagged pixels in the selected cutout",
+        )
+    evidence = {
+        "path": label_path_value,
+        "sha256": actual_hash,
+        "science_sha256": artifact["science_sha256"],
+        "coordinate_frame": artifact["coordinate_frame"],
+        "polarity": artifact["polarity"],
+    }
+    return label, evidence, None, None
 
 
 def _load_named_plane(case_path, extname, extver, crop):
