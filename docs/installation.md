@@ -17,7 +17,7 @@ WeightMask requires Python 3.10 or higher and the following dependencies:
 ### Method 1: Install from Source
 
 ```bash
-git clone https://github.com/sfabbro/weightmask.git
+git clone https://github.com/astroai/weightmask.git
 cd weightmask
 pip install -e .
 ```
@@ -25,7 +25,7 @@ pip install -e .
 ### Method 2: Install with Pixi (recommended)
 
 ```bash
-git clone https://github.com/sfabbro/weightmask.git
+git clone https://github.com/astroai/weightmask.git
 cd weightmask
 pixi install
 ```
@@ -102,4 +102,4 @@ hdu.writeto('test.fits', overwrite=True)
 
 ### Getting Help
 
-If you encounter any issues during installation, please check the [GitHub issues](https://github.com/sfabbro/weightmask/issues) or open a new issue if your problem hasn't been reported.
+If you encounter any issues during installation, please check the [GitHub issues](https://github.com/astroai/weightmask/issues) or open a new issue if your problem hasn't been reported.

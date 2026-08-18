@@ -7,7 +7,7 @@ WeightMask is a Python toolkit for generating weight maps, confidence maps, and 
 To install WeightMask, clone the repository and install it in development mode:
 
 ```bash
-git clone https://github.com/sfabbro/weightmask.git
+git clone https://github.com/astroai/weightmask.git
 cd weightmask
 pip install -e .
 ```
