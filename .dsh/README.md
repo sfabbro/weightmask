@@ -12,16 +12,19 @@ root (top project priority).
 Web UI (needs localhost):
 
 ```bash
-npx @deepseek-ai/dsh web --patch .dsh/cordis.patch.yml
+npx -y @deepseek-ai/dsh -- web --patch .dsh/cordis.patch.yml
 ```
 
 Headless one-shot:
 
 ```bash
 export DEEPSEEK_API_KEY=sk-...
-npx @deepseek-ai/dsh --profile headless --patch .dsh/cordis.patch.yml \
+npx -y @deepseek-ai/dsh -- --profile headless --patch .dsh/cordis.patch.yml \
   "Run the synthetic benchmark suite vs baselines and check defect-recovery statistics"
 ```
+
+> The `--` after the package name passes dsh flags through npm's argument
+> parser (without it, npm ≥ 10 swallows `--profile`/`--patch`).
 
 Environment knobs:
 
