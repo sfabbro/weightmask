@@ -17,7 +17,7 @@ from . import MASK_BITS, MASK_DTYPE, __version__  # Import from __init__.py
 from .background import estimate_background
 
 # Import from other modules within the package using relative imports
-from .bad import compute_flat_bad_mask, detect_bad_pixels
+from .bad import _get_global_median, compute_flat_bad_mask, detect_bad_pixels
 from .contract import (
     CONFIDENCE_SEMANTICS,
     INVERSE_VARIANCE_SEMANTICS,
@@ -48,8 +48,9 @@ def flat_bad_mask_cache_path(flat_path: str) -> str:
     return flat_path + ".mask.fits"
 
 
-def _flat_cfg_hash(flat_cfg: dict) -> str:
-    return hashlib.md5(repr(sorted(flat_cfg.items())).encode("utf-8")).hexdigest()[:8]
+def _flat_cfg_hash(flat_cfg: dict, tile_size: int = 1024) -> str:
+    material = repr(sorted(flat_cfg.items())) + f"|tile:{int(tile_size)}"
+    return hashlib.md5(material.encode("utf-8")).hexdigest()[:8]
 
 
 def _flat_image_indices(hdul) -> list[int]:
@@ -67,7 +68,7 @@ def _write_flat_bad_mask_cache(cache_path: str, flat_path: str, flat_cfg: dict, 
 
     os.makedirs(os.path.dirname(cache_path) or ".", exist_ok=True)
     tmp_path = f"{cache_path}.tmp.{os.getpid()}"
-    primary_header = {_CFG_HASH_KEY: _flat_cfg_hash(flat_cfg)}
+    primary_header = {_CFG_HASH_KEY: _flat_cfg_hash(flat_cfg, tile_size)}
     idxs = sorted(masks)
     if idxs and idxs[0] == 0:
         # Single-image primary (not the MegaCam layout, but be safe).
@@ -81,7 +82,7 @@ def _write_flat_bad_mask_cache(cache_path: str, flat_path: str, flat_cfg: dict, 
     os.replace(tmp_path, cache_path)
 
 
-def load_flat_bad_mask(flat_path: str, hdu_index: int, config: dict) -> Optional[np.ndarray]:
+def load_flat_bad_mask(flat_path: str, hdu_index: int, config: dict, tile_size: int = 1024) -> Optional[np.ndarray]:
     """Load one HDU's bad mask from the ``<flat>.mask.fits`` cache, or None if missing/stale."""
     cache_path = flat_bad_mask_cache_path(flat_path)
     if not os.path.exists(cache_path):
@@ -90,7 +91,7 @@ def load_flat_bad_mask(flat_path: str, hdu_index: int, config: dict) -> Optional
         with fitsio.FITS(cache_path, "r") as f:
             if hdu_index >= len(f):
                 return None
-            if f[0].read_header().get(_CFG_HASH_KEY) != _flat_cfg_hash(config.get("flat_masking", {})):
+            if f[0].read_header().get(_CFG_HASH_KEY) != _flat_cfg_hash(config.get("flat_masking", {}), tile_size):
                 return None
             info = f[hdu_index].get_info()
             if info.get("hdutype") != 0 or info.get("ndims") != 2:
@@ -103,7 +104,7 @@ def load_flat_bad_mask(flat_path: str, hdu_index: int, config: dict) -> Optional
 def ensure_flat_bad_mask_cache(flat_path: str, config: dict, tile_size: int = 1024) -> str:
     """Compute (or reuse) a flat's full bad-pixel mask cache and return its path."""
     cache_path = flat_bad_mask_cache_path(flat_path)
-    expected_hash = _flat_cfg_hash(config.get("flat_masking", {}))
+    expected_hash = _flat_cfg_hash(config.get("flat_masking", {}), tile_size)
     try:
         with fitsio.FITS(cache_path, "r") as f:
             if f[0].read_header().get(_CFG_HASH_KEY) == expected_hash:
@@ -122,19 +123,19 @@ def get_or_compute_flat_bad_mask(
 ) -> np.ndarray:
     """Return the bad-pixel/column mask for one flat HDU, cached in ``<flat>.mask.fits``.
 
-    The mask depends only on the flat (and ``flat_masking`` config), so it is
+    The mask depends only on the flat (plus ``flat_masking`` config and tile size), so it is
     computed once per flat and reused across every exposure that shares that
     flat. Computing it from scratch dominates weightmask runtime (a 15x15
     median filter per tile), so this cache is the single biggest speedup. The
     cache is written atomically (temp file + rename) so concurrent workers never
     observe a half-written file.
     """
-    mask = load_flat_bad_mask(flat_path, hdu_index, config)
+    mask = load_flat_bad_mask(flat_path, hdu_index, config, tile_size)
     if mask is not None and mask.shape == flat_data.shape:
         return mask
 
     ensure_flat_bad_mask_cache(flat_path, config, tile_size)
-    mask = load_flat_bad_mask(flat_path, hdu_index, config)
+    mask = load_flat_bad_mask(flat_path, hdu_index, config, tile_size)
     if mask is not None and mask.shape == flat_data.shape:
         return mask
 
@@ -168,7 +169,7 @@ def validate_config(config: dict) -> bool:
         "confidence_params",
         "output_params",
     ]
-    allowed_sections = set(required_sections)
+    allowed_sections = set(required_sections) | {"dark_masking"}
     for section in required_sections:
         if section not in config:
             print(f"WARNING: Required configuration section '{section}' missing.")
@@ -188,6 +189,7 @@ def validate_config(config: dict) -> bool:
         "variance",
         "confidence_params",
         "output_params",
+        "dark_masking",
     ]
     for section in dict_sections:
         if section in config and not isinstance(config[section], dict):
@@ -285,18 +287,25 @@ def process_image(
     streak_mask = np.zeros(sci_shape, dtype=bool)
 
     # --- 1. Tile-based Masking (Bad Pixels, Saturation) ---
-    print("  (1/7) Processing tiles for Bad Pixel mask...")
+    print("  (1/7) Processing Bad Pixel mask...")
     if bad_mask is None:
         bad_mask = np.zeros(sci_shape, dtype=bool)
-        for y in range(0, sci_shape[0], tile_size):
-            for x in range(0, sci_shape[1], tile_size):
-                tile_slice = (slice(y, y + tile_size), slice(x, x + tile_size))
-                sci_data_tile = sci_data_full[tile_slice]
-                flat_data_tile = flat_data_full[tile_slice]
-                if not np.isfinite(sci_data_tile).any():
-                    continue
-                flat_mask_bool_tile = detect_bad_pixels(flat_data_tile, config.get("flat_masking", {}), using_unit_flat)
-                bad_mask[tile_slice] |= flat_mask_bool_tile
+        if flat_data_full is not None and not using_unit_flat:
+            # Compute flat bad mask ONCE for the full HDU (replaces per-tile + cache)
+            print("    Computing flat bad-pixel mask (full HDU)...")
+            flat_bad_mask = compute_flat_bad_mask(flat_data_full, config.get("flat_masking", {}), tile_size)
+            bad_mask |= flat_bad_mask
+        else:
+            # No flat provided - compute per-tile (rare, unit flat)
+            for y in range(0, sci_shape[0], tile_size):
+                for x in range(0, sci_shape[1], tile_size):
+                    tile_slice = (slice(y, y + tile_size), slice(x, x + tile_size))
+                    sci_data_tile = sci_data_full[tile_slice]
+                    flat_data_tile = flat_data_full[tile_slice]
+                    if not np.isfinite(sci_data_tile).any():
+                        continue
+                    flat_mask_bool_tile = detect_bad_pixels(flat_data_tile, config.get("flat_masking", {}), using_unit_flat)
+                    bad_mask[tile_slice] |= flat_mask_bool_tile
     if badpix_mask is not None:
         bad_mask = bad_mask | badpix_mask
     final_mask_int[bad_mask] |= MASK_BITS["BAD"]
@@ -366,7 +375,9 @@ def process_image(
     object_cfg = config.get("sep_objects", {})
     iterations = sep_bg_cfg.get("iterations", 2)
     current_obj_mask = np.zeros(sci_shape, dtype=bool)
-
+    last_bg_mask = None
+    last_bkg_map = None
+    last_bkg_rms_map = None
     for i in range(iterations):
         print(f"    Iteration {i + 1}/{iterations}...")
         total_mask_for_bg = interim_mask_bool | current_obj_mask
@@ -377,6 +388,8 @@ def process_image(
         data_sub = sci_data_full - bkg_map
         new_obj_add_mask = detect_objects(data_sub, bkg_rms_map, total_mask_for_bg, object_cfg)
 
+        last_bg_mask = total_mask_for_bg
+        last_bkg_map, last_bkg_rms_map = bkg_map, bkg_rms_map
         if np.count_nonzero(new_obj_add_mask) == 0 and i > 0:
             print("      No new objects found, ending iteration.")
             break
@@ -390,7 +403,11 @@ def process_image(
     print("  (4/7) Finalizing sky maps and object mask...")
     final_obj_mask = current_obj_mask
     final_full_mask = interim_mask_bool | final_obj_mask
-    sky_map, final_bkg_rms_map = estimate_background(sci_data_full, final_full_mask, sep_bg_cfg)
+    if last_bg_mask is not None and np.array_equal(final_full_mask, last_bg_mask):
+        print("  Reusing iteration background (mask unchanged)...")
+        sky_map, final_bkg_rms_map = last_bkg_map, last_bkg_rms_map
+    else:
+        sky_map, final_bkg_rms_map = estimate_background(sci_data_full, final_full_mask, sep_bg_cfg)
     if sky_map is None:
         return None, None, None, None, None, None
 
@@ -454,6 +471,7 @@ def process_hdu(
     tile_size: int = 1024,
     flat_path: Optional[str] = None,
     hdu_badpix=None,
+    precomputed_bad_mask: Optional[np.ndarray] = None,
 ) -> Tuple[
     Optional[np.ndarray],
     Optional[np.ndarray],
@@ -482,7 +500,11 @@ def process_hdu(
             return None, None, None, None, None, None
 
     bad_mask = None
-    if flat_data_full is not None and flat_path:
+    if precomputed_bad_mask is not None:
+        # Use pre-computed flat bad mask (computed once per flat HDU in process_all_hdus)
+        bad_mask = precomputed_bad_mask
+    elif flat_data_full is not None and flat_path:
+        # Fallback to cache-based computation (for backward compatibility)
         bad_mask = get_or_compute_flat_bad_mask(flat_path, hdu_index, flat_data_full, config, tile_size)
 
     badpix_mask = None
@@ -492,6 +514,10 @@ def process_hdu(
             if ext.shape == sci_data_full.shape:
                 # External mask uses the Elixir keep-map convention: 0 = bad, 1 = good.
                 badpix_mask = ext == 0
+                frac = float(np.mean(badpix_mask))
+                thresh = float(config.get("flat_masking", {}).get("dead_ccd_badpix_fraction", 0.9))
+                if frac > thresh:
+                    print(f"  NOTE: external mask flags {frac:.1%} of HDU {hdu_index} bad (dead CCD?) -- zero weight.")
             else:
                 print(f"  Skipping badpix mask: shape mismatch {ext.shape} != {sci_data_full.shape}")
         except OSError as e:
@@ -526,6 +552,13 @@ def parse_arguments() -> argparse.Namespace:
         type=str,
         default=None,
         help="Path to input flat field FITS file (optional).",
+    )
+    parser.add_argument(
+        "--dark_image",
+        type=str,
+        default=None,
+        help="Path to input dark frame FITS file (optional). Hot pixels are "
+        "detected with the dark_masking section and OR'd into the BAD bit.",
     )
     parser.add_argument(
         "--badpix_mask",
@@ -589,6 +622,13 @@ def validate_input_files(args: argparse.Namespace) -> bool:
             print(f"ERROR: Flat field file validation failed: {args.flat_image}")
             return False
 
+    if args.dark_image:
+        if not os.path.exists(args.dark_image):
+            print(f"ERROR: Dark frame file not found: {args.dark_image}")
+            return False
+        if not validate_fits_file(args.dark_image):
+            print(f"ERROR: Dark frame file validation failed: {args.dark_image}")
+            return False
     if args.badpix_mask:
         if not os.path.exists(args.badpix_mask):
             print(f"ERROR: Bad pixel mask file not found: {args.badpix_mask}")
@@ -950,6 +990,69 @@ def _store_output_maps(
         )
 
 
+def _rescale_confidence_to_global(paths, writers, conf_samples, conf_p99, config):
+    """Rewrite an exposure-global confidence normalization into the map file.
+
+    Per-HDU confidence was normalized by each HDU's own p99 at stream time;
+    rescale stored values by p99_hdu/global_p99 so confidence is comparable
+    across CCDs. Only applies when the map product holds confidence
+    (output_map_format=confidence); weight maps keep physical units.
+    """
+    if config.get("output_params", {}).get("output_map_format", "weight").lower() != "confidence":
+        print("  Confidence global norm skipped (map product holds weight, not confidence).")
+        return
+    map_path = (paths or {}).get("out_map_path")
+    writer = (writers or {}).get("map")
+    if not map_path or writer is None:
+        return
+    pooled = np.concatenate([np.ravel(s) for s in conf_samples.values()])
+    global_p99 = float(np.percentile(pooled, 99.0))
+    if not np.isfinite(global_p99) or global_p99 <= 0:
+        return
+    factors = {i: p99 / global_p99 for i, p99 in conf_p99.items() if p99 > 0}
+    try:
+        with fitsio.FITS(map_path, "rw") as f:
+            for hdu_index, factor in factors.items():
+                pos = writer.positions.get(hdu_index)
+                if pos is None or pos >= len(f):
+                    continue
+                data = f[pos].read()
+                f[pos].write(np.clip(data * factor, 0.0, 1.0).astype(np.float32))
+    except OSError as e:
+        print(f"  WARNING: confidence global rescale failed: {e}")
+        return
+    print(f"  Confidence renormalized to exposure-global p99 {global_p99:.3g}.")
+
+
+def _veto_dead_ccd_hdus(flat_bad_masks, flat_meds, flat_cfg):
+    """Zero-weight HDUs whose flat level is an outlier across the exposure.
+
+    A whole CCD blanked by Elixir (or failed hardware) shows up as a flat
+    median tens of sigma from its siblings. Such an HDU's weights would be
+    garbage; mark it fully BAD explicitly instead of letting a partial mask
+    through. No-op for small-HDU runs and when all medians agree. Mutates
+    flat_bad_masks in place.
+    """
+    if not flat_cfg.get("dead_ccd_enable", True):
+        return
+    idxs = [i for i in flat_bad_masks if i in flat_meds]
+    if len(idxs) < int(flat_cfg.get("dead_ccd_min_hdus", 8)):
+        return
+    meds = np.array([float(flat_meds[i]) for i in idxs])
+    if not np.all(np.isfinite(meds)):
+        return
+    exp_med = float(np.median(meds))
+    mad = float(np.median(np.abs(meds - exp_med)) * 1.4826)
+    if not np.isfinite(exp_med) or exp_med <= 0:
+        return
+    sigma = float(flat_cfg.get("dead_ccd_mad_sigma", 5.0))
+    floor = float(flat_cfg.get("dead_ccd_min_rel_dev", 0.10)) * exp_med
+    for i, m in zip(idxs, meds):
+        if abs(m - exp_med) > max(sigma * mad, floor):
+            flat_bad_masks[i] = np.ones_like(flat_bad_masks[i], dtype=bool)
+            print(f"    HDU {i}: flat median {m:.3f} vs exposure {exp_med:.3f} -- flagging whole CCD BAD.")
+
+
 def process_all_hdus(
     hdus_to_process: list,
     hdul_input,
@@ -959,6 +1062,7 @@ def process_all_hdus(
     args: argparse.Namespace,
     flat_path: Optional[str] = None,
     hdul_badpix=None,
+    hdul_dark=None,
 ) -> int:
     """Process every requested HDU, streaming each HDU's outputs to disk.
 
@@ -972,13 +1076,57 @@ def process_all_hdus(
     process_success_count = 0
     writers = _make_output_writers(paths, hdul_input)
 
+    # Pre-compute flat bad masks ONCE per flat file (shared across all HDUs/exposures)
+    flat_bad_masks = {}  # {flat_path: {hdu_index: mask}}
+    if hdul_flat is not None and flat_path:
+        print(f"  Pre-computing flat bad masks for {len(hdus_to_process)} HDUs...")
+        flat_cfg = config.get("flat_masking", {})
+        tile_size = args.tile_size if hasattr(args, 'tile_size') else 1024
+        flat_meds: dict = {}
+        for i in hdus_to_process:
+            if i < len(hdul_flat):
+                try:
+                    flat_data = np.ascontiguousarray(hdul_flat[i].read().astype(np.float32))
+                    print(f"    Pre-computing flat bad mask for HDU {i}...")
+                    flat_meds[i] = _get_global_median(flat_data)
+                    flat_bad_masks[i] = compute_flat_bad_mask(flat_data, flat_cfg, tile_size)
+                except Exception as e:
+                    print(f"    WARNING: Failed to pre-compute flat bad mask for HDU {i}: {e}")
+        _veto_dead_ccd_hdus(flat_bad_masks, flat_meds, flat_cfg)
+        print(f"  Pre-computed {len(flat_bad_masks)} flat bad masks")
+
+    conf_scope = config.get("confidence_params", {}).get("normalize_scope", "per_hdu")
+    conf_samples: dict = {}
+    conf_p99: dict = {}
+
     for i in hdus_to_process:
         try:
             hdu_sci = hdul_input[i]
             hdu_flat_obj = hdul_flat[i] if hdul_flat and i < len(hdul_flat) else None
             hdu_badpix_obj = hdul_badpix[i] if hdul_badpix and i < len(hdul_badpix) else None
 
-            result = process_hdu(hdu_sci, hdu_flat_obj, config, i, flat_path=flat_path, hdu_badpix=hdu_badpix_obj)
+            # Pass pre-computed flat bad mask if available
+            precomputed_bad_mask = flat_bad_masks.get(i) if flat_bad_masks else None
+            # Hot pixels from the dark frame (if provided) join the BAD mask.
+            dark_cfg = config.get("dark_masking")
+            if dark_cfg is not None and hdul_dark is not None and i < len(hdul_dark):
+                try:
+                    dark_data = np.ascontiguousarray(hdul_dark[i].read().astype(np.float32))
+                    dark_hot = detect_bad_pixels(dark_data, dark_cfg, using_unit_flat=False)
+                    sci_shape = hdu_sci.read().shape
+                    if dark_hot.shape != sci_shape:
+                        print(f"    Skipping dark mask for HDU {i}: shape mismatch.")
+                    else:
+                        if precomputed_bad_mask is not None and precomputed_bad_mask.shape != sci_shape:
+                            precomputed_bad_mask = None
+                        if precomputed_bad_mask is None:
+                            precomputed_bad_mask = dark_hot
+                        else:
+                            precomputed_bad_mask = precomputed_bad_mask | dark_hot
+                        print(f"    Dark frame adds {int(np.count_nonzero(dark_hot))} hot pixels to HDU {i}.")
+                except Exception as e:
+                    print(f"    WARNING: dark mask failed for HDU {i}: {e}")
+            result = process_hdu(hdu_sci, hdu_flat_obj, config, i, flat_path=flat_path, hdu_badpix=hdu_badpix_obj, precomputed_bad_mask=precomputed_bad_mask)
             if result[0] is None:
                 print(f"Skipping HDU {i} due to processing errors.")
                 continue
@@ -990,6 +1138,12 @@ def process_all_hdus(
                 sky_map,
                 header_info,
             ) = result
+            if conf_scope == "per_exposure" and weight_map is not None:
+                wpos = weight_map[weight_map > 0]
+                if wpos.size > 0:
+                    step = max(1, wpos.size // 20000)
+                    conf_samples[i] = np.ascontiguousarray(wpos[::step])
+                    conf_p99[i] = float(np.percentile(conf_samples[i], 99.0))
             process_success_count += 1
 
             bad_mask, sat_mask, cr_mask, obj_mask, streak_mask = extract_individual_masks(header_info, mask_data)
@@ -1031,6 +1185,9 @@ def process_all_hdus(
 
             print(f"FATAL ERROR processing HDU {i}: {e}\n{traceback.format_exc()}")
 
+    if conf_scope == "per_exposure" and conf_samples:
+        _rescale_confidence_to_global(paths, writers, conf_samples, conf_p99, config)
+
     return process_success_count
 
 
@@ -1053,6 +1210,8 @@ class _StreamingMapWriter:
         self.hdul_input = hdul_input
         self.primary_header = primary_header
         self._opened = False
+        self.positions: dict = {}
+        self._next_data_pos = 0
 
     def write(self, hdu_index: int, data, header, extname: str) -> None:
         if not self._opened:
@@ -1060,19 +1219,27 @@ class _StreamingMapWriter:
             if single_hdu0:
                 fitsio.write(self.out_path, data, header=header, clobber=True)
                 self._opened = True
+                self.positions[hdu_index] = 0
+                self._next_data_pos = 1
                 return
+
             if hdu_index == 0:
                 primary_data = data
                 primary_header = header
             else:
                 primary_data = None
                 primary_header = self.primary_header
+                self._next_data_pos = 1  # file 0 holds the empty primary
             fitsio.write(self.out_path, primary_data, header=primary_header, clobber=True)
             self._opened = True
             if hdu_index == 0:
+                self.positions[hdu_index] = 0
+                self._next_data_pos = 1
                 return
         with fitsio.FITS(self.out_path, "rw") as f_out:
             f_out.write(data, header=header, extname=extname)
+        self.positions[hdu_index] = self._next_data_pos
+        self._next_data_pos += 1
 
 
 def _make_output_writers(paths: dict, hdul_input) -> dict:
@@ -1119,13 +1286,15 @@ def _flush_hdu_output(writers: dict, hdu_output: dict, hdu_index: int) -> None:
             writers[writer_key].write(hdu_index, entry["data"], entry["header"], entry["name"])
 
 
-def _cleanup_hdul(hdul_input, hdul_flat, hdul_badpix=None):
+def _cleanup_hdul(hdul_input, hdul_flat, hdul_badpix=None, hdul_dark=None):
     if hdul_input:
         hdul_input.close()
     if hdul_flat:
         hdul_flat.close()
     if hdul_badpix:
         hdul_badpix.close()
+    if hdul_dark:
+        hdul_dark.close()
 
 
 def run_pipeline() -> int:
@@ -1160,20 +1329,31 @@ def run_pipeline() -> int:
         return 1
     print(f"Processing {len(hdus_to_process)} Image HDU(s): {hdus_to_process}")
 
+    dark_path, _ = extract_hdu_spec(args.dark_image) if getattr(args, "dark_image", None) else (None, None)
+    hdul_dark = None
+    if dark_path:
+        try:
+            hdul_dark = fitsio.FITS(dark_path, "r")
+        except OSError as e:
+            print(f"ERROR: Could not open dark frame {dark_path}: {e}")
+            _cleanup_hdul(hdul_input, hdul_flat)
+            return 1
+
     hdul_badpix = None
     if badpix_path:
         try:
             hdul_badpix = fitsio.FITS(badpix_path, "r")
         except OSError as e:
             print(f"ERROR: Could not open badpix mask {badpix_path}: {e}")
-            _cleanup_hdul(hdul_input, hdul_flat)
+            _cleanup_hdul(hdul_input, hdul_flat, None, hdul_dark)
             return 1
 
     process_success_count = process_all_hdus(
-        hdus_to_process, hdul_input, hdul_flat, config, paths, args, flat_path=flat_path, hdul_badpix=hdul_badpix
+        hdus_to_process, hdul_input, hdul_flat, config, paths, args, flat_path=flat_path, hdul_badpix=hdul_badpix,
+        hdul_dark=hdul_dark,
     )
 
-    _cleanup_hdul(hdul_input, hdul_flat, hdul_badpix)
+    _cleanup_hdul(hdul_input, hdul_flat, hdul_badpix, hdul_dark)
 
     import warnings
 

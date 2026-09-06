@@ -205,6 +205,18 @@ def _choose_saturation_level(hist_level, plateau_level, effective_full_scale, ad
     return float(effective_full_scale), "default guarded fallback"
 
 
+def _saturation_for_region(sci_data, sci_hdr, config, header_keyword, effective_full_scale, advisory):
+    """Estimate one saturation level for a data region (full frame or amp half)."""
+    hist_params = config.get("histogram_params", {})
+    hist_level = estimate_saturation_robust_clump(
+        sci_data,
+        min_adu=hist_params.get("hist_min_adu"),
+        max_adu=hist_params.get("hist_max_adu"),
+    )
+    plateau_level = _estimate_plateau_tail(sci_data, effective_full_scale, config)
+    return _choose_saturation_level(hist_level, plateau_level, effective_full_scale, advisory, config)
+
+
 def detect_saturated_pixels(sci_data, sci_hdr, config):
     """
     Detect saturated pixels in the science data using the configured method.
@@ -222,7 +234,6 @@ def detect_saturated_pixels(sci_data, sci_hdr, config):
     """
     saturation_level = None
     sat_method_used = "none"
-    hist_params = config.get("histogram_params", {})
 
     # Ensure data is float for calculations
     if not np.issubdtype(sci_data.dtype, np.floating):
@@ -240,24 +251,11 @@ def detect_saturated_pixels(sci_data, sci_hdr, config):
 
     print("Attempting guarded histogram-based saturation detection...")
     effective_full_scale, advisory = _estimate_effective_full_scale(sci_data, sci_hdr, config, header_keyword)
-    hist_level = estimate_saturation_robust_clump(
-        sci_data,
-        min_adu=hist_params.get("hist_min_adu"),
-        max_adu=hist_params.get("hist_max_adu"),
-    )
-    plateau_level = _estimate_plateau_tail(sci_data, effective_full_scale, config)
-
-    saturation_level, sat_method_used = _choose_saturation_level(
-        hist_level,
-        plateau_level,
-        effective_full_scale,
-        advisory,
-        config,
+    saturation_level, sat_method_used = _saturation_for_region(
+        sci_data, sci_hdr, config, header_keyword, effective_full_scale, advisory
     )
     if sat_method_used == "default guarded fallback":
         print(f"  WARNING: Falling back to guarded full-scale saturation level: {saturation_level:.1f} ADU.")
-
-    # Ensure saturation_level is a float before comparison
     saturation_level = float(saturation_level)
 
     # Create the boolean mask for core saturated pixels
@@ -376,8 +374,15 @@ def grow_bleed_trails(sci_data, sat_mask, sky_map, bkg_rms_map, config):
             # Use a conservative threshold (e.g. 5 sigma) to prevent over-growing into noise
             stop_thresh = col_bkg + bleed_thresh_sigma * col_rms
 
-            _grow_bleed_up(sci_data, stop_thresh, x, y_min, max_grow, new_mask)
-            _grow_bleed_down(sci_data, stop_thresh, h, x, y_max, max_grow, new_mask)
+            core_rows = y_max - y_min + 1
+            if config.get("bleed_adaptive_cap", False):
+                cap = core_rows * float(config.get("bleed_cap_core_factor", 3.0))
+                cap = min(max(cap, float(config.get("bleed_cap_min", 20))), float(config.get("bleed_cap_max", 200)))
+                seg_grow = int(min(cap, max_grow))
+            else:
+                seg_grow = max_grow
+            _grow_bleed_up(sci_data, stop_thresh, x, y_min, seg_grow, new_mask)
+            _grow_bleed_down(sci_data, stop_thresh, h, x, y_max, seg_grow, new_mask)
 
     # Horizontal dilation for safety (optional)
     h_dilation = config.get("bleed_grow_horizontal", 2)

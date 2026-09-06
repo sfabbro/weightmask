@@ -90,9 +90,10 @@ sep_background:
 #### Astroscrappy Cosmic Ray Detection
 ```yaml
 cosmic_ray:
-  sigclip: 4.5
-  objlim: 5.0
-  dynamic_sigclip: true # Auto-adjust sigclip based on background noise
+  sigclip: 8.5
+  objlim: 15.0
+  niter: 2
+  dynamic_sigclip: false # Pinned conservative; auto-adjust would lower sigclip
   dynamic_objlim: true
 ```
 

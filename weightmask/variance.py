@@ -129,9 +129,15 @@ def _calculate_empirical_noise_params(sci_data, obj_mask, patch_size, robust_sig
         return None, None
 
 
-def _calculate_inverse_variance_theoretical(sky_map, flat_map, gain, read_noise_e, epsilon):
+def _calculate_inverse_variance_theoretical(sky_map, flat_map, gain, read_noise_e, epsilon, flat_rel_noise=0.0):
     """
     Internal: Calculate inverse variance based on theoretical noise model.
+
+    ``flat_rel_noise`` is the master flat's fractional uncertainty (Elixir
+    stack ballpark ~0.003). It enters as a second-order quotient term
+    ``(sky_e * rel)^2`` scaled up where the flat response is low (vignetted
+    pixels stacked fewer counts), so edge weights stop pretending the flat
+    is exact. Zero disables the term (backward compatible).
     """
     valid_flat_mask = flat_map > epsilon
     safe_flat = np.where(valid_flat_mask, flat_map, epsilon)
@@ -140,7 +146,12 @@ def _calculate_inverse_variance_theoretical(sky_map, flat_map, gain, read_noise_
     # Variance in electrons before flat fielding = (Sky Signal in electrons) + (Read Noise in electrons)^2
     # After flat fielding (division by flat), variance in electrons scales by 1 / flat^2.
     # Inverse variance in ADU^2 = (gain^2 * safe_flat^2) / (safe_sky * gain + read_noise_e**2)
-    denom = safe_sky * gain + read_noise_e**2
+    sky_e = safe_sky * gain
+    denom = sky_e + read_noise_e**2
+    if flat_rel_noise > 0:
+        med_flat = float(np.median(safe_flat[valid_flat_mask])) if np.any(valid_flat_mask) else 1.0
+        rel_map = flat_rel_noise / np.sqrt(np.clip(safe_flat / max(med_flat, epsilon), 0.1, None))
+        denom = denom + (sky_e * rel_map) ** 2
     inv_variance = np.zeros_like(denom)
 
     valid_variance = denom > epsilon
@@ -247,18 +258,19 @@ def _handle_empirical_fit(variance_cfg, sky_map, flat_map, sci_data, obj_mask, g
 
     if emp_gain is None or emp_rn_e is None:
         print("  WARNING: Empirical fit failed. Falling back to theoretical method with default/header values.")
-        inv_var = _calculate_inverse_variance_theoretical(sky_map, flat_map, gain, read_noise_e, epsilon)
+        inv_var = _calculate_inverse_variance_theoretical(sky_map, flat_map, gain, read_noise_e, epsilon, variance_cfg.get("flat_rel_noise", 0.0))
     else:
-        inv_var = _calculate_inverse_variance_theoretical(sky_map, flat_map, emp_gain, emp_rn_e, epsilon)
+        inv_var = _calculate_inverse_variance_theoretical(sky_map, flat_map, emp_gain, emp_rn_e, epsilon, variance_cfg.get("flat_rel_noise", 0.0))
         gain = emp_gain  # For unbiasing below
     return inv_var, gain
 
 
-def _handle_theoretical(sky_map, flat_map, gain, read_noise_e, epsilon):
+def _handle_theoretical(variance_cfg, sky_map, flat_map, gain, read_noise_e, epsilon):
     if flat_map is None or sky_map is None:
         warnings.warn("Theoretical method requires flat and sky maps.", RuntimeWarning)
         return None
-    return _calculate_inverse_variance_theoretical(sky_map, flat_map, gain, read_noise_e, epsilon)
+    rel = variance_cfg.get("flat_rel_noise", 0.0)
+    return _calculate_inverse_variance_theoretical(sky_map, flat_map, gain, read_noise_e, epsilon, rel)
 
 
 def _apply_variance_post_processing(inv_var, variance_cfg, sci_data, sky_map, obj_mask, gain, epsilon):
@@ -312,7 +324,7 @@ def calculate_inverse_variance(variance_cfg, sky_map, flat_map, bkg_rms_map, sci
             epsilon,
         )
     elif method == "theoretical":
-        inv_var = _handle_theoretical(sky_map, flat_map, gain, read_noise_e, epsilon)
+        inv_var = _handle_theoretical(variance_cfg, sky_map, flat_map, gain, read_noise_e, epsilon)
     elif method == "rms_map":
         inv_var = _calculate_inverse_variance_rms(bkg_rms_map, epsilon)
     else:

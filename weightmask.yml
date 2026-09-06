@@ -7,6 +7,24 @@ flat_masking:
   col_enable: true
   col_deriv_sigma: 10.0
   col_dead_thresh: 0.1
+  # Whole-CCD veto: an HDU whose flat median is an outlier vs its siblings
+  # (dead CCD / Elixir-blanked) is flagged fully BAD instead of partially.
+  dead_ccd_enable: true
+  dead_ccd_mad_sigma: 5.0
+  dead_ccd_min_rel_dev: 0.10
+  dead_ccd_min_hdus: 8
+  dead_ccd_badpix_fraction: 0.9
+
+dark_masking:
+  # Optional hot-pixel leg: used only with --dark_image; OR'd into BAD.
+  # Thresholds mirror flat_masking; darks are background-dominated so the
+  # high-ratio tail does the work.
+  local_filter_size: 15
+  local_low_thresh: 0.5
+  local_high_thresh: 2.0
+  col_enable: true
+  col_deriv_sigma: 10.0
+  col_dead_thresh: 0.1
 
 saturation:
   method: "histogram"
@@ -19,6 +37,10 @@ saturation:
     max_upper_factor: 1.05
     plateau_percentile: 99.8
     min_tail_pixels: 8
+  bleed_adaptive_cap: false
+  bleed_cap_core_factor: 3.0
+  bleed_cap_min: 20
+  bleed_cap_max: 200
   mask_bleed_trails: true
   bleed_thresh_sigma: 5.0
   bleed_grow_vertical: 50
@@ -39,6 +61,7 @@ sep_background:
 cosmic_ray:
   sigclip: 8.5
   objlim: 15.0
+  niter: 2
   dynamic_sigclip: false
   dynamic_objlim: true
   psf_aware: true
@@ -47,6 +70,15 @@ cosmic_ray:
   dilation_radius: 0
   max_component_area: 12
   min_component_contrast_sigma: 4.0
+  faint_cr:
+    enable: true
+    sigclip: 5.0
+    objlim_boost: 1.5
+    niter: 1
+    min_component_area: 3
+    max_component_area: 12
+    min_elongation: 2.0
+    min_contrast_sigma: 4.0
 
 sep_objects:
   extract_thresh: 3.0
@@ -77,6 +109,9 @@ streak_masking:
   retry_if_area_fraction_exceeds: 0.03
   retry_if_support_width_exceeds: 10.0
   satdet_params:
+    # Hough prescreen binning (2 = 4x fewer pixels; strip confirm stays full-res).
+    # Measured: identical recall/FP vs 1 on injection harness, ~11% faster end-to-end.
+    bin_factor: 2
     rescale_percentiles: [4.5, 93.0]
     gaussian_sigma: 2.0
     gaussian_sigmas: [1.5, 2.0, 3.0]
@@ -89,7 +124,7 @@ streak_masking:
     hough_rng_seed: 0
     cluster_angle_tol_deg: 2.5
     cluster_rho_tol_px: 30.0
-    min_cluster_segments: 2
+    max_transverse_rms: 8.0
     edge_buffer: 16
     min_edge_touches: 0
     min_interior_span: 70.0
@@ -99,8 +134,14 @@ streak_masking:
     max_candidates: 8
     min_segment_accept: 2
     confidence_threshold: 0.22
+  houghpeak_params:
+    enable: true
+    bin: 4
+    thresh_sig: 2.5
+    min_votes: 100
+    max_candidates: 6
   mrt_rescue_params:
-    theta_step_deg: 1.0
+    theta_step_deg: 2.0
     peak_threshold_sig: 4.2
     max_candidates: 4
     confidence_threshold: 0.25
@@ -115,7 +156,7 @@ streak_masking:
     min_row_hits: 4
     min_row_hit_fraction: 0.20
     min_col_hit_fraction: 0.10
-    max_support_width: 20
+    max_support_width: 12
   enable_sparse_ransac: true
   sparse_on_primary_weak_only: true
   sparse_ransac_params:
@@ -125,7 +166,7 @@ streak_masking:
     min_length: 100
     min_line_density: 0.6
     dilation_radius: 1
-    max_trials: 1000
+    max_trials: 300
     max_trails: 3
   frangi_legacy_params:
     block_size: 1024
@@ -147,12 +188,18 @@ variance:
   default_gain: 1.5
   default_rdnoise: 5.0
   epsilon: 1.0e-9
+  # Master-flat fractional uncertainty (Elixir stack ballpark). Adds a
+  # (sky_e*rel)^2 term, vignette-scaled, so edge weights stay honest.
+  flat_rel_noise: 0.003
   rescale_variance: true
   unbias_variance: false
 
 confidence_params:
   dtype: "float32"
   normalize_percentile: 99.0
+  # per_hdu (legacy) or per_exposure (comparable across CCDs; rescale pass
+  # at end of exposure; skipped unless output_map_format=confidence).
+  normalize_scope: per_exposure
   scale_to_100: false
 
 output_params:

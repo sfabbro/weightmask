@@ -140,6 +140,44 @@ def _post_filter_components(crmask_bool, sci_data, bkg_rms_map, config):
     return filtered
 
 
+def _filter_faint_components(crmask_bool, sci_data, bkg_rms_map, faint_cfg):
+    """Keep only elongated, high-contrast components from a low-threshold CR pass.
+
+    Single/double-pixel hits at low sigclip are indistinguishable from noise
+    and star shot noise, so they are dropped; multi-pixel worms (elongated,
+    bright vs local rms) are almost never stars. Returns the gated subset.
+    """
+    from skimage.measure import label, regionprops
+
+    labeled = label(np.ascontiguousarray(crmask_bool.astype(np.uint8)), connectivity=2)
+    if labeled.max() == 0:
+        return np.zeros_like(crmask_bool, dtype=bool)
+
+    min_area = int(faint_cfg.get("min_component_area", 3))
+    max_area = int(faint_cfg.get("max_component_area", 12))
+    min_elongation = float(faint_cfg.get("min_elongation", 2.0))
+    min_contrast_sigma = float(faint_cfg.get("min_contrast_sigma", 4.0))
+    if bkg_rms_map is not None:
+        valid_rms = bkg_rms_map[np.isfinite(bkg_rms_map) & (bkg_rms_map > 0)]
+        med_rms = float(np.median(valid_rms)) if valid_rms.size > 0 else 1.0
+        safe_rms = np.where((bkg_rms_map > 0) & np.isfinite(bkg_rms_map), bkg_rms_map, med_rms)
+    else:
+        safe_rms = np.ones_like(sci_data, dtype=np.float32)
+    filtered = np.zeros_like(crmask_bool, dtype=bool)
+    for region in regionprops(labeled, intensity_image=sci_data):
+        if not (min_area <= region.area <= max_area):
+            continue
+        elongation = region.major_axis_length / max(region.minor_axis_length, 1e-9)
+        if elongation < min_elongation:
+            continue
+        coords = region.coords
+        snr = np.nanmax(sci_data[coords[:, 0], coords[:, 1]] / np.maximum(safe_rms[coords[:, 0], coords[:, 1]], 1e-6))
+        if not np.isfinite(snr) or snr < min_contrast_sigma:
+            continue
+        filtered[coords[:, 0], coords[:, 1]] = True
+    return filtered
+
+
 def detect_cosmic_rays(
     sci_data,
     existing_mask,
@@ -199,6 +237,30 @@ def detect_cosmic_rays(
 
         crmask_bool = _apply_morphological_dilation(crmask_bool, config)
 
+        faint_cfg = config.get("faint_cr", {})
+        if faint_cfg.get("enable", False):
+            print("    Running faint-CR pass (low sigclip + morphology gate)...")
+            faint_raw, _ = detect_cosmics(
+                sci_data,
+                inmask=(existing_mask | crmask_bool),
+                satlevel=saturation_level,
+                gain=gain,
+                readnoise=read_noise,
+                sigclip=float(faint_cfg.get("sigclip", 5.0)),
+                objlim=objlim * float(faint_cfg.get("objlim_boost", 1.5)),
+                niter=int(faint_cfg.get("niter", 1)),
+                sepmed=bool(config.get("sepmed", True)),
+                cleantype=config.get("cleantype", "meanmask"),
+                fsmode=config.get("fsmode", "median"),
+                psffwhm=float(config.get("psffwhm", 2.5)),
+                psfsize=int(config.get("psfsize", 7)),
+                verbose=False,
+            )
+            faint_kept = _filter_faint_components(np.ascontiguousarray(faint_raw.astype(bool)), sci_data, bkg_rms_map, faint_cfg)
+            n_faint = int(np.count_nonzero(faint_kept))
+            if n_faint:
+                print(f"    Faint-CR pass kept {n_faint} pixels.")
+            crmask_bool = crmask_bool | faint_kept
         # Only return newly detected pixels (not already in existing_mask)
         cr_add_mask = crmask_bool & (~existing_mask)
 

@@ -3,21 +3,6 @@ import numpy as np
 
 from .contract import ProducerMetadata, build_weight_product
 
-# Import MASK_BITS from the main package level if possible,
-# otherwise define them here. Assuming they might be accessible via __init__.py
-try:
-    from . import MASK_BITS
-except ImportError:
-    # Fallback definition if run standalone or imports fail
-    MASK_BITS = {
-        "BAD": 1 << 0,  # 1
-        "SAT": 1 << 1,  # 2
-        "CR": 1 << 2,  # 4
-        "DETECTED": 1 << 3,  # 8  (NOTE: DETECTED objects usually KEEP their weight)
-        "STREAK": 1 << 4,  # 16
-        "INVALID_VARIANCE": 1 << 5,  # 32
-    }
-
 
 def generate_weight_and_confidence(inv_variance_map, final_mask_int, config):
     """
