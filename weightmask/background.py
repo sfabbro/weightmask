@@ -179,11 +179,15 @@ def _estimate_smooth_surface(sci_data, mask, config):
 def _auto_box_size(sci_data_shape, mask_fraction, config):
     """Choose a background box size from image scale and crowding."""
     min_dim = min(sci_data_shape)
-    base = max(32, min(256, int(round(min_dim / 8.0))))
+    auto = max(32, min(256, int(round(min_dim / 8.0))))
     if mask_fraction > 0.5:
-        base = min(512, base * 2)
-    base = int(config.get("box_size", base))
-    return max(16, base)
+        auto = min(512, auto * 2)
+    try:
+        cfg_box = int(config.get("box_size", auto))
+    except (TypeError, ValueError):
+        cfg_box = auto
+    # Config box is a ceiling: small detectors scale down to 64/32 automatically.
+    return max(16, min(auto, cfg_box))
 
 
 def estimate_background_with_diagnostics(sci_data, mask, config):

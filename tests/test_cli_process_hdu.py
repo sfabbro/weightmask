@@ -148,8 +148,8 @@ class TestProcessHDU(unittest.TestCase):
         mock_detect_sat,
         mock_detect_bad,
     ):
-        # Setup mocks
-        mock_detect_bad.return_value = np.zeros((100, 100), dtype=bool)
+        # Setup mocks (tile-agnostic: return tile-shaped mask for any tile_size)
+        mock_detect_bad.side_effect = lambda data, cfg=None, using_unit=False: np.zeros(np.shape(data), dtype=bool)
         mock_detect_sat.return_value = (
             65000.0,
             "mock",

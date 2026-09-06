@@ -28,7 +28,9 @@ dark_masking:
 
 saturation:
   method: "histogram"
-  keyword: "SATURATE"
+  # Per-instrument fallback list (first present header wins). MegaPrime uses
+  # SATURATE; other optical instruments use SATUR/SATURAT variants.
+  keyword: ["SATURATE", "SATUR", "SATURAT"]
   effective_full_scale: 65535.0
   histogram_params:
     hist_min_adu: 30000
@@ -190,8 +192,11 @@ streak_masking:
 
 variance:
   method: "theoretical"
-  gain_keyword: "GAIN"
-  rdnoise_keyword: "RDNOISE"
+  # Per-instrument fallback lists (first present header wins). MegaPrime uses
+  # GAIN/RDNOISE; other instruments use GAINA/GAINB/CCDGAIN, RDNOIS/RON, etc.
+  gain_keyword: ["GAIN", "GAINA", "GAINB", "CCDGAIN"]
+  rdnoise_keyword: ["RDNOISE", "RDNOIS", "RON"]
+  # Fallbacks only (not assumptions): used when no keyword above is present.
   default_gain: 1.5
   default_rdnoise: 5.0
   epsilon: 1.0e-9

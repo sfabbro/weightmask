@@ -235,7 +235,6 @@ def validate_config(config: dict) -> bool:
         if streak_mode is not None and streak_mode not in allowed_values:
             print(f"ERROR: Invalid streak masking mode '{streak_mode}'.")
             return False
-
         legacy_keys = {"enable_ransac_trails", "ransac_params", "frangi_params"}
         stale_keys = sorted(legacy_keys & set(config["streak_masking"]))
         if stale_keys:
@@ -245,7 +244,51 @@ def validate_config(config: dict) -> bool:
                 + ", ".join(stale_keys)
             )
             return False
+    for _sec, _key in (("variance", "gain_keyword"), ("variance", "readnoise_keyword"), ("variance", "rdnoise_keyword"), ("saturation", "keyword")):
+        _cfg_sec = config.get(_sec, {}) if isinstance(config.get(_sec, {}), dict) else {}
+        if _key in _cfg_sec:
+            _v = _cfg_sec[_key]
+            _ok = isinstance(_v, str) or (isinstance(_v, (list, tuple)) and all(isinstance(_k, str) for _k in _v))
+            if not _ok:
+                print(f"ERROR: '{_sec}.{_key}' must be a header keyword string or list of strings.")
+                return False
     return True
+
+
+def _header_lookup(header, key_cfg, default):
+    """First-present header value for a str-or-list keyword config, else default."""
+    if header is None:
+        return default
+    keys = key_cfg if isinstance(key_cfg, (list, tuple)) else [key_cfg]
+    get = getattr(header, "get", None)
+    for k in keys:
+        if not isinstance(k, str) or not k:
+            continue
+        try:
+            v = get(k, None) if callable(get) else header.get(k, None) if hasattr(header, "get") else None
+        except Exception:
+            v = None
+        if v is None:
+            try:
+                if k in header:
+                    v = header[k]
+            except Exception:
+                v = None
+        if v is not None:
+            return v
+    return default
+
+
+def _effective_tile_size(tile_size, shape) -> int:
+    try:
+        t = int(tile_size)
+    except (TypeError, ValueError):
+        t = 1024
+    try:
+        min_dim = int(min(shape))
+    except Exception:
+        return max(16, t)
+    return max(16, min(t, max(1, min_dim // 2)))
 
 
 def process_image(
@@ -268,7 +311,7 @@ def process_image(
     hdu_start_time = time.time()
     sci_shape = sci_data_full.shape
     using_unit_flat = True
-
+    eff_tile = _effective_tile_size(tile_size, sci_shape)
     if flat_data_full is not None:
         using_unit_flat = False
         if flat_data_full.shape != sci_shape:
@@ -295,13 +338,14 @@ def process_image(
         if flat_data_full is not None and not using_unit_flat:
             # Compute flat bad mask ONCE for the full HDU (replaces per-tile + cache)
             print("    Computing flat bad-pixel mask (full HDU)...")
-            flat_bad_mask = compute_flat_bad_mask(flat_data_full, config.get("flat_masking", {}), tile_size)
+            flat_bad_mask = compute_flat_bad_mask(flat_data_full, config.get("flat_masking", {}), eff_tile)
             bad_mask |= flat_bad_mask
         else:
-            # No flat provided - compute per-tile (rare, unit flat)
-            for y in range(0, sci_shape[0], tile_size):
-                for x in range(0, sci_shape[1], tile_size):
-                    tile_slice = (slice(y, y + tile_size), slice(x, x + tile_size))
+            # No flat provided: unit-flat fallback (generic instruments without
+            # flat calibration still produce valid weights).
+            for y in range(0, sci_shape[0], eff_tile):
+                for x in range(0, sci_shape[1], eff_tile):
+                    tile_slice = (slice(y, y + eff_tile), slice(x, x + eff_tile))
                     sci_data_tile = sci_data_full[tile_slice]
                     flat_data_tile = flat_data_full[tile_slice]
                     if not np.isfinite(sci_data_tile).any():
@@ -343,9 +387,9 @@ def process_image(
     print("  (2/7) Running first-pass Cosmic Ray detection...")
     cosmic_cfg = config.get("cosmic_ray", {})
     variance_cfg = config.get("variance", {})
-    gain_raw = sci_hdr.get(variance_cfg.get("gain_keyword", "GAIN"), variance_cfg.get("default_gain", 1.0))
-    rdnoise_raw = sci_hdr.get(
-        variance_cfg.get("rdnoise_keyword", "RDNOISE"),
+    gain_raw = _header_lookup(sci_hdr, variance_cfg.get("gain_keyword", "GAIN"), variance_cfg.get("default_gain", 1.0))
+    rdnoise_raw = _header_lookup(
+        sci_hdr, variance_cfg.get("rdnoise_keyword", variance_cfg.get("readnoise_keyword", "RDNOISE")),
         variance_cfg.get("default_rdnoise", 0.0),
     )
     try:

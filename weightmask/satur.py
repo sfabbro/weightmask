@@ -112,18 +112,24 @@ def estimate_saturation_robust_clump(data, min_adu=None, max_adu=None):
 
 
 def _get_saturation_from_header(sci_hdr, header_keyword):
-    """Attempt to extract saturation level from the header."""
-    if not header_keyword or sci_hdr is None or header_keyword not in sci_hdr:
+    """Attempt to extract saturation level from the header (str-or-list keyword)."""
+    keys = header_keyword if isinstance(header_keyword, (list, tuple)) else [header_keyword]
+    keys = [k for k in keys if isinstance(k, str) and k]
+    if not keys or sci_hdr is None:
         print(f"  Header advisory unavailable (keyword '{header_keyword}' missing or not specified).")
         return None
-
-    try:
-        saturation_level = float(sci_hdr[header_keyword])
-        print(f"  Header advisory from keyword '{header_keyword}': {saturation_level:.1f} ADU.")
-        return saturation_level
-    except (ValueError, TypeError):
-        print(f"  Header advisory failed (parse error for keyword '{header_keyword}').")
-        return None
+    for _k in keys:
+        try:
+            if _k not in sci_hdr:
+                continue
+            saturation_level = float(sci_hdr[_k])
+            print(f"  Header advisory from keyword '{_k}': {saturation_level:.1f} ADU.")
+            return saturation_level
+        except (ValueError, TypeError, KeyError):
+            print(f"  Header advisory failed (parse error for keyword '{_k}').")
+            continue
+    print(f"  Header advisory unavailable (keywords {keys} missing).")
+    return None
 
 
 def _estimate_effective_full_scale(sci_data, sci_hdr, config, header_keyword):
