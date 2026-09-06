@@ -252,6 +252,16 @@ def validate_config(config: dict) -> bool:
             if not _ok:
                 print(f"ERROR: '{_sec}.{_key}' must be a header keyword string or list of strings.")
                 return False
+    _op = config.get("output_params", {}) if isinstance(config.get("output_params", {}), dict) else {}
+    if "mask_bitpix" in _op and _op["mask_bitpix"] not in (8, 16, 32, 64):
+        print("ERROR: 'output_params.mask_bitpix' must be one of 8/16/32/64.")
+        return False
+    if "ivar_bitpix" in _op and _op["ivar_bitpix"] not in (16, 32, 64, -32, -64):
+        print("ERROR: 'output_params.ivar_bitpix' must be one of 16/32/64/-32/-64.")
+        return False
+    if "compress" in _op and not isinstance(_op["compress"], bool):
+        print("ERROR: 'output_params.compress' must be a boolean.")
+        return False
     return True
 
 
@@ -737,6 +747,9 @@ def load_configuration(config_path: str) -> dict:
         config["confidence_params"] = {}
     if "output_map_format" not in config["output_params"]:
         config["output_params"]["output_map_format"] = "weight"
+    config["output_params"].setdefault("mask_bitpix", 16)
+    config["output_params"].setdefault("ivar_bitpix", 32)
+    config["output_params"].setdefault("compress", False)
 
     if not validate_config(config):
         print("ERROR: Configuration validation failed.")
@@ -745,8 +758,9 @@ def load_configuration(config_path: str) -> dict:
     return config
 
 
-def determine_output_paths(args: argparse.Namespace, input_path: str) -> dict:
+def determine_output_paths(args: argparse.Namespace, input_path: str, config: dict | None = None) -> dict:
     out_map_path = args.output_map
+    compress = bool((config or {}).get("output_params", {}).get("compress", False))
     if out_map_path is None:
         input_basename = os.path.basename(str(input_path))
         if input_basename.endswith(".fits.fz"):
@@ -756,7 +770,7 @@ def determine_output_paths(args: argparse.Namespace, input_path: str) -> dict:
         else:
             base = os.path.splitext(input_basename)[0]
         output_dir = os.path.dirname(str(input_path)) or "."
-        default_suffix = ".weight.fits"
+        default_suffix = ".weight.fits.fz" if compress else ".weight.fits"
         out_map_path = os.path.join(output_dir, f"{base}{default_suffix}")
         print(f"Output map path not specified, using default: {out_map_path}")
 
@@ -1064,6 +1078,8 @@ def _rescale_confidence_to_global(paths, writers, conf_samples, conf_p99, config
     if not np.isfinite(global_p99) or global_p99 <= 0:
         return
     factors = {i: p99 / global_p99 for i, p99 in conf_p99.items() if p99 > 0}
+    compress = bool((config or {}).get("output_params", {}).get("compress", False))
+    wcomp = "RICE_1" if (compress or str(map_path).endswith(".fz")) else "NOT_SET"
     try:
         with fitsio.FITS(map_path, "rw") as f:
             for hdu_index, factor in factors.items():
@@ -1071,7 +1087,7 @@ def _rescale_confidence_to_global(paths, writers, conf_samples, conf_p99, config
                 if pos is None or pos >= len(f):
                     continue
                 data = f[pos].read()
-                f[pos].write(np.clip(data * factor, 0.0, 1.0).astype(np.float32))
+                f[pos].write(np.clip(data * factor, 0.0, 1.0).astype(np.float32), compress=wcomp)
     except OSError as e:
         print(f"  WARNING: confidence global rescale failed: {e}")
         return
@@ -1176,7 +1192,7 @@ def process_all_hdus(
     bp_path_u = _usable(_fits_path_of(hdul_badpix, badpix_path)) if hdul_badpix is not None else None
     dk_path_u = _usable(_fits_path_of(hdul_dark, dark_path)) if hdul_dark is not None else None
     process_success_count = 0
-    writers = _make_output_writers(paths, hdul_input)
+    writers = _make_output_writers(paths, hdul_input, config)
     flat_bad_masks = {}
     if hdul_flat is not None and flat_path:
         print(f"  Pre-computing flat bad masks for {len(hdus_to_process)} HDUs...")
@@ -1407,7 +1423,7 @@ class _StreamingMapWriter:
       first, then every image is appended as an extension.
     """
 
-    def __init__(self, out_path: str, hdul_input, primary_header):
+    def __init__(self, out_path: str, hdul_input, primary_header, compress: bool = False, dtype=None):
         self.out_path = out_path
         self.hdul_input = hdul_input
         self.primary_header = primary_header
@@ -1415,13 +1431,23 @@ class _StreamingMapWriter:
         self.positions: dict = {}
         self._next_data_pos = 0
         self._lock = threading.Lock()
-
+        self.compress = bool(compress)
+        self.dtype = np.dtype(dtype) if dtype is not None else None
+    def _prep(self, data):
+        if data is None or self.dtype is None:
+            return data
+        try:
+            return np.ascontiguousarray(data, dtype=self.dtype)
+        except Exception:
+            return np.asarray(data, dtype=self.dtype)
     def write(self, hdu_index: int, data, header, extname: str) -> None:
+        data = self._prep(data)
+        comp = "RICE_1" if self.compress else "NOT_SET"
         with self._lock:
             if not self._opened:
                 single_hdu0 = hdu_index == 0 and len(self.hdul_input) == 1
                 if single_hdu0:
-                    fitsio.write(self.out_path, data, header=header, clobber=True)
+                    fitsio.write(self.out_path, data, header=header, clobber=True, compress=comp)
                     self._opened = True
                     self.positions[hdu_index] = 0
                     self._next_data_pos = 1
@@ -1433,19 +1459,30 @@ class _StreamingMapWriter:
                     primary_data = None
                     primary_header = self.primary_header
                     self._next_data_pos = 1
-                fitsio.write(self.out_path, primary_data, header=primary_header, clobber=True)
+                fitsio.write(self.out_path, primary_data, header=primary_header, clobber=True, compress=comp)
                 self._opened = True
                 if hdu_index == 0:
                     self.positions[hdu_index] = 0
                     self._next_data_pos = 1
                     return
             with fitsio.FITS(self.out_path, "rw") as f_out:
-                f_out.write(data, header=header, extname=extname)
+                f_out.write(data, header=header, extname=extname, compress=comp)
             self.positions[hdu_index] = self._next_data_pos
             self._next_data_pos += 1
 
 
-def _make_output_writers(paths: dict, hdul_input) -> dict:
+def _wire_dtype(bitpix, *, is_mask: bool):
+    """Map configured bitpix to a numpy wire dtype (mask uint, float otherwise)."""
+    try:
+        b = int(bitpix)
+    except (TypeError, ValueError):
+        return np.uint16 if is_mask else np.float32
+    if is_mask:
+        return {8: np.uint8, 16: np.uint16, 32: np.uint32, 64: np.uint64}.get(b, np.uint16)
+    return {16: np.float16, 32: np.float32, 64: np.float64, -32: np.float32, -64: np.float64}.get(b, np.float32)
+
+
+def _make_output_writers(paths: dict, hdul_input, config: dict | None = None) -> dict:
     """Build a streaming writer per requested output product."""
     primary_header = None
     if len(hdul_input) > 0:
@@ -1453,7 +1490,18 @@ def _make_output_writers(paths: dict, hdul_input) -> dict:
             primary_header = _strip_compression_keywords(hdul_input[0].read_header())
         except Exception:
             primary_header = None
-
+    op = (config or {}).get("output_params", {}) if isinstance((config or {}).get("output_params", {}), dict) else {}
+    try:
+        mask_bp = int(op.get("mask_bitpix", 16))
+    except (TypeError, ValueError):
+        mask_bp = 16
+    try:
+        ivar_bp = int(op.get("ivar_bitpix", 32))
+    except (TypeError, ValueError):
+        ivar_bp = 32
+    compress = bool(op.get("compress", False))
+    mask_dt = _wire_dtype(mask_bp, is_mask=True)
+    float_dt = _wire_dtype(ivar_bp, is_mask=False)
     writers: dict = {}
     for key, path_key in (
         ("map", "out_map_path"),
@@ -1464,12 +1512,12 @@ def _make_output_writers(paths: dict, hdul_input) -> dict:
     ):
         out_path = paths.get(path_key)
         if out_path:
-            writers[key] = _StreamingMapWriter(out_path, hdul_input, primary_header)
-
+            dt = mask_dt if key == "mask" else float_dt
+            writers[key] = _StreamingMapWriter(out_path, hdul_input, primary_header, compress=compress, dtype=dt)
     for mask_type in ("bad", "sat", "cr", "obj", "streak"):
         out_path = (paths.get("individual_mask_paths") or {}).get(mask_type)
         if out_path:
-            writers[f"ind_{mask_type}"] = _StreamingMapWriter(out_path, hdul_input, primary_header)
+            writers[f"ind_{mask_type}"] = _StreamingMapWriter(out_path, hdul_input, primary_header, compress=compress, dtype=np.uint8)
     return writers
 
 
@@ -1520,7 +1568,7 @@ def run_pipeline() -> int:
     if args.hdu is not None:
         input_hdu = args.hdu
 
-    paths = determine_output_paths(args, input_path)
+    paths = determine_output_paths(args, input_path, config)
 
     hdul_input, hdul_flat = open_fits_files(input_path, flat_path)
     if hdul_input is None:

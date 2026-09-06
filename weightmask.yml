@@ -217,3 +217,11 @@ confidence_params:
 output_params:
   output_map_format: "weight"
   mask_detected_in_weight: false
+  # Wire format: mask uint16 (BITPIX 16, values 0-63 fit 6 contract bits),
+  # ivar/weight/confidence/sky float32 (BITPIX -32; float16 loses edge terms
+  # and Rice does not support it). Measured: mask u32 39MB -> u16 19.6MB,
+  # fz 0.7MB; ivar f32 39MB -> fz ~17MB on 2112x4644 HDUs.
+  mask_bitpix: 16
+  ivar_bitpix: 32
+  # Rice (fz) compression; archive sets true for *.fits.fz landing.
+  compress: false
