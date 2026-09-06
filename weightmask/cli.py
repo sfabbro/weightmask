@@ -4,8 +4,10 @@ WeightMask CLI using fitsio instead of astropy.io.fits for better performance wi
 """
 
 import argparse
+import concurrent.futures
 import hashlib
 import os
+import threading
 import time
 from typing import Optional, Tuple
 
@@ -602,6 +604,14 @@ def parse_arguments() -> argparse.Namespace:
         action="store_true",
         help="Output individual mask component files.",
     )
+    parser.add_argument(
+        "--nproc",
+        "--max-workers",
+        dest="max_workers",
+        type=int,
+        default=None,
+        help="Max parallel HDU workers (default min(8, ncpu); 0/1 = sequential).",
+    )
     return parser.parse_args()
 
 
@@ -1053,6 +1063,34 @@ def _veto_dead_ccd_hdus(flat_bad_masks, flat_meds, flat_cfg):
             print(f"    HDU {i}: flat median {m:.3f} vs exposure {exp_med:.3f} -- flagging whole CCD BAD.")
 
 
+def _resolve_max_workers(max_workers: int | None, n_hdus: int) -> int:
+    """Resolve worker count; 1 means sequential (reproducible/CI)."""
+    if max_workers is None:
+        eff = min(8, os.cpu_count() or 4)
+    else:
+        try:
+            eff = int(max_workers)
+        except (TypeError, ValueError):
+            eff = min(8, os.cpu_count() or 4)
+        if eff <= 1:
+            return 1
+    if eff <= 0:
+        return 1
+    return max(1, min(eff, max(1, n_hdus)))
+
+
+def _fits_path_of(hdul, explicit: Optional[str]) -> Optional[str]:
+    if isinstance(explicit, str) and explicit:
+        return explicit
+    try:
+        p = getattr(hdul, "_filename", None)
+        if isinstance(p, bytes):
+            p = p.decode()
+        return p if isinstance(p, str) and p else None
+    except Exception:
+        return None
+
+
 def process_all_hdus(
     hdus_to_process: list,
     hdul_input,
@@ -1063,25 +1101,42 @@ def process_all_hdus(
     flat_path: Optional[str] = None,
     hdul_badpix=None,
     hdul_dark=None,
+    max_workers: int | None = None,
+    input_path: Optional[str] = None,
+    badpix_path: Optional[str] = None,
+    dark_path: Optional[str] = None,
 ) -> int:
     """Process every requested HDU, streaming each HDU's outputs to disk.
-
     Each HDU's maps are written to their output files as soon as they are
     produced instead of being accumulated in memory. A 36-CCD MegaPrime MEF
     therefore only ever holds a single CCD's products at a time (~a few
     hundred MB) rather than the whole MEF's (~7 GB), which previously blew
     through the container memory limit when several exposures were processed
     concurrently and OOM-killed the batch.
+    Parallel by default: per-HDU ThreadPoolExecutor; single-HDU inputs run
+    inline (per-file fast path). Compute runs concurrently, writes are
+    applied in HDU-index order for deterministic output.
     """
+    if max_workers is None:
+        max_workers = getattr(args, "max_workers", None)
+    eff_workers = _resolve_max_workers(max_workers, len(hdus_to_process))
+    tile_size = getattr(args, "tile_size", 1024) if hasattr(args, "tile_size") else 1024
+    try:
+        tile_size = int(tile_size)
+    except (TypeError, ValueError):
+        tile_size = 1024
+    def _usable(p: Optional[str]) -> Optional[str]:
+        return p if isinstance(p, str) and p and os.path.exists(p) else None
+    in_path_u = _usable(_fits_path_of(hdul_input, input_path))
+    fl_path_u = _usable(_fits_path_of(hdul_flat, flat_path)) if hdul_flat is not None else None
+    bp_path_u = _usable(_fits_path_of(hdul_badpix, badpix_path)) if hdul_badpix is not None else None
+    dk_path_u = _usable(_fits_path_of(hdul_dark, dark_path)) if hdul_dark is not None else None
     process_success_count = 0
     writers = _make_output_writers(paths, hdul_input)
-
-    # Pre-compute flat bad masks ONCE per flat file (shared across all HDUs/exposures)
-    flat_bad_masks = {}  # {flat_path: {hdu_index: mask}}
+    flat_bad_masks = {}
     if hdul_flat is not None and flat_path:
         print(f"  Pre-computing flat bad masks for {len(hdus_to_process)} HDUs...")
         flat_cfg = config.get("flat_masking", {})
-        tile_size = args.tile_size if hasattr(args, 'tile_size') else 1024
         flat_meds: dict = {}
         for i in hdus_to_process:
             if i < len(hdul_flat):
@@ -1094,50 +1149,182 @@ def process_all_hdus(
                     print(f"    WARNING: Failed to pre-compute flat bad mask for HDU {i}: {e}")
         _veto_dead_ccd_hdus(flat_bad_masks, flat_meds, flat_cfg)
         print(f"  Pre-computed {len(flat_bad_masks)} flat bad masks")
-
     conf_scope = config.get("confidence_params", {}).get("normalize_scope", "per_hdu")
     conf_samples: dict = {}
     conf_p99: dict = {}
-
-    for i in hdus_to_process:
+    dark_cfg_global = config.get("dark_masking")
+    def _merge_dark(i, hdu_sci, pre):
+        if dark_cfg_global is None:
+            return pre
+        dark_hdu = None
+        fd_local = None
+        close_fd = False
         try:
-            hdu_sci = hdul_input[i]
-            hdu_flat_obj = hdul_flat[i] if hdul_flat and i < len(hdul_flat) else None
-            hdu_badpix_obj = hdul_badpix[i] if hdul_badpix and i < len(hdul_badpix) else None
-
-            # Pass pre-computed flat bad mask if available
-            precomputed_bad_mask = flat_bad_masks.get(i) if flat_bad_masks else None
-            # Hot pixels from the dark frame (if provided) join the BAD mask.
-            dark_cfg = config.get("dark_masking")
-            if dark_cfg is not None and hdul_dark is not None and i < len(hdul_dark):
+            if dk_path_u is not None:
                 try:
-                    dark_data = np.ascontiguousarray(hdul_dark[i].read().astype(np.float32))
-                    dark_hot = detect_bad_pixels(dark_data, dark_cfg, using_unit_flat=False)
-                    sci_shape = hdu_sci.read().shape
-                    if dark_hot.shape != sci_shape:
-                        print(f"    Skipping dark mask for HDU {i}: shape mismatch.")
+                    fd_local = fitsio.FITS(dk_path_u, "r")
+                    close_fd = True
+                    if i < len(fd_local):
+                        dark_hdu = fd_local[i]
                     else:
-                        if precomputed_bad_mask is not None and precomputed_bad_mask.shape != sci_shape:
-                            precomputed_bad_mask = None
-                        if precomputed_bad_mask is None:
-                            precomputed_bad_mask = dark_hot
+                        dark_hdu = None
+                except Exception:
+                    dark_hdu = None
+            elif hdul_dark is not None:
+                try:
+                    dark_hdu = hdul_dark[i] if i < len(hdul_dark) else None
+                except Exception:
+                    dark_hdu = None
+            if dark_hdu is None:
+                return pre
+            try:
+                dark_data = np.ascontiguousarray(dark_hdu.read().astype(np.float32))
+                dark_hot = detect_bad_pixels(dark_data, dark_cfg_global, using_unit_flat=False)
+                sci_shape = hdu_sci.read().shape
+                if dark_hot.shape != sci_shape:
+                    print(f"    Skipping dark mask for HDU {i}: shape mismatch.")
+                else:
+                    if pre is not None and pre.shape != sci_shape:
+                        pre = None
+                    pre = dark_hot if pre is None else (pre | dark_hot)
+                    print(f"    Dark frame adds {int(np.count_nonzero(dark_hot))} hot pixels to HDU {i}.")
+            except Exception as e:
+                print(f"    WARNING: dark mask failed for HDU {i}: {e}")
+            return pre
+        finally:
+            if close_fd and fd_local is not None:
+                try:
+                    fd_local.close()
+                except Exception:
+                    pass
+    def _compute_one(i):
+        pre = flat_bad_masks.get(i) if flat_bad_masks else None
+        try:
+            if in_path_u is not None:
+                fi = None
+                ff = None
+                fb = None
+                try:
+                    fi = fitsio.FITS(in_path_u, "r")
+                    if i >= len(fi):
+                        print(f"Skipping HDU {i}: index out of range.")
+                        return (i, (None, None, None, None, None, None), None, f"HDU{i}")
+                    hdu_sci = fi[i]
+                    if hdul_flat is not None:
+                        if fl_path_u is not None:
+                            ff = fitsio.FITS(fl_path_u, "r")
+                            hdu_flat_obj = ff[i] if i < len(ff) else None
                         else:
-                            precomputed_bad_mask = precomputed_bad_mask | dark_hot
-                        print(f"    Dark frame adds {int(np.count_nonzero(dark_hot))} hot pixels to HDU {i}.")
+                            try:
+                                hdu_flat_obj = hdul_flat[i] if i < len(hdul_flat) else None
+                            except Exception:
+                                hdu_flat_obj = None
+                    else:
+                        hdu_flat_obj = None
+                    if hdul_badpix is not None:
+                        if bp_path_u is not None:
+                            fb = fitsio.FITS(bp_path_u, "r")
+                            hdu_badpix_obj = fb[i] if i < len(fb) else None
+                        else:
+                            try:
+                                hdu_badpix_obj = hdul_badpix[i] if i < len(hdul_badpix) else None
+                            except Exception:
+                                hdu_badpix_obj = None
+                    else:
+                        hdu_badpix_obj = None
+                    pre2 = _merge_dark(i, hdu_sci, pre)
+                    result = process_hdu(hdu_sci, hdu_flat_obj, config, i, tile_size=tile_size, flat_path=flat_path, hdu_badpix=hdu_badpix_obj, precomputed_bad_mask=pre2)
+                    try:
+                        hdu_header_raw = fi[i].read_header()
+                    except Exception:
+                        hdu_header_raw = None
+                    try:
+                        tmp_n = fi[i]
+                        hdu_name = getattr(tmp_n, "name", f"HDU{i}") if hasattr(tmp_n, "name") else f"HDU{i}"
+                    except Exception:
+                        hdu_name = f"HDU{i}"
+                    return (i, result, hdu_header_raw, hdu_name)
+                finally:
+                    for _h in (fi, ff, fb):
+                        try:
+                            if _h is not None:
+                                _h.close()
+                        except Exception:
+                            pass
+            else:
+                try:
+                    hdu_sci = hdul_input[i]
                 except Exception as e:
-                    print(f"    WARNING: dark mask failed for HDU {i}: {e}")
-            result = process_hdu(hdu_sci, hdu_flat_obj, config, i, flat_path=flat_path, hdu_badpix=hdu_badpix_obj, precomputed_bad_mask=precomputed_bad_mask)
-            if result[0] is None:
+                    print(f"Skipping HDU {i}: cannot access input HDU: {e}")
+                    return (i, (None, None, None, None, None, None), None, f"HDU{i}")
+                try:
+                    hdu_flat_obj = hdul_flat[i] if hdul_flat is not None and i < len(hdul_flat) else None
+                except Exception:
+                    hdu_flat_obj = None
+                try:
+                    hdu_badpix_obj = hdul_badpix[i] if hdul_badpix is not None and i < len(hdul_badpix) else None
+                except Exception:
+                    hdu_badpix_obj = None
+                pre2 = pre
+                if dark_cfg_global is not None and hdul_dark is not None:
+                    try:
+                        if i < len(hdul_dark):
+                            try:
+                                dark_data = np.ascontiguousarray(hdul_dark[i].read().astype(np.float32))
+                                dark_hot = detect_bad_pixels(dark_data, dark_cfg_global, using_unit_flat=False)
+                                sci_shape = hdu_sci.read().shape
+                                if dark_hot.shape != sci_shape:
+                                    print(f"    Skipping dark mask for HDU {i}: shape mismatch.")
+                                else:
+                                    if pre2 is not None and pre2.shape != sci_shape:
+                                        pre2 = None
+                                    pre2 = dark_hot if pre2 is None else (pre2 | dark_hot)
+                                    print(f"    Dark frame adds {int(np.count_nonzero(dark_hot))} hot pixels to HDU {i}.")
+                            except Exception as e:
+                                print(f"    WARNING: dark mask failed for HDU {i}: {e}")
+                    except Exception:
+                        pass
+                result = process_hdu(hdu_sci, hdu_flat_obj, config, i, tile_size=tile_size, flat_path=flat_path, hdu_badpix=hdu_badpix_obj, precomputed_bad_mask=pre2)
+                try:
+                    hdu_header_raw = hdul_input[i].read_header()
+                except Exception:
+                    hdu_header_raw = None
+                try:
+                    tmp = hdul_input[i]
+                    hdu_name = getattr(tmp, "name", f"HDU{i}") if hasattr(tmp, "name") else f"HDU{i}"
+                except Exception:
+                    hdu_name = f"HDU{i}"
+                return (i, result, hdu_header_raw, hdu_name)
+        except Exception as e:
+            import traceback
+            print(f"FATAL ERROR processing HDU {i}: {e}\n{traceback.format_exc()}")
+            return (i, (None, None, None, None, None, None), None, f"HDU{i}")
+    results: dict = {}
+    if len(hdus_to_process) <= 1 or eff_workers <= 1:
+        for i in hdus_to_process:
+            _i, _res, _hdr, _nm = _compute_one(i)
+            results[_i] = (_res, _hdr, _nm)
+    else:
+        npool = max(1, min(eff_workers, len(hdus_to_process)))
+        with concurrent.futures.ThreadPoolExecutor(max_workers=npool) as ex:
+            futs = {ex.submit(_compute_one, i): i for i in hdus_to_process}
+            for fut in concurrent.futures.as_completed(futs):
+                try:
+                    _i, _res, _hdr, _nm = fut.result()
+                except Exception as e:
+                    import traceback
+                    _i = futs[fut]
+                    print(f"FATAL ERROR processing HDU {_i}: {e}\n{traceback.format_exc()}")
+                    results[_i] = ((None, None, None, None, None, None), None, f"HDU{_i}")
+                    continue
+                results[_i] = (_res, _hdr, _nm)
+    for i in hdus_to_process:
+        _res, _hdr_raw, _nm = results.get(i, ((None, None, None, None, None, None), None, f"HDU{i}"))
+        try:
+            if _res is None or _res[0] is None:
                 print(f"Skipping HDU {i} due to processing errors.")
                 continue
-            (
-                mask_data,
-                inv_var_data,
-                weight_map,
-                confidence_map,
-                sky_map,
-                header_info,
-            ) = result
+            (mask_data, inv_var_data, weight_map, confidence_map, sky_map, header_info) = _res
             if conf_scope == "per_exposure" and weight_map is not None:
                 wpos = weight_map[weight_map > 0]
                 if wpos.size > 0:
@@ -1145,49 +1332,20 @@ def process_all_hdus(
                     conf_samples[i] = np.ascontiguousarray(wpos[::step])
                     conf_p99[i] = float(np.percentile(conf_samples[i], 99.0))
             process_success_count += 1
-
             bad_mask, sat_mask, cr_mask, obj_mask, streak_mask = extract_individual_masks(header_info, mask_data)
-
-            hdu_name = getattr(hdu_sci, "name", f"HDU{i}") if hasattr(hdu_sci, "name") else f"HDU{i}"
-
-            try:
-                hdu_header = hdul_input[i].read_header()
-            except Exception:
-                hdu_header = None
+            hdu_name = _nm if isinstance(_nm, str) and _nm else f"HDU{i}"
+            hdu_header = _hdr_raw
             if hdu_header is None:
                 hdu_header = fitsio.FITSHDR()
             hdu_header = _strip_compression_keywords(hdu_header)
-
             hdu_output: dict = {}
-            _store_output_maps(
-                hdu_output,
-                i,
-                hdu_header,
-                hdu_name,
-                config,
-                confidence_map,
-                weight_map,
-                mask_data,
-                inv_var_data,
-                sky_map,
-                args,
-                bad_mask,
-                sat_mask,
-                cr_mask,
-                obj_mask,
-                streak_mask,
-                paths,
-            )
+            _store_output_maps(hdu_output, i, hdu_header, hdu_name, config, confidence_map, weight_map, mask_data, inv_var_data, sky_map, args, bad_mask, sat_mask, cr_mask, obj_mask, streak_mask, paths)
             _flush_hdu_output(writers, hdu_output, i)
-
         except Exception as e:
             import traceback
-
             print(f"FATAL ERROR processing HDU {i}: {e}\n{traceback.format_exc()}")
-
     if conf_scope == "per_exposure" and conf_samples:
         _rescale_confidence_to_global(paths, writers, conf_samples, conf_p99, config)
-
     return process_success_count
 
 
@@ -1212,34 +1370,35 @@ class _StreamingMapWriter:
         self._opened = False
         self.positions: dict = {}
         self._next_data_pos = 0
+        self._lock = threading.Lock()
 
     def write(self, hdu_index: int, data, header, extname: str) -> None:
-        if not self._opened:
-            single_hdu0 = hdu_index == 0 and len(self.hdul_input) == 1
-            if single_hdu0:
-                fitsio.write(self.out_path, data, header=header, clobber=True)
+        with self._lock:
+            if not self._opened:
+                single_hdu0 = hdu_index == 0 and len(self.hdul_input) == 1
+                if single_hdu0:
+                    fitsio.write(self.out_path, data, header=header, clobber=True)
+                    self._opened = True
+                    self.positions[hdu_index] = 0
+                    self._next_data_pos = 1
+                    return
+                if hdu_index == 0:
+                    primary_data = data
+                    primary_header = header
+                else:
+                    primary_data = None
+                    primary_header = self.primary_header
+                    self._next_data_pos = 1
+                fitsio.write(self.out_path, primary_data, header=primary_header, clobber=True)
                 self._opened = True
-                self.positions[hdu_index] = 0
-                self._next_data_pos = 1
-                return
-
-            if hdu_index == 0:
-                primary_data = data
-                primary_header = header
-            else:
-                primary_data = None
-                primary_header = self.primary_header
-                self._next_data_pos = 1  # file 0 holds the empty primary
-            fitsio.write(self.out_path, primary_data, header=primary_header, clobber=True)
-            self._opened = True
-            if hdu_index == 0:
-                self.positions[hdu_index] = 0
-                self._next_data_pos = 1
-                return
-        with fitsio.FITS(self.out_path, "rw") as f_out:
-            f_out.write(data, header=header, extname=extname)
-        self.positions[hdu_index] = self._next_data_pos
-        self._next_data_pos += 1
+                if hdu_index == 0:
+                    self.positions[hdu_index] = 0
+                    self._next_data_pos = 1
+                    return
+            with fitsio.FITS(self.out_path, "rw") as f_out:
+                f_out.write(data, header=header, extname=extname)
+            self.positions[hdu_index] = self._next_data_pos
+            self._next_data_pos += 1
 
 
 def _make_output_writers(paths: dict, hdul_input) -> dict:
@@ -1350,7 +1509,8 @@ def run_pipeline() -> int:
 
     process_success_count = process_all_hdus(
         hdus_to_process, hdul_input, hdul_flat, config, paths, args, flat_path=flat_path, hdul_badpix=hdul_badpix,
-        hdul_dark=hdul_dark,
+        hdul_dark=hdul_dark, max_workers=getattr(args, "max_workers", None),
+        input_path=input_path, badpix_path=badpix_path, dark_path=dark_path,
     )
 
     _cleanup_hdul(hdul_input, hdul_flat, hdul_badpix, hdul_dark)
