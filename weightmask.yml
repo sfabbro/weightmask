@@ -140,6 +140,13 @@ streak_masking:
     thresh_sig: 2.5
     min_votes: 100
     max_candidates: 6
+  contour_params:
+    enable: true
+    thresh_sig: 2.5
+    min_span: 150.0
+    shape_cut: 0.2
+    area_cut: 100.0
+    radius_dev_cut: 0.5
   mrt_rescue_params:
     theta_step_deg: 2.0
     peak_threshold_sig: 4.2

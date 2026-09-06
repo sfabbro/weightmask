@@ -1045,6 +1045,113 @@ def _detect_streaks_houghpeaks(data_sub, bkg_rms_map, existing_mask, config):
     return streak_mask, accepted, {"peaks": n_peaks_total, "accepted_count": len(accepted)}
 
 
+def _contour_candidates(data_sub, existing_mask, bkg_rms_map, config):
+    """Propose trail candidates from contour morphology (ASTRiDE pattern).
+
+    Connected-component borders above threshold, gated on circularity, area
+    and radius deviation, with PCA angle + extreme-point span. Catches long
+    bright trails the Hough stages splinter or miss, at ~3s/HDU. Survivors
+    go through the same strip confirm + score gates as every candidate.
+    """
+    from skimage import measure as _measure
+
+    cfg = config.get("contour_params", {})
+    mask_cfg = config.get("mask_params", {})
+    thresh_sig = float(cfg.get("thresh_sig", 2.5))
+    min_span = float(cfg.get("min_span", 150.0))
+    shape_cut = float(cfg.get("shape_cut", 0.2))
+    area_cut = float(cfg.get("area_cut", 100.0))
+    radius_dev_cut = float(cfg.get("radius_dev_cut", 0.5))
+    img = np.clip(data_sub, 0.0, None).astype(np.float32)
+    if existing_mask is not None:
+        img = np.where(existing_mask, 0.0, img)
+    if bkg_rms_map is not None:
+        rms = np.where((bkg_rms_map > 0) & np.isfinite(bkg_rms_map), bkg_rms_map, np.nan)
+        scale = float(np.nanmedian(rms)) if np.any(np.isfinite(rms)) else 1.0
+    else:
+        scale = 1.0
+    if not np.isfinite(scale) or scale <= 0:
+        return []
+    contours = _measure.find_contours(img, thresh_sig * scale, fully_connected="high")
+    h, w = data_sub.shape
+    out = []
+    for contour in contours:
+        y, x = contour[:, 0], contour[:, 1]
+        if len(x) < 10:
+            continue
+        # Shape factor 4*pi*A/P^2 via poly area/perimeter on the path.
+        peri = float(np.sum(np.hypot(np.diff(x), np.diff(y)))) + float(
+            np.hypot(x[0] - x[-1], y[0] - y[-1]))
+        if peri <= 0:
+            continue
+        area = 0.5 * abs(float(np.sum(x[:-1] * y[1:] - x[1:] * y[:-1])))
+        if area < area_cut:
+            continue
+        shape = 4.0 * np.pi * area / (peri * peri)
+        if shape > shape_cut:
+            continue
+        cx, cy = float(np.mean(x)), float(np.mean(y))
+        dist = np.hypot(x - cx, y - cy)
+        rad = float(np.median(dist))
+        if rad <= 0 or float(np.std(dist)) / rad < radius_dev_cut:
+            continue
+        # PCA angle + extreme span.
+        xc, yc = x - cx, y - cy
+        theta = 0.5 * np.arctan2(2.0 * float(np.sum(xc * yc)),
+                                 float(np.sum(xc * xc) - np.sum(yc * yc)))
+        direction = np.array([np.cos(theta), np.sin(theta)], dtype=np.float64)
+        proj = np.column_stack([xc, yc]) @ direction
+        span = float(proj.max() - proj.min())
+        if span < min_span:
+            continue
+        p0 = (cx + proj.min() * direction[0], cy + proj.min() * direction[1])
+        p1 = (cx + proj.max() * direction[0], cy + proj.max() * direction[1])
+        clipped = _clip_line_to_image(np.array([(p0[0] + p1[0]) / 2.0, (p0[1] + p1[1]) / 2.0]),
+                                      direction, data_sub.shape)
+        if clipped is None:
+            continue
+        (ex0, ey0), (ex1, ey1) = clipped
+        seg = ((float(ex0), float(ey0)), (float(ex1), float(ey1)))
+        out.append({
+            "segments": [seg],
+            "angle_deg": float(_normalize_angle_deg(np.degrees(theta))),
+            "endpoints": seg,
+            "clipped_endpoints": seg,
+            "span": float(np.hypot(ex1 - ex0, ey1 - ey0)),
+            "raw_span": span,
+            "edge_touches": len(_edges_touched(clipped, data_sub.shape, 16)),
+            "corridor_overlap": 0.0,
+        })
+    return out
+
+
+def _detect_streaks_contours(data_sub, bkg_rms_map, existing_mask, config):
+    """Confirm contour-morphology candidates with the strip profiler."""
+    cfg = config.get("contour_params", {})
+    mask_cfg = config.get("mask_params", {})
+    if not cfg.get("enable", True):
+        return np.zeros(data_sub.shape, dtype=bool), [], {"candidates": 0}
+    confidence_threshold = float(config.get("satdet_params", {}).get("confidence_threshold", 0.40))
+    min_refined_mask_pixels = int(mask_cfg.get("min_mask_pixels", 64))
+    if existing_mask is not None:
+        confidence_threshold += min(0.25, 20.0 * float(np.mean(existing_mask)))
+    print("--> Contour-morphology candidate search...")
+    candidates = _contour_candidates(data_sub, existing_mask, bkg_rms_map, config)
+    print(f"    Contour stage proposed {len(candidates)} candidate(s).")
+    streak_mask = np.zeros(data_sub.shape, dtype=bool)
+    accepted = []
+    for candidate in candidates:
+        refined, refine_info = _refine_trail_mask(
+            data_sub, bkg_rms_map, candidate, mask_cfg, existing_mask=existing_mask
+        )
+        conf = _score_candidate(candidate, refined, refine_info, existing_mask)
+        if np.count_nonzero(refined) >= min_refined_mask_pixels and conf >= confidence_threshold:
+            streak_mask |= refined
+            accepted.append({"angle_deg": candidate["angle_deg"], "confidence": conf})
+    print(f"    Contour stage accepted {len(accepted)} trail(s).")
+    return streak_mask, accepted, {"candidates": len(candidates), "accepted_count": len(accepted)}
+
+
 def _detect_streaks_satdet(data_sub, bkg_rms_map, existing_mask, config):
     """
     Detect streaks using a satdet-inspired Hough candidate extractor plus strip refiner.
@@ -1371,6 +1478,9 @@ def detect_streaks(data_sub, bkg_rms_map, existing_mask, config):
         hp_mask, hp_accepted, hp_debug = _detect_streaks_houghpeaks(data_sub, bkg_rms_map, existing_mask, config)
         streak_mask_bool |= hp_mask
         debug_info["houghpeaks"] = {"accepted": hp_accepted, **hp_debug}
+        ct_mask, ct_accepted, ct_debug = _detect_streaks_contours(data_sub, bkg_rms_map, existing_mask, config)
+        streak_mask_bool |= ct_mask
+        debug_info["contours"] = {"accepted": ct_accepted, **ct_debug}
         print("    [streak] satdet primary pass...")
         satdet_mask, accepted, primary_debug = _detect_streaks_satdet(data_sub, bkg_rms_map, existing_mask, config)
         streak_mask_bool |= satdet_mask
