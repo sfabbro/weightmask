@@ -120,6 +120,27 @@ class TestSkyMeshRoundtrip(unittest.TestCase):
         self.assertLess(float(np.sqrt(np.mean(diff**2))), 0.02)
         self.assertLess(float(np.percentile(diff, 99)), 0.1)
 
+    def test_diagnostics_records_actual_sep_box(self):
+        from weightmask.background import estimate_background
+
+        rng = np.random.default_rng(0)
+        data = (100.0 + rng.normal(0.0, 1.0, (128, 128))).astype(np.float32)
+        mask = np.zeros((128, 128), dtype=bool)
+        diag = {}
+        estimate_background(
+            data,
+            mask,
+            {"box_size": 32, "auto_box_scaling": False, "filter_size": 3, "_diagnostics": diag},
+        )
+        self.assertEqual(diag.get("box_size"), 32)
+        diag2 = {}
+        estimate_background(
+            data,
+            np.ones((128, 128), dtype=bool),
+            {"mask_threshold": 0.5, "_diagnostics": diag2},
+        )
+        self.assertNotIn("box_size", diag2)
+
 
 class TestDipRepair(unittest.TestCase):
     def test_overshoot_filled_blanks_untouched(self):

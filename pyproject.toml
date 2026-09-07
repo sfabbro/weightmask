@@ -42,7 +42,8 @@ exclude = ["sandbox*"]
 
 # --- This section creates the command-line script ---
 [project.scripts]
-weightmask = "weightmask.cli:run_pipeline" # Tells pip: command 'weightmask' runs 'run_pipeline' function in 'weightmask/cli.py'
+weightmask = "weightmask.cli:run_pipeline"
+weightmask-reconstruct-sky = "weightmask.reconstruct_sky:main"
 
 [tool.ruff]
 line-length = 120

@@ -33,7 +33,8 @@ weightmask science.fits --config weightmask.yml
 Compact sky meshes (`output_params.sky_format: mesh`) rebuild with:
 
 ```bash
-weightmask reconstruct-sky sky_mesh.fits -o sky_full.fits
+weightmask-reconstruct-sky sky_mesh.fits -o sky_full.fits
+# also: weightmask reconstruct-sky sky_mesh.fits -o sky_full.fits
 ```
 
 Useful outputs:

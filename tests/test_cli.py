@@ -303,7 +303,7 @@ class TestReconstructSkyCLI(unittest.TestCase):
         import sep
 
         from weightmask.background import sky_to_mesh
-        from weightmask.cli import run_pipeline
+        from weightmask.reconstruct_sky import main as reconstruct_sky_main
 
         rng = np.random.default_rng(1)
         data = (1100.0 + rng.normal(0.0, 5.0, (96, 128))).astype(np.float64)
@@ -313,7 +313,7 @@ class TestReconstructSkyCLI(unittest.TestCase):
             mesh_path = os.path.join(tmp, "sky_mesh.fits")
             out_path = os.path.join(tmp, "sky_full.fits")
             fitsio.write(mesh_path, mesh, header=cards, clobber=True)
-            rc = run_pipeline(["reconstruct-sky", mesh_path, "-o", out_path])
+            rc = reconstruct_sky_main([mesh_path, "-o", out_path])
             self.assertEqual(rc, 0)
             with fitsio.FITS(out_path, "r") as f:
                 rec = f[0].read()
@@ -323,6 +323,15 @@ class TestReconstructSkyCLI(unittest.TestCase):
             self.assertLess(float(np.max(np.abs(rec - sky))), 0.05)
 
     def test_reconstruct_sky_missing_output_flag(self):
+        from weightmask.reconstruct_sky import main as reconstruct_sky_main
+
+        with self.assertRaises(SystemExit) as cm:
+            reconstruct_sky_main(["missing.fits"])
+        self.assertEqual(cm.exception.code, 2)
+
+    def test_weightmask_compat_dispatch(self):
+        from weightmask.cli import run_pipeline
+
         with self.assertRaises(SystemExit) as cm:
             run_pipeline(["reconstruct-sky", "missing.fits"])
         self.assertEqual(cm.exception.code, 2)

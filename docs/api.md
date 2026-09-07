@@ -23,10 +23,9 @@ WeightMask is organized into several modules, each responsible for a specific as
 ```python
 def run_pipeline(argv=None) -> int
 ```
-Main function to parse arguments and run the pipeline. Pass
-`argv=["reconstruct-sky", "mesh.fits", "-o", "full.fits"]` (or invoke
-`weightmask reconstruct-sky ...`) to rebuild a full sky map from a SKYMESH
-product without running the mask/weight pipeline.
+Main function to parse arguments and run the pipeline. Mesh sky rebuild lives in
+`weightmask.reconstruct_sky` (`weightmask-reconstruct-sky`); `weightmask reconstruct-sky ...`
+is a thin compatibility dispatch.
 
 Returns:
 - `int`: Exit code (0 for success, 1 for error)

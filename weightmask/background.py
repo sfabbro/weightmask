@@ -49,7 +49,10 @@ def _check_and_fix_edge_artifacts(bkg_map, sci_data_shape):
 
 
 def _estimate_sep_tiered(sci_data, mask, box_size, filter_size, max_box_size):
-    """Estimate background using SEP with tiered retries."""
+    """Estimate background using SEP with tiered retries.
+
+    Returns ``(bkg_map, bkg_rms_map, box_used)``; ``box_used`` is None on failure.
+    """
     current_box = box_size
     attempt = 0
     while current_box <= max_box_size:
@@ -71,7 +74,7 @@ def _estimate_sep_tiered(sci_data, mask, box_size, filter_size, max_box_size):
             print(f"    SEP background global RMS: {bkg.globalrms:.3f} (box={current_box})")
 
             bkg_map = _check_and_fix_edge_artifacts(bkg_map, sci_data.shape)
-            return bkg_map, bkg_rms_map
+            return bkg_map, bkg_rms_map, int(current_box)
 
         except Exception as e:
             next_box = current_box * 2
@@ -83,7 +86,7 @@ def _estimate_sep_tiered(sci_data, mask, box_size, filter_size, max_box_size):
                 break
             current_box = next_box
             attempt += 1
-    return None, None
+    return None, None, None
 
 
 def _estimate_robust_median(sci_data, mask, method, config):
@@ -377,6 +380,10 @@ def estimate_background(sci_data, mask, config):
     print(f"  Estimating background using method: '{method}'")
 
     bkg_map, bkg_rms_map = None, None
+    # Mesh encoding needs the SEP box that actually built the map (incl. retries).
+    # Non-SEP / global fallbacks have no mesh-compatible box -> leave unset/None.
+    if diagnostics is not None:
+        diagnostics.pop("box_size", None)
 
     if method == "sep":
         mask_fraction = np.mean(mask)
@@ -401,15 +408,19 @@ def estimate_background(sci_data, mask, config):
                 box_size = 128
             filter_size = config.get("filter_size", 3)
             max_box_size = config.get("max_box_size", max(box_size, 1024))
-            if diagnostics is not None:
-                diagnostics["box_size"] = box_size
-            bkg_map, bkg_rms_map = _estimate_sep_tiered(sci_data, mask, box_size, filter_size, max_box_size)
+            bkg_map, bkg_rms_map, used_box = _estimate_sep_tiered(
+                sci_data, mask, box_size, filter_size, max_box_size
+            )
+            if diagnostics is not None and used_box is not None:
+                diagnostics["box_size"] = used_box
             if bkg_map is None:
                 print("    SEP tiered retries failed; switching to robust median fallback.")
                 method = "robust_median_fallback"
 
     if method in ("robust_median_fallback", "median_filter"):
         bkg_map, bkg_rms_map = _estimate_robust_median(sci_data, mask, method, config)
+        if diagnostics is not None:
+            diagnostics.pop("box_size", None)
         if bkg_map is None and config.get("smooth_surface_fallback", True):
             bkg_map, bkg_rms_map = _estimate_smooth_surface(sci_data, mask, config)
             method = "smooth_surface"

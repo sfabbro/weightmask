@@ -15,4 +15,4 @@
   desc: Sky mesh uses SEP n=(size-1)//box+1, nodes (k+0.5)*box; reconstruct via CubicSpline (not map_coordinates).
 
 - id: reconstruct-sky-cli
-  desc: Rebuild mesh skies with `weightmask reconstruct-sky mesh.fits -o full.fits` (SKYMESH cards).
+  desc: Rebuild mesh skies with weightmask-reconstruct-sky (module weightmask.reconstruct_sky); thin `weightmask reconstruct-sky` compat dispatch only.

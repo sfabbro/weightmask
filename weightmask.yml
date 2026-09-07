@@ -237,5 +237,5 @@ output_params:
   # Rice (fz) compression; archive sets true for *.fits.fz landing.
   compress: false
   # Sky product: full map, or coarse mesh (+SKYMESH cards) rebuildable via
-  # background.reconstruct_sky_mesh / `weightmask reconstruct-sky` (~2.5KB/CCD).
+  # weightmask-reconstruct-sky / background.reconstruct_sky_mesh (~2.5KB/CCD).
   sky_format: full
