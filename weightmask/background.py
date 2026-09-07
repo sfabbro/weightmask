@@ -190,7 +190,96 @@ def _auto_box_size(sci_data_shape, mask_fraction, config):
     return max(16, min(auto, cfg_box))
 
 
-def estimate_background_with_diagnostics(sci_data, mask, config):
+def _repair_negative_dips(bkg_map, sci_data, bkg_rms_map, mask, config, diagnostics=None):
+    """Nearest-valid fill for unphysical negative-sky interpolation overshoots.
+
+    SEP's mesh interpolation can undershoot below zero next to masked bright
+    sources and image edges (measured: 0.2-0.5% of a MegaPrime CCD at -100s of
+    ADU while the data sit at +1700). A negative *level* is only repaired when
+    the data agree with the repaired sky: the pixel must be inconsistent with
+    the map (data far above it) and consistent with the fill (data near
+    neighbor sky). Faint regions, blanks, and rms-unknown pixels never qualify.
+    """
+    try:
+        enable = bool(config.get("dip_repair_enable", True))
+    except Exception:
+        enable = True
+    if not enable or bkg_map is None:
+        return bkg_map
+    try:
+        sigma = float(config.get("dip_repair_sigma", 5.0))
+        max_frac = float(config.get("dip_repair_max_fraction", 0.05))
+    except (TypeError, ValueError):
+        sigma, max_frac = 5.0, 0.05
+    try:
+        data = np.asarray(sci_data, dtype=np.float64)
+        guide = np.isfinite(np.asarray(bkg_map, dtype=np.float64))
+    except Exception:
+        return bkg_map
+    try:
+        candidate = (
+            guide
+            & (np.asarray(bkg_map) < 0)
+            & np.isfinite(data)
+            & (~np.asarray(mask, dtype=bool))
+        )
+    except Exception:
+        return bkg_map
+    n_cand = int(np.count_nonzero(candidate))
+    if n_cand == 0:
+        return bkg_map
+    frac = n_cand / bkg_map.size
+    if not np.isfinite(frac) or frac > max_frac:
+        print(f"    WARNING: negative sky over {frac:.1%} of image exceeds repair cap; leaving map as-is.")
+        return bkg_map
+    try:
+        from scipy.ndimage import distance_transform_edt
+
+        rms = np.asarray(bkg_rms_map, dtype=np.float64)
+        finite_rms = np.isfinite(rms) & (rms > 0)
+        rms_ref = np.median(rms[finite_rms]) if np.any(finite_rms) else np.nan
+        thresh = np.where(finite_rms, sigma * rms, sigma * rms_ref)
+        skymap = np.asarray(bkg_map, dtype=np.float64)
+        skymed = np.median(skymap[np.isfinite(skymap)]) if np.any(np.isfinite(skymap)) else np.nan
+        invalid = candidate | ~guide
+        _, idx = distance_transform_edt(invalid, return_indices=True)
+        fill_nn = skymap[tuple(idx)]
+        bad_map = (data - skymap) > thresh
+        # Tier 1: neighbor fill where the data agree with it.
+        accept = (
+            candidate
+            & np.isfinite(thresh)
+            & np.isfinite(fill_nn)
+            & bad_map
+            & (np.abs(data - fill_nn) <= thresh)
+        )
+        # Tier 2: deep interiors whose border fill is still depressed fall back
+        # to the global median when the data agree with that instead.
+        if np.isfinite(skymed):
+            accept2 = (
+                candidate
+                & ~accept
+                & np.isfinite(thresh)
+                & bad_map
+                & (np.abs(data - skymed) <= thresh)
+            )
+        else:
+            accept2 = np.zeros_like(candidate, dtype=bool)
+    except Exception as e:
+        print(f"    WARNING: dip repair failed ({e}); leaving map as-is.")
+        return bkg_map
+    n_bad = int(np.count_nonzero(accept)) + int(np.count_nonzero(accept2))
+    if n_bad == 0:
+        return bkg_map
+    out = skymap.copy()
+    out[accept] = fill_nn[accept]
+    out[accept2] = skymed
+    print(f"    Repaired {n_bad} negative-sky pixels ({n_bad / bkg_map.size:.3%}) via nearest-valid fill.")
+    if diagnostics is not None:
+        diagnostics["dip_repaired"] = n_bad
+    return out.astype(np.asarray(bkg_map).dtype, copy=False)
+
+
     """Estimate background and return diagnostic metadata for benchmarking."""
     diagnostics = {
         "requested_method": config.get("method", "sep").lower(),
@@ -260,6 +349,9 @@ def estimate_background(sci_data, mask, config):
         invalid = ~np.isfinite(bkg_rms_map) | (bkg_rms_map <= 0)
         if np.any(invalid):
             bkg_rms_map = np.where(~invalid, bkg_rms_map, np.inf)
+
+    if bkg_map is not None and bkg_rms_map is not None:
+        bkg_map = _repair_negative_dips(bkg_map, sci_data, bkg_rms_map, mask, config, diagnostics)
 
     if diagnostics is not None:
         diagnostics["effective_method"] = method

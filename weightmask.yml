@@ -59,6 +59,14 @@ sep_background:
   max_box_size: 1024
   median_kernel_size: 31
   smooth_surface_fallback: true
+  # Overshoot repair: SEP mesh interpolation can dip below zero next to masked
+  # bright sources/edges (0.2-0.5% of a MegaPrime CCD). Pixels are filled from
+  # neighbor sky only when the data agree with the fill; faint regions and
+  # blanks are never touched. Box 128/filter 3 measured optimal (larger boxes
+  # worsen dips); tune here, not there.
+  dip_repair_enable: true
+  dip_repair_sigma: 5.0
+  dip_repair_max_fraction: 0.05
 
 cosmic_ray:
   sigclip: 8.5

@@ -70,5 +70,40 @@ class TestBackground(unittest.TestCase):
         self.assertIsNotNone(bkg_rms_map)
 
 
+class TestDipRepair(unittest.TestCase):
+    def test_overshoot_filled_blanks_untouched(self):
+        from weightmask.background import _repair_negative_dips
+
+        rng = np.random.default_rng(0)
+        sky = np.full((200, 200), 1000.0)
+        data = (1000 + 10 * rng.standard_normal((200, 200))).astype(np.float32)
+        yy, xx = np.mgrid[0:200, 0:200]
+        dip = (xx - 150) ** 2 + (yy - 150) ** 2 < 15**2
+        sky[dip] = -200.0  # certain overshoot: data ~1000, map deeply negative
+        blank = (xx - 40) ** 2 + (yy - 40) ** 2 < 10**2
+        data[blank] = 0.0
+        sky[blank] = -5.0  # dark blank: filling with 1000 would be catastrophic
+        rms = np.full((200, 200), 10.0, dtype=np.float32)
+        out = _repair_negative_dips(sky, data, rms, np.zeros((200, 200), bool), {})
+        self.assertTrue(bool((out[dip] > 900).all()))  # overshoot filled from neighbor sky
+        self.assertTrue(bool((out[blank] == -5.0).all()))  # blanks never touched
+
+    def test_cap_and_disable(self):
+        from weightmask.background import _repair_negative_dips
+
+        cap_sky = np.full((50, 50), -10.0)
+        cap_data = np.full((50, 50), 1000.0, dtype=np.float32)
+        cap_rms = np.full((50, 50), 10.0, dtype=np.float32)
+        out = _repair_negative_dips(cap_sky, cap_data, cap_rms, np.zeros((50, 50), bool), {})
+        tiny_sky = np.full((10, 10), -10.0)
+        tiny_data = np.full((10, 10), 1000.0, dtype=np.float32)
+        tiny_rms = np.full((10, 10), 10.0, dtype=np.float32)
+        out2 = _repair_negative_dips(
+            tiny_sky, tiny_data, tiny_rms, np.zeros((10, 10), bool),
+            {"dip_repair_enable": False},
+        )
+        self.assertTrue(bool((out2 == -10.0).all()))  # disabled: untouched
+
+
 if __name__ == "__main__":
     unittest.main()
