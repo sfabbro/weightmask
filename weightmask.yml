@@ -97,12 +97,15 @@ sep_objects:
   deblend_cont: 0.005
   clean: true
   clean_param: 1.0
-  ellipse_k: 2.5
+  ellipse_k: 3.0
   seed_thresh_factor: 1.25
   dynamic_halo_scaling: true
-  halo_brightness_factor: 0.15
+  halo_brightness_factor: 0.2
   halo_flux_reference_percentile: 50.0
-  max_halo_multiplier: 1.8
+  max_halo_multiplier: 2.0
+  # Safety margin dilating the final object mask (measured -70% halo-fringe
+  # leakage for +3pp mask at radius 2 on MegaPrime deep fields).
+  mask_dilation_radius: 2
   max_elongation: 3.0
   handoff_elongated_to_streak: true
   spike_enable: true
