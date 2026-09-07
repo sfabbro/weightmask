@@ -1,7 +1,7 @@
 """Streak behavior regression tests (kept with the streak overhaul commit).
 
 Unknown modes must fail fast instead of silently returning empty masks;
-the method alias must keep resolving after the mode cleanup.
+production accepts only auto_ground (method is a legacy alias for mode).
 """
 
 import unittest
@@ -17,11 +17,16 @@ class TestStreakUnknownMode(unittest.TestCase):
         with self.assertRaises(ValueError):
             detect_streaks(data, None, None, {"enable": True, "mode": "bogus"})
 
-    def test_method_alias_still_resolves(self):
+    def test_only_auto_ground_accepted(self):
         from weightmask.streaks import _resolve_streak_mode
 
-        self.assertEqual(_resolve_streak_mode({"mode": "satdet"}), "satdet_only")
-        self.assertEqual(_resolve_streak_mode({"method": "mrt_only"}), "mrt_only")
+        self.assertEqual(_resolve_streak_mode({"mode": "auto_ground"}), "auto_ground")
+        self.assertEqual(_resolve_streak_mode({"method": "auto_ground"}), "auto_ground")
+        self.assertEqual(_resolve_streak_mode({}), "auto_ground")
+        with self.assertRaises(ValueError):
+            _resolve_streak_mode({"mode": "satdet"})
+        with self.assertRaises(ValueError):
+            _resolve_streak_mode({"method": "mrt_only"})
 
 
 if __name__ == "__main__":

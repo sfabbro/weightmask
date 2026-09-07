@@ -117,7 +117,7 @@ sep_objects:
 ```yaml
 streak_masking:
   enable: True
-  mode: 'auto_ground' # Options: 'auto_ground', 'satdet_only', 'mrt_only', 'legacy_compare'
+  mode: 'auto_ground' # production mode (only supported value)
   debug: false
   dilation_radius: 2
   satdet_params:

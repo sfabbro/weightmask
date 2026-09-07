@@ -135,30 +135,6 @@ class TestStreaks(unittest.TestCase):
         self.assertTrue(np.sum(mask) > 0)
         self.assertTrue(mask[120, 100] or mask[121, 100] or mask[119, 100])
 
-    def test_legacy_frangi_path_still_runs(self):
-        data_sub = np.zeros(self.shape, dtype=np.float32)
-        data_sub[120:123, 30:220] = 50.0
-
-        config = {
-            "enable": True,
-            "mode": "legacy_compare",
-            "dilation_radius": 1,
-            "enable_sparse_ransac": False,
-            "frangi_legacy_params": {
-                "tophat_radius": 4,
-                "sigmas": [1, 2],
-                "min_area": 10,
-                "min_elongation": 2.0,
-                "block_size": 512,
-                "block_pad": 16,
-            },
-        }
-
-        mask = detect_streaks(data_sub, self.rms, self.empty_mask, config)
-
-        self.assertEqual(mask.dtype, bool)
-        self.assertTrue(np.sum(mask) > 0)
-
 
 if __name__ == "__main__":
     unittest.main()

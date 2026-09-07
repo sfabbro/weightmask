@@ -65,9 +65,16 @@ def _mask_stats(pred_mask, gt_mask, eval_gt_mask=None):
 
 
 def _simple_hough_baseline(data_sub, bkg_rms):
+    """Satdet-style baseline without MRT rescue (calls private helpers)."""
+    from weightmask.streaks import (
+        _detect_streaks_contours,
+        _detect_streaks_houghpeaks,
+        _detect_streaks_satdet,
+    )
+
     config = {
         "enable": True,
-        "mode": "satdet_only",
+        "mode": "auto_ground",
         "debug": True,
         "enable_sparse_ransac": False,
         "satdet_params": {
@@ -103,7 +110,15 @@ def _simple_hough_baseline(data_sub, bkg_rms):
             "max_support_width": 18,
         },
     }
-    return detect_streaks(data_sub, bkg_rms, np.zeros_like(data_sub, dtype=bool), config)
+    empty = np.zeros_like(data_sub, dtype=bool)
+    mask = np.zeros_like(data_sub, dtype=bool)
+    hp_mask, _, _ = _detect_streaks_houghpeaks(data_sub, bkg_rms, empty, config)
+    mask |= hp_mask
+    ct_mask, _, _ = _detect_streaks_contours(data_sub, bkg_rms, empty, config)
+    mask |= ct_mask
+    sat_mask, _, _ = _detect_streaks_satdet(data_sub, bkg_rms, empty, config)
+    mask |= sat_mask
+    return mask
 
 
 def _rubin_compatible_baseline(data_sub, bkg_rms):

@@ -13,7 +13,7 @@ import fitsio
 import numpy as np
 import yaml
 
-from weightmask.cli import _resolve_max_workers, process_all_hdus
+from weightmask.mef import _resolve_max_workers, process_all_hdus
 
 
 def _load_cfg():

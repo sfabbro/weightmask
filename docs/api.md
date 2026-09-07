@@ -115,8 +115,9 @@ Args:
 - `bkg_rms_map` (ndarray): Background RMS map
 - `existing_mask` (ndarray): Boolean mask of already masked pixels
 - `config` (dict): Configuration dictionary for streak detection
-- Supported public modes are `auto_ground`, `satdet_only`, `mrt_only`, and `legacy_compare`.
+- Supported public mode is `auto_ground` only (`method` is accepted as a legacy alias).
 - `auto_ground` uses multi-scale Hough/KHT-style candidate extraction, strip/profile refinement, and an MRT-like rescue path.
+- Benchmark-only Frangi lives in `benchmarks.frangi_legacy`.
 
 Returns:
 - `ndarray`: Boolean mask of newly detected streak pixels

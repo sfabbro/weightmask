@@ -66,7 +66,7 @@ def main():
         with fitsio.FITS(f"{wmd}/{pid}.sky.fits") as f:
             osky = f[hdu].read().astype(np.float64)
         with fitsio.FITS(f"{dl}/{pid}.fits.fz") as hi, fitsio.FITS(flat_of[pid]) as hf:
-            from weightmask.cli import process_hdu
+            from weightmask.mef import process_hdu
 
             res = process_hdu(hi[hdu], hf[hdu] if hdu < len(hf) else None, cfg, hdu, tile_size=1024)
         nmask, ninv, nweight, nconf, nsky, _ = res

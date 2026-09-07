@@ -3,7 +3,7 @@ from unittest.mock import MagicMock, patch
 
 import numpy as np
 
-from weightmask.cli import process_hdu
+from weightmask.mef import process_hdu
 
 
 class TestProcessHDU(unittest.TestCase):
@@ -32,13 +32,13 @@ class TestProcessHDU(unittest.TestCase):
         self.mock_flat_data = np.ones((100, 100), dtype=np.float32)
         self.mock_hdu_flat.read.return_value = self.mock_flat_data
 
-    @patch("weightmask.cli.detect_bad_pixels")
-    @patch("weightmask.cli.detect_saturated_pixels")
-    @patch("weightmask.cli.estimate_background")
-    @patch("weightmask.cli.detect_cosmic_rays")
-    @patch("weightmask.cli.detect_objects")
-    @patch("weightmask.cli.calculate_inverse_variance")
-    @patch("weightmask.cli.generate_weight_and_confidence")
+    @patch("weightmask.process.detect_bad_pixels")
+    @patch("weightmask.process.detect_saturated_pixels")
+    @patch("weightmask.process.estimate_background")
+    @patch("weightmask.process.detect_cosmic_rays")
+    @patch("weightmask.process.detect_objects")
+    @patch("weightmask.process.calculate_inverse_variance")
+    @patch("weightmask.process.generate_weight_and_confidence")
     def test_process_hdu_happy_path(
         self,
         mock_generate_weight,
@@ -69,10 +69,11 @@ class TestProcessHDU(unittest.TestCase):
         # calculate_inverse_variance returns (inv_var_map, final_method)
         mock_calc_inv_var.return_value = np.ones((100, 100), dtype=np.float32)
 
-        # generate_weight_and_confidence returns (weight_map, conf_map)
+        # generate_weight_and_confidence returns (weight_map, conf_map, product)
         mock_generate_weight.return_value = (
             np.ones((100, 100), dtype=np.float32),
             np.ones((100, 100), dtype=np.float32),
+            None,
         )
 
         # Run process_hdu
@@ -131,13 +132,13 @@ class TestProcessHDU(unittest.TestCase):
         self.assertIsNone(inv_var_data)
         self.assertIsNone(mask_data)
 
-    @patch("weightmask.cli.detect_bad_pixels")
-    @patch("weightmask.cli.detect_saturated_pixels")
-    @patch("weightmask.cli.estimate_background")
-    @patch("weightmask.cli.detect_cosmic_rays")
-    @patch("weightmask.cli.detect_objects")
-    @patch("weightmask.cli.calculate_inverse_variance")
-    @patch("weightmask.cli.generate_weight_and_confidence")
+    @patch("weightmask.process.detect_bad_pixels")
+    @patch("weightmask.process.detect_saturated_pixels")
+    @patch("weightmask.process.estimate_background")
+    @patch("weightmask.process.detect_cosmic_rays")
+    @patch("weightmask.process.detect_objects")
+    @patch("weightmask.process.calculate_inverse_variance")
+    @patch("weightmask.process.generate_weight_and_confidence")
     def test_process_hdu_no_flat(
         self,
         mock_generate_weight,
@@ -165,6 +166,7 @@ class TestProcessHDU(unittest.TestCase):
         mock_generate_weight.return_value = (
             np.ones((100, 100), dtype=np.float32),
             np.ones((100, 100), dtype=np.float32),
+            None,
         )
 
         # Run process_hdu with hdu_flat = None
@@ -181,14 +183,14 @@ class TestProcessHDU(unittest.TestCase):
         mock_detect_bad.assert_called()
         self.assertTrue(mock_detect_bad.call_args[0][2])  # The third argument to detect_bad_pixels is using_unit_flat
 
-    @patch("weightmask.cli.detect_bad_pixels")
-    @patch("weightmask.cli.detect_saturated_pixels")
-    @patch("weightmask.cli.estimate_background")
-    @patch("weightmask.cli.detect_cosmic_rays")
-    @patch("weightmask.cli.detect_objects")
-    @patch("weightmask.cli.calculate_inverse_variance")
-    @patch("weightmask.cli.generate_weight_and_confidence")
-    @patch("weightmask.cli.detect_streaks")
+    @patch("weightmask.process.detect_bad_pixels")
+    @patch("weightmask.process.detect_saturated_pixels")
+    @patch("weightmask.process.estimate_background")
+    @patch("weightmask.process.detect_cosmic_rays")
+    @patch("weightmask.process.detect_objects")
+    @patch("weightmask.process.calculate_inverse_variance")
+    @patch("weightmask.process.generate_weight_and_confidence")
+    @patch("weightmask.process.detect_streaks")
     def test_process_hdu_with_streaks(
         self,
         mock_detect_streaks,
@@ -221,6 +223,7 @@ class TestProcessHDU(unittest.TestCase):
         mock_generate_weight.return_value = (
             np.ones((100, 100), dtype=np.float32),
             np.ones((100, 100), dtype=np.float32),
+            None,
         )
 
         # Run process_hdu
@@ -236,14 +239,14 @@ class TestProcessHDU(unittest.TestCase):
         mock_detect_streaks.assert_called_once()
         self.assertIsNotNone(weight_map)
 
-    @patch("weightmask.cli.detect_bad_pixels")
-    @patch("weightmask.cli.detect_saturated_pixels")
-    @patch("weightmask.cli.estimate_background")
-    @patch("weightmask.cli.detect_cosmic_rays")
-    @patch("weightmask.cli.detect_objects")
-    @patch("weightmask.cli.calculate_inverse_variance")
-    @patch("weightmask.cli.generate_weight_and_confidence")
-    @patch("weightmask.cli.grow_bleed_trails")
+    @patch("weightmask.process.detect_bad_pixels")
+    @patch("weightmask.process.detect_saturated_pixels")
+    @patch("weightmask.process.estimate_background")
+    @patch("weightmask.process.detect_cosmic_rays")
+    @patch("weightmask.process.detect_objects")
+    @patch("weightmask.process.calculate_inverse_variance")
+    @patch("weightmask.process.generate_weight_and_confidence")
+    @patch("weightmask.process.grow_bleed_trails")
     def test_process_hdu_with_bleed_trails(
         self,
         mock_grow_bleed,
@@ -276,6 +279,7 @@ class TestProcessHDU(unittest.TestCase):
         mock_generate_weight.return_value = (
             np.ones((100, 100), dtype=np.float32),
             np.ones((100, 100), dtype=np.float32),
+            None,
         )
 
         # Run process_hdu
@@ -291,13 +295,13 @@ class TestProcessHDU(unittest.TestCase):
         mock_grow_bleed.assert_called_once()
         self.assertIsNotNone(weight_map)
 
-    @patch("weightmask.cli.detect_bad_pixels")
-    @patch("weightmask.cli.detect_saturated_pixels")
-    @patch("weightmask.cli.estimate_background")
-    @patch("weightmask.cli.detect_cosmic_rays")
-    @patch("weightmask.cli.detect_objects")
-    @patch("weightmask.cli.calculate_inverse_variance")
-    @patch("weightmask.cli.generate_weight_and_confidence")
+    @patch("weightmask.process.detect_bad_pixels")
+    @patch("weightmask.process.detect_saturated_pixels")
+    @patch("weightmask.process.estimate_background")
+    @patch("weightmask.process.detect_cosmic_rays")
+    @patch("weightmask.process.detect_objects")
+    @patch("weightmask.process.calculate_inverse_variance")
+    @patch("weightmask.process.generate_weight_and_confidence")
     def test_process_hdu_none_returns(
         self,
         mock_generate_weight,

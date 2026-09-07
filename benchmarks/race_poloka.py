@@ -68,7 +68,7 @@ def main():
     cfg = yaml.safe_load(open("weightmask.yml"))
     scfg = dict(cfg["streak_masking"])
     scfg["enable"] = True
-    scfg["mode"] = "satdet_only"
+    scfg["mode"] = "auto_ground"
 
     # (a) clean 10-sigma horizontal trail in quiet crop
     sub, sky, rms, ex, sat, noise, _ = load("719016p", 1, np.s_[0:1024, 1024:2048])
