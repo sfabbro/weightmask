@@ -8,6 +8,7 @@ import sys
 
 import fitsio
 
+from . import __version__
 from .background import parse_sky_mesh_header, reconstruct_sky_from_header
 from .utils import extract_hdu_spec
 
@@ -15,12 +16,44 @@ from .utils import extract_hdu_spec
 def parse_args(argv=None) -> argparse.Namespace:
     parser = argparse.ArgumentParser(
         prog="weightmask-reconstruct-sky",
-        description="Rebuild full-resolution sky maps from SKYMESH mesh FITS products.",
-        epilog="Example: weightmask-reconstruct-sky sky_mesh.fits -o sky_full.fits",
+        description="Rebuild a full-resolution sky map from a WeightMask SKYMESH FITS product.",
+        epilog=(
+            "Examples:\n"
+            "  weightmask-reconstruct-sky sky_mesh.fits -o sky_full.fits\n"
+            "  weightmask-reconstruct-sky sky_mesh.fits -o sky_full.fits --hdu 1\n"
+            "  weightmask reconstruct-sky sky_mesh.fits -o sky_full.fits\n"
+            "\n"
+            "See docs/usage.md and docs/algorithms.md. This is a separate program, "
+            "not a weightmask flag."
+        ),
+        formatter_class=argparse.RawDescriptionHelpFormatter,
     )
-    parser.add_argument("input_file", type=str, help="Path to sky mesh FITS (SKYMESH cards required).")
-    parser.add_argument("-o", "--output", type=str, required=True, help="Output full-resolution sky FITS.")
-    parser.add_argument("--hdu", type=int, default=None, help="HDU index (default: all SKYMESH image HDUs).")
+    inputs = parser.add_argument_group("Inputs")
+    outputs = parser.add_argument_group("Outputs")
+    run = parser.add_argument_group("Run")
+    inputs.add_argument(
+        "input_file",
+        type=str,
+        help="Sky mesh FITS (SKYMESH / MESHBW / MESHBH / SKYH / SKYW cards required).",
+    )
+    outputs.add_argument(
+        "-o",
+        "--output",
+        type=str,
+        required=True,
+        help="Output full-resolution sky FITS.",
+    )
+    run.add_argument(
+        "--hdu",
+        type=int,
+        default=None,
+        help="HDU index. Default: every SKYMESH image HDU.",
+    )
+    run.add_argument(
+        "--version",
+        action="version",
+        version=f"%(prog)s {__version__}",
+    )
     return parser.parse_args(argv)
 
 

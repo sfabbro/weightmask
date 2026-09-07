@@ -1,266 +1,129 @@
-# WeightMask Usage Guide
+# Usage
 
-WeightMask is a Python toolkit for generating weight maps, confidence maps, and masks for astronomical FITS images. These maps are essential for proper image stacking, coaddition, and source detection in astronomical data processing pipelines.
+WeightMask reads a detrended science FITS (single extension or MEF) and writes
+weight, mask, inverse-variance, and sky products. Algorithms are in
+[algorithms.md](algorithms.md). The supported library surface is in
+[api.md](api.md).
 
-## Installation
+## Config is required
 
-To install WeightMask, clone the repository and install it in development mode:
+Pass `--config path.yml`, or put a file in the current directory. Search order
+if `--config` is omitted: `weightmask.yml`, `config.yml`, `.weightmask.yml`.
+The wheel does not bundle a config.
 
-```bash
-git clone https://github.com/astroai/weightmask.git
-cd weightmask
-pip install -e .
-```
+The only key list is the repo-root [`weightmask.yml`](../weightmask.yml). Extra
+top-level keys fail validation. Missing known sections warn and fall back to
+code defaults. `WeightMapGenerator` raises `ValueError` on invalid config.
 
-## Basic Usage
+Each HDU uses one gain and one read-noise value (first present header keyword
+in the configured lists). Dual-amp `GAINA`/`GAINB` are not split.
 
-The basic command to run WeightMask is:
-
-```bash
-weightmask input.fits
-```
-
-This will process the input FITS file and generate a weight map by default.
-
-## Command Line Options
+## Command
 
 ```bash
-weightmask [OPTIONS] INPUT_FILE
+weightmask science.fits --config weightmask.yml --flat_image flat.fits \
+  -o out.weight.fits --output_mask out.mask.fits
 ```
 
-### Required Arguments
+Run `weightmask --help` for Inputs / Outputs / Run groups. Rebuild a compact
+sky mesh with the separate program `weightmask-reconstruct-sky` (also
+`weightmask reconstruct-sky ...`).
 
-- `INPUT_FILE`: Path to the input FITS file
+## Cookbook
 
-### Optional Arguments
+### MEF
 
-- `--output_map`, `-o`: Path for primary output map (Weight or Confidence). Default: `<input_base>.weight.fits`
-- `--config`: Path to YAML configuration file (optional, attempts default locations)
-- `--flat_image`: Path to input flat field FITS file (optional)
-- `--output_mask`: Path for output bitmask FITS file (optional)
-- `--output_invvar`: Path for output inverse variance FITS file (optional)
-- `--output_sky`: Path for output sky background map file (optional)
-- `weightmask-reconstruct-sky`: rebuild full sky from a `sky_format: mesh` product
-- `--output_weight_raw`: Path for unnormalized weight map (masked inv_var), if different from primary map
-- `--hdu`: HDU index to process (e.g., 0, 1). Processes extensions if omitted
-- `--individual_masks`: Output individual mask component files
+Omit `--hdu` to process every 2-D image extension. Pin one extension with
+`--hdu 1` or a CFITSIO-style name `science.fits[1]`. Parallel HDU workers:
+`--nproc` / `--max-workers` (default `min(8, ncpu)`; `0` or `1` is sequential).
 
-## Configuration
+### Flat, dark, keep-map
 
-WeightMask uses a YAML configuration file to control its behavior. If not specified with the `--config` option, it will look for `weightmask.yml` in the current directory.
-
-### Configuration Sections
-
-#### Flat Masking
-```yaml
-flat_masking:
-  local_filter_size: 15
-  local_low_thresh: 0.5
-  local_high_thresh: 2.0
-  col_enable: True
-  col_deriv_sigma: 10.0
-  col_dead_thresh: 0.1
-```
-
-#### Saturation Detection
-```yaml
-saturation:
-  method: 'histogram'
-  keyword: 'SATURATE'
-  effective_full_scale: 65535.0
-  histogram_params:
-    guard_fraction: 0.75
-    max_upper_factor: 1.05
-  fallback_level: 65000.0
-```
-
-#### Background Estimation
-```yaml
-sep_background:
-  method: 'sep' # Options: 'sep', 'median_filter', 'robust_median_fallback'
-  box_size: 128
-  auto_box_scaling: true
-  filter_size: 3
-  iterations: 2 # Number of iterative background/object detection loops
-  mask_threshold: 0.8
-  max_box_size: 1024
-  median_kernel_size: 31 # Kernel size for the median filter
-  smooth_surface_fallback: true
-```
-
-#### Astroscrappy Cosmic Ray Detection
-```yaml
-cosmic_ray:
-  sigclip: 8.5
-  objlim: 15.0
-  niter: 2
-  dynamic_sigclip: false # Pinned conservative; auto-adjust would lower sigclip
-  dynamic_objlim: true
-```
-
-#### SEP Object Detection
-```yaml
-sep_objects:
-  extract_thresh: 3.0
-  min_area: 10
-  deblend_nthresh: 32
-  deblend_cont: 0.005
-  seed_thresh_factor: 1.25
-  ellipse_k: 2.5
-  dynamic_halo_scaling: true
-  halo_brightness_factor: 0.15
-  max_halo_multiplier: 1.8
-  handoff_elongated_to_streak: true
-```
-
-#### Streak Masking
-```yaml
-streak_masking:
-  enable: True
-  mode: 'auto_ground' # production mode (only supported value)
-  debug: false
-  dilation_radius: 2
-  satdet_params:
-    rescale_percentiles: [4.5, 93.0]
-    gaussian_sigma: 2.0
-    gaussian_sigmas: [1.5, 2.0, 3.0]
-    canny_low_threshold: 0.1
-    canny_high_threshold: 0.35
-    small_edge_perimeter: 60
-    hough_min_line_length: 120
-    hough_max_line_gap: 30
-    cluster_angle_tol_deg: 3.0
-    cluster_rho_tol_px: 30.0
-    edge_buffer: 32
-    confidence_threshold: 0.4
-  mrt_rescue_params:
-    theta_step_deg: 1.0
-    peak_threshold_sig: 4.5
-    max_candidates: 4
-    confidence_threshold: 0.35
-  mask_params:
-    strip_length: 256
-    strip_width: 96
-    profile_sigma_threshold: 3.0
-    padding: 4
-  enable_sparse_ransac: True
-  sparse_ransac_params:
-    detect_thresh_sig: 5.0
-    min_inliers: 10
-    min_length: 100
-```
-
-#### Variance Calculation
-```yaml
-variance:
-  method: 'empirical_fit' # Options: 'empirical_fit', 'theoretical', 'rms_map'
-  gain_keyword: 'GAIN'
-  rdnoise_keyword: 'RDNOISE'
-  default_gain: 1.5
-  default_rdnoise: 5.0
-  epsilon: 1.0e-9
-  # Parameters for 'empirical_fit' method
-  empirical_patch_size: 128
-  empirical_clip_sigma: 3.0
-```
-
-#### Confidence Map Parameters
-```yaml
-confidence_params:
-  dtype: 'float32'
-  normalize_percentile: 99.0
-  scale_to_100: False
-```
-
-#### Output Parameters
-```yaml
-output_params:
-  output_map_format: 'weight'
-  mask_detected_in_weight: False
-```
-
-## Output Files
-
-WeightMask can generate several types of output files:
-
-1. **Primary Map**: Either a weight map or confidence map (configured via `output_map_format`)
-2. **Bitmask**: Combined mask with different defect types flagged with bit flags
-3. **Inverse Variance Map**: Pure inverse variance calculation
-4. **Sky Background Map**: Estimated sky background
-5. **Raw Weight Map**: Unnormalized weight map
-6. **Individual Masks**: Separate masks for each defect type (when `--individual_masks` is used)
-
-## Bit Flags
-
-The bitmask uses the following bit flags:
-
-- `BAD` (1): Bad pixels from flat field
-- `SAT` (2): Saturated pixels
-- `CR` (4): Cosmic ray hits
-- `DETECTED` (8): Detected astronomical objects
-- `STREAK` (16): Satellite/artifact streaks
-
-## Examples
-
-### Basic Processing
 ```bash
-weightmask science.fits
+weightmask science.fits --config weightmask.yml \
+  --flat_image flat.fits \
+  --dark_image dark.fits \
+  --badpix_mask bpm.fits \
+  -o out.weight.fits --output_mask out.mask.fits
 ```
 
-### Process with Flat Field Correction
+`--badpix_mask` is an Elixir keep-map: `0` = bad, `1` = good. Those zeros are
+OR'd into `BAD`. `--dark_image` hot pixels also OR into `BAD`. Without a flat,
+a unit flat is used and local dead-pixel detection is weaker.
+
+### Outputs
+
 ```bash
-weightmask science.fits --flat_image flat.fits
+weightmask science.fits --config weightmask.yml \
+  -o out.weight.fits \
+  --output_mask out.mask.fits \
+  --output_invvar out.invvar.fits \
+  --output_sky out.sky.fits \
+  --individual_masks
 ```
 
-### Generate All Output Types
-```bash
-weightmask science.fits --output_mask mask.fits --output_invvar invvar.fits --output_sky sky.fits
-```
+- Primary map (`-o`): weight or confidence, from `output_params.output_map_format`.
+- `--output_mask`: combined integer quality mask.
+- `--output_invvar`: sanitized inverse-variance plane.
+- `--output_sky`: sky map (`output_params.sky_format: full`) or compact mesh
+  (`sky_format: mesh`).
+- `--output_weight_raw`: unnormalized masked inverse variance if it should
+  differ from the primary map.
+- `--individual_masks`: one FITS file per component (bad, sat, cr, obj, streak).
 
-### Process Specific HDU
-```bash
-weightmask science.fits[1] --hdu 1
-```
+Default primary path is `<input_base>.weight.fits` if `-o` is omitted.
 
-### Use Custom Configuration
-```bash
-weightmask science.fits --config my_config.yml
-```
+### Quality bits
 
-### Generate Individual Masks
-```bash
-weightmask science.fits --individual_masks
-```
+| Bit | Name | Zero weight? |
+|---|---|---|
+| 1 | `BAD` | yes |
+| 2 | `SAT` | yes |
+| 4 | `CR` | yes |
+| 8 | `DETECTED` | no (set `output_params.mask_detected_in_weight` to zero it) |
+| 16 | `STREAK` | yes |
+| 32 | `INVALID_VARIANCE` | yes |
 
-### Compact sky mesh + rebuild
-Set `output_params.sky_format: mesh` in the config to write a coarse SEP mesh
-(~2.5 KB/CCD) with `SKYMESH` / `MESHBW` / `SKYH` / `SKYW` cards instead of the
-full map. Rebuild anytime with:
+Polarity is `set_means_flagged`. See [algorithms.md](algorithms.md).
+
+### Compact sky mesh
+
+In `weightmask.yml` set `output_params.sky_format: mesh`. The product stores
+SEP-aligned nodes plus `SKYMESH` / `MESHBW` / `MESHBH` / `SKYH` / `SKYW` cards (~2.5 KB
+per CCD). Rebuild:
 
 ```bash
 weightmask-reconstruct-sky sky_mesh.fits -o sky_full.fits
 weightmask-reconstruct-sky sky_mesh.fits -o sky_full.fits --hdu 1
-# compat: weightmask reconstruct-sky ...
 ```
 
-## Benchmark Runner
+Compatibility dispatch: `weightmask reconstruct-sky sky_mesh.fits -o sky_full.fits`.
 
-```bash
-pixi run benchmark-synthetic
-pixi run benchmark-megacam
-pixi run benchmark-acs
+### Weight plane
+
+Default `variance.method: theoretical`:
+
+```
+ivar = g² F² / (S g + RN²)
 ```
 
-The three manual trail labels are external evidence, not repository fixtures.
-Create finite binary 0/1 FITS masks in the full coordinate frame of their
-source exposure and place them at the paths declared by `label_artifact` in:
+Elixir-style F² coadd weight. Exact Poisson plus read noise at `F = 1`. At
+vignette (`F ≠ 1`) this is a sensitivity weight, not `g² F² / (S g F + RN²)`.
 
-- `tests/benchmarks/manifests/megacam_real.json`
-- `tests/benchmarks/manifests/acs_compare.json`
+### Python
 
-The source-exposure SHA-256 values are already pinned. After a label has been
-reviewed, compute its byte-exact digest with `shasum -a 256 <label.fits>` and
-replace that case's null `label_artifact.sha256`. The real-suite command remains
-nonzero if a source or label hash differs, a mask is not full-frame finite
-binary data, the selected cutout has no labeled trail, or a scientific quality
-gate fails. The emitted `metrics.json` records both accepted hashes.
+```python
+from astropy.io import fits
+from weightmask import WeightMapGenerator
+import yaml
+
+with open("weightmask.yml") as f:
+    config = yaml.safe_load(f)
+
+sci = fits.getdata("science.fits", ext=1)
+hdr = dict(fits.getheader("science.fits", ext=1))
+flat = fits.getdata("flat.fits", ext=1)
+
+out = WeightMapGenerator(config).process(sci, header=hdr, flat_data=flat)
+weight, mask = out["weight_map"], out["flag_map"]
+```

@@ -95,6 +95,32 @@ class TestValidateConfig(unittest.TestCase):
         self.assertFalse(validate_config(invalid_config))
 
 
+class TestWeightMapGenerator(unittest.TestCase):
+    def test_rejects_invalid_config(self):
+        from weightmask.pipeline import WeightMapGenerator
+
+        with self.assertRaises(ValueError):
+            WeightMapGenerator({"background": {}, "variance": {"method": "theoretical"}})
+
+    def test_accepts_valid_config(self):
+        from weightmask.pipeline import WeightMapGenerator
+
+        gen = WeightMapGenerator(
+            {
+                "flat_masking": {},
+                "saturation": {},
+                "sep_background": {},
+                "cosmic_ray": {},
+                "sep_objects": {},
+                "streak_masking": {},
+                "variance": {"method": "theoretical"},
+                "confidence_params": {},
+                "output_params": {},
+            }
+        )
+        self.assertIsInstance(gen.config, dict)
+
+
 class TestRunPipeline(unittest.TestCase):
     def setUp(self):
         self.test_dir = tempfile.TemporaryDirectory()
@@ -296,6 +322,38 @@ class TestCLIConfigFallback(unittest.TestCase):
             result = run_pipeline()
             self.assertEqual(result, 1)
             mock_print.assert_any_call("Using default config file found at: .weightmask.yml")
+
+
+class TestCliHelp(unittest.TestCase):
+    def test_weightmask_help_mentions_config(self):
+        from io import StringIO
+
+        from weightmask.cli import parse_arguments
+
+        buf = StringIO()
+        with patch("sys.stdout", buf):
+            with self.assertRaises(SystemExit) as cm:
+                parse_arguments(["--help"])
+        self.assertEqual(cm.exception.code, 0)
+        text = buf.getvalue()
+        self.assertTrue(text.strip())
+        self.assertIn("--config", text)
+        self.assertIn("Inputs", text)
+        self.assertIn("Outputs", text)
+
+    def test_reconstruct_sky_help_mentions_output(self):
+        from io import StringIO
+
+        from weightmask.reconstruct_sky import parse_args
+
+        buf = StringIO()
+        with patch("sys.stdout", buf):
+            with self.assertRaises(SystemExit) as cm:
+                parse_args(["--help"])
+        self.assertEqual(cm.exception.code, 0)
+        text = buf.getvalue()
+        self.assertTrue(text.strip())
+        self.assertIn("--output", text)
 
 
 class TestReconstructSkyCLI(unittest.TestCase):

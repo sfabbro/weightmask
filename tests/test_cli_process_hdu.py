@@ -32,6 +32,11 @@ class TestProcessHDU(unittest.TestCase):
         self.mock_flat_data = np.ones((100, 100), dtype=np.float32)
         self.mock_hdu_flat.read.return_value = self.mock_flat_data
 
+        product = MagicMock()
+        product.quality_mask = np.zeros((100, 100), dtype=np.uint32)
+        product.inverse_variance = np.ones((100, 100), dtype=np.float32)
+        self.mock_product = product
+
     @patch("weightmask.process.detect_bad_pixels")
     @patch("weightmask.process.detect_saturated_pixels")
     @patch("weightmask.process.estimate_background")
@@ -73,7 +78,7 @@ class TestProcessHDU(unittest.TestCase):
         mock_generate_weight.return_value = (
             np.ones((100, 100), dtype=np.float32),
             np.ones((100, 100), dtype=np.float32),
-            None,
+            self.mock_product,
         )
 
         # Run process_hdu
@@ -166,7 +171,7 @@ class TestProcessHDU(unittest.TestCase):
         mock_generate_weight.return_value = (
             np.ones((100, 100), dtype=np.float32),
             np.ones((100, 100), dtype=np.float32),
-            None,
+            self.mock_product,
         )
 
         # Run process_hdu with hdu_flat = None
@@ -223,7 +228,7 @@ class TestProcessHDU(unittest.TestCase):
         mock_generate_weight.return_value = (
             np.ones((100, 100), dtype=np.float32),
             np.ones((100, 100), dtype=np.float32),
-            None,
+            self.mock_product,
         )
 
         # Run process_hdu
@@ -279,7 +284,7 @@ class TestProcessHDU(unittest.TestCase):
         mock_generate_weight.return_value = (
             np.ones((100, 100), dtype=np.float32),
             np.ones((100, 100), dtype=np.float32),
-            None,
+            self.mock_product,
         )
 
         # Run process_hdu

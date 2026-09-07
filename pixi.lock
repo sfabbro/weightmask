@@ -8297,5 +8297,4 @@ packages:
   - sep
   - pyyaml
   - astroscrappy
-  - galsim ; extra == 'benchmarks'
   requires_python: '>=3.10'

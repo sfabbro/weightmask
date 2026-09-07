@@ -16,7 +16,8 @@ import numpy as np
 
 CONTRACT_VERSION = "1.0"
 MASK_POLARITY = "set_means_flagged"
-INVERSE_VARIANCE_SEMANTICS = "inverse_variance_per_pixel"
+# Frozen 0.1 plane: g²F²/(Sg+RN²). Exact Poisson+RN at F=1; Elixir-style F² coadd weight otherwise.
+INVERSE_VARIANCE_SEMANTICS = "elixir_style_flat2_coadd_weight"
 CONFIDENCE_SEMANTICS = "normalized_weight_0_to_1"
 MAX_CONFIDENCE_SAMPLES = 100_000
 _FITS_HEADER_VALUE_CHARS = 60
@@ -101,7 +102,7 @@ class ProducerMetadata:
     """Versioned producer identity, with reserved fields for future ML models."""
 
     name: str = "weightmask"
-    version: str = "1.0.0"
+    version: str = "0.1.0"
     kind: str = "classical"
     algorithm: str = "classical_mask_and_variance"
     model_id: str | None = None

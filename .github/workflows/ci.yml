@@ -1,0 +1,20 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: prefix-dev/setup-pixi@v0.10.0
+        with:
+          locked: true
+          cache: true
+      - run: pixi run lint
+      - run: pixi run test
+      - name: Entry-point smoke
+        run: pixi run python -c "from weightmask.cli import run_pipeline; from weightmask.reconstruct_sky import main; import weightmask; assert weightmask.__version__ == '0.1.0'"

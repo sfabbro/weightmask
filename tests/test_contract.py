@@ -4,9 +4,11 @@ from types import ModuleType
 import numpy as np
 import pytest
 
+import weightmask
 from tests.fixtures.wave5_contract import FIXTURE_LABEL, classical_contract_fixture
 from weightmask.contract import (
     CONFIDENCE_SEMANTICS,
+    INVERSE_VARIANCE_SEMANTICS,
     MASK_POLARITY,
     MAX_CONFIDENCE_SAMPLES,
     ArtifactMetadata,
@@ -94,6 +96,8 @@ def test_producer_and_artifact_metadata_round_trip_with_ml_fields_reserved():
     assert restored.mask_polarity == MASK_POLARITY
     assert "WMQDCNT" in artifact.to_header()
     assert CONFIDENCE_SEMANTICS == "normalized_weight_0_to_1"
+    assert INVERSE_VARIANCE_SEMANTICS == "elixir_style_flat2_coadd_weight"
+    assert weightmask.__version__ == "0.1.0"
 
 
 def test_torchfits_adapter_uses_only_present_public_root_api():

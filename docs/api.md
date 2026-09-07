@@ -1,240 +1,101 @@
-# API Documentation
+# API (0.1)
 
-## Module Overview
+Supported public surface: package `__all__`, `weightmask.contract`,
+`weightmask.reconstruct_sky`, and the two console scripts. Other modules are
+callable internals, not a stability promise. Science methods are in
+[algorithms.md](algorithms.md). Config keys are in
+[`weightmask.yml`](../weightmask.yml).
 
-WeightMask is organized into several modules, each responsible for a specific aspect of mask and weight map generation:
+## `weightmask.WeightMapGenerator`
 
-- `weightmask.cli`: Command-line interface
-- `weightmask.bad`: Bad pixel detection
-- `weightmask.satur`: Saturation detection
-- `weightmask.cosmics`: Cosmic ray detection
-- `weightmask.objects`: Object detection
-- `weightmask.streaks`: Streak detection
-- `weightmask.background`: Background estimation
-- `weightmask.variance`: Variance calculation
-- `weightmask.weight`: Weight and confidence map generation
-- `weightmask.contract`: Transport-neutral array/header interoperability contract
-- `weightmask.torchfits_adapter`: Optional public torchfits adapter
-- `weightmask.utils`: Utility functions
-
-## CLI Module
-
-### run_pipeline()
 ```python
-def run_pipeline(argv=None) -> int
-```
-Main function to parse arguments and run the pipeline. Mesh sky rebuild lives in
-`weightmask.reconstruct_sky` (`weightmask-reconstruct-sky`); `weightmask reconstruct-sky ...`
-is a thin compatibility dispatch.
+from weightmask import WeightMapGenerator
 
-Returns:
-- `int`: Exit code (0 for success, 1 for error)
-
-## Bad Pixel Detection
-
-### detect_bad_pixels()
-```python
-def detect_bad_pixels(flat_data, config, using_unit_flat=False)
-```
-Detect bad pixels and columns in the flat field.
-
-Args:
-- `flat_data` (ndarray): Flat field data array
-- `config` (dict): Configuration dictionary for flat masking
-- `using_unit_flat` (bool): Whether a unit flat (all 1.0) is being used
-
-Returns:
-- `ndarray`: Boolean mask of bad pixels and columns (True = bad)
-
-## Saturation Detection
-
-### detect_saturated_pixels()
-```python
-def detect_saturated_pixels(sci_data, sci_hdr, config)
-```
-Detect saturated pixels in the science data using the configured method.
-
-Args:
-- `sci_data` (ndarray): Science image data array (float32 recommended)
-- `sci_hdr` (fits.Header): Science image header
-- `config` (dict): Configuration dictionary for saturation detection
-
-Returns:
-- `tuple`: (saturation_level, sat_method_used, sat_mask_bool)
-  - `saturation_level` (float): The determined saturation level in ADU
-  - `sat_method_used` (str): Method used ('histogram', 'header', 'default')
-  - `sat_mask_bool` (ndarray): Boolean mask where True indicates saturated pixels
-
-## Cosmic Ray Detection
-
-### detect_cosmic_rays()
-```python
-def detect_cosmic_rays(sci_data, existing_mask, saturation_level, gain, read_noise, config, bkg_rms_map=None)
-```
-Detect cosmic rays in the science data.
-
-Args:
-- `sci_data` (ndarray): Science image data array
-- `existing_mask` (ndarray): Boolean mask of already masked pixels
-- `saturation_level` (float): Saturation level for the detector
-- `gain` (float): Gain value in e-/ADU
-- `read_noise` (float): Read noise in electrons
-- `config` (dict): Configuration dictionary for cosmic ray detection
-- `bkg_rms_map` (ndarray, optional): Background RMS map for dynamic sigclip.
-
-Returns:
-- `ndarray`: Boolean mask of newly detected cosmic ray pixels
-
-## Object Detection
-
-### detect_objects()
-```python
-def detect_objects(data_sub, bkg_rms_map, existing_mask, config)
-```
-Detect astronomical objects in the background-subtracted image.
-
-Args:
-- `data_sub` (ndarray): Background-subtracted image data
-- `bkg_rms_map` (ndarray): Background RMS map
-- `existing_mask` (ndarray): Boolean mask of already masked pixels
-- `config` (dict): Configuration dictionary for object detection
-
-Returns:
-- `ndarray`: Boolean mask of newly detected object pixels
-
-## Streak Detection
-
-### detect_streaks()
-```python
-def detect_streaks(data_sub, bkg_rms_map, existing_mask, config)
-```
-Detect linear streaks using the configured ground-based mode.
-
-Args:
-- `data_sub` (ndarray): Background-subtracted image data
-- `bkg_rms_map` (ndarray): Background RMS map
-- `existing_mask` (ndarray): Boolean mask of already masked pixels
-- `config` (dict): Configuration dictionary for streak detection
-- Supported public mode is `auto_ground` only (`method` is accepted as a legacy alias).
-- `auto_ground` uses multi-scale Hough/KHT-style candidate extraction, strip/profile refinement, and an MRT-like rescue path.
-- Benchmark-only Frangi lives in `benchmarks.frangi_legacy`.
-
-Returns:
-- `ndarray`: Boolean mask of newly detected streak pixels
-
-## Background Estimation
-
-### estimate_background()
-```python
-def estimate_background(sci_data, mask, config)
-```
-Estimate background and background RMS using SEP.
-
-Args:
-- `sci_data` (ndarray): Science image data array
-- `mask` (ndarray): Boolean mask of pixels to exclude from background estimation
-- `config` (dict): Configuration dictionary for background estimation
-
-Returns:
-- `tuple`: (background_map, background_rms_map)
-
-### sky_to_mesh() / reconstruct_sky_mesh()
-```python
-def sky_to_mesh(sky_map, box) -> tuple[np.ndarray, dict]
-def reconstruct_sky_mesh(mesh, shape, box) -> np.ndarray
-def reconstruct_sky_from_header(mesh, header) -> np.ndarray
-def parse_sky_mesh_header(header) -> tuple[tuple[int, int], int]
-```
-Compact SEP-aligned sky mesh codec. `sky_to_mesh` downsamples a full map to
-nodes at `(k + 0.5) * box` with `n = (size - 1) // box + 1` and returns FITS
-cards (`SKYMESH`, `MESHBW`, `MESHBH`, `SKYH`, `SKYW`). `reconstruct_sky_mesh`
-rebuilds with natural cubic interpolation at that node phase (sub-ADU roundtrip).
-
-## Variance Calculation
-
-### calculate_inverse_variance()
-```python
-def calculate_inverse_variance(variance_cfg, sky_map, flat_map, bkg_rms_map, sci_data=None, obj_mask=None)
-```
-Calculate inverse variance map using the specified method.
-
-Args:
-- `variance_cfg` (dict): Configuration dictionary for variance calculation.
-- `sky_map` (ndarray): Background sky map in ADU.
-- `flat_map` (ndarray): Flat field response map.
-- `bkg_rms_map` (ndarray): Background RMS map in ADU (from SEP, used by 'rms_map').
-- `sci_data` (ndarray, optional): Full science data array, required for 'empirical_fit'.
-- `obj_mask` (ndarray, optional): Object mask, required for 'empirical_fit'.
-
-Returns:
-- `ndarray or None`: Inverse variance map, or None if method is invalid or prerequisites missing.
-
-## Weight and Confidence Maps
-
-### generate_weight_and_confidence()
-```python
-def generate_weight_and_confidence(inv_variance_map, final_mask_int, config)
-```
-Calculates the weight map (masked inverse variance) and a confidence map (normalized weight map).
-
-Args:
-- `inv_variance_map` (ndarray): The calculated inverse variance map (unmasked)
-- `final_mask_int` (ndarray): The final combined integer bitmask
-- `config` (dict): Configuration dictionary
-
-Returns:
-- `tuple`: (weight_map, confidence_map)
-
-## Array/Header Contract
-
-### build_weight_product()
-```python
-def build_weight_product(inverse_variance, quality_mask=None, *, exclude_detected=False,
-                         confidence_percentile=99.0, producer=None, provenance=None)
+gen = WeightMapGenerator(config)          # raises ValueError if config is invalid
+out = gen.process(data, header=None, flat_data=None, tile_size=1024)
 ```
 
-Builds the Wave 5 classical contract product. Quality masks are uint32 with
-`set_means_flagged` polarity. `QualityBit` names the conditions: `BAD_PIXEL`,
-`SATURATED`, `COSMIC_RAY`, `DETECTED`, `STREAK`, and `INVALID_VARIANCE`.
-NaN, infinite, zero, and negative inverse variance are marked
-`INVALID_VARIANCE` and yield zero inverse variance, weight, and confidence.
-Confidence is a percentile-normalized float32 array in `[0, 1]`.
+`process()` returns a dict:
 
-Each artifact has an `ArtifactMetadata` record containing the contract version,
-semantics, `ProducerMetadata`, and caller-supplied provenance. Producer
-metadata reserves model ID, model version, and inference backend fields for a
-future ML producer; this release only creates `kind="classical"` products.
+| Key | Contents |
+|---|---|
+| `weight_map` | Masked inverse variance |
+| `flag_map` | Integer quality mask |
+| `inv_variance_map` | Inverse-variance plane |
+| `confidence_map` | Percentile-normalized weight in `[0, 1]` |
+| `sky_map` | Background map |
+| `individual_masks` | Component boolean maps (`bad`, `sat`, `cr`, `obj`, `streak`) |
+| `contract_product` | `WeightMaskProduct` (when the contract path ran) |
+| `artifact_metadata` | Metadata from that product |
 
-### ArrayHeaderIO
+Empty dict if processing failed.
 
-`ArrayHeaderIO` is the minimal protocol: `read_array(path, hdu=0)` returns an
-array/header pair, and `write_array(path, array, header, overwrite=False)`
-writes one. `TorchfitsArrayHeaderIO` implements it when the optional torchfits
-package is available, exclusively through torchfits' public root APIs.
+## Bits and polarity
 
-## Utility Functions
-
-### extract_hdu_spec()
 ```python
-def extract_hdu_spec(filepath)
+from weightmask import MASK_BITS, QUALITY_BITS, MASK_DTYPE
 ```
-Extract HDU specifier from CFITSIO-style filename (e.g., 'file.fits[1]')
 
-Args:
-- `filepath` (str): Path with potential HDU specifier
+`MASK_BITS` is an alias of `QUALITY_BITS`:
 
-Returns:
-- `tuple`: (clean_path, hdu_index) where hdu_index is None if not specified
+| Name | Value |
+|---|---|
+| `BAD` | 1 |
+| `SAT` | 2 |
+| `CR` | 4 |
+| `DETECTED` | 8 |
+| `STREAK` | 16 |
+| `INVALID_VARIANCE` | 32 |
 
-### create_binary_mask()
+Polarity is `set_means_flagged` (`weightmask.contract.MASK_POLARITY`).
+`DETECTED` does not zero weight unless `output_params.mask_detected_in_weight`
+is true. `MASK_DTYPE` is `"uint32"` in memory; FITS masks are written as
+uint16 (`output_params.mask_bitpix: 16`) because values 0–63 fit.
+
+`weightmask.__version__` is the installed package version (fallback `"0.1.0"`).
+
+## `weightmask.contract`
+
 ```python
-def create_binary_mask(mask_data, bit_flag)
+from weightmask.contract import (
+    WeightMaskProduct,
+    build_weight_product,
+    QUALITY_BITS,
+    MASK_POLARITY,
+    INVERSE_VARIANCE_SEMANTICS,
+)
 ```
-Create a binary mask (0/1) from a bitmask for a specific flag.
 
-Args:
-- `mask_data` (ndarray): Bitmask array
-- `bit_flag` (int): Bit flag to extract
+`build_weight_product(inverse_variance, quality_mask=None, *, exclude_detected=False, confidence_percentile=99.0, producer=None, provenance=None)`
+returns a `WeightMaskProduct` with quality flags, non-negative inverse variance
+and weight, and confidence in `[0, 1]`. Non-finite or non-positive inverse
+variance is marked `INVALID_VARIANCE` and zeroed. Inverse-variance semantics
+are `elixir_style_flat2_coadd_weight`.
 
-Returns:
-- `ndarray`: Binary mask (0=not set, 1=set)
+`ArrayHeaderIO` is an optional read/write protocol. `TorchfitsArrayHeaderIO`
+implements it when torchfits is installed; torchfits is not a required
+dependency.
+
+## `weightmask.reconstruct_sky`
+
+Module and CLI for compact sky meshes (`output_params.sky_format: mesh`).
+
+```python
+from weightmask.reconstruct_sky import reconstruct_sky_fits
+from weightmask.background import reconstruct_sky_mesh, reconstruct_sky_from_header
+```
+
+`reconstruct_sky_fits(input_path, output_path, hdu=None)` rebuilds a FITS file
+and returns an exit code. Node layout: `n = (size - 1) // box + 1` at clipped
+`(k + 0.5) * box`; reconstruction is a natural cubic spline. See
+[algorithms.md](algorithms.md).
+
+## Console scripts
+
+| Script | Entry |
+|---|---|
+| `weightmask` | `weightmask.cli:run_pipeline` |
+| `weightmask-reconstruct-sky` | `weightmask.reconstruct_sky:main` |
+
+`weightmask reconstruct-sky ...` is a thin compatibility dispatch to the
+second program. It is not a `weightmask` flag.

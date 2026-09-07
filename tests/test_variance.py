@@ -74,6 +74,24 @@ class TestVariance(unittest.TestCase):
 
         np.testing.assert_allclose(inv_var, expected_inv_var, rtol=1e-5)
 
+    def test_theoretical_f_half_is_elixir_style_not_poisson_flat(self):
+        """Frozen contract: F=0.5 uses g²F²/(Sg+RN²), not g²F²/(SgF+RN²)."""
+        sky_map = np.array([[1000.0]], dtype=np.float32)
+        flat_map = np.array([[0.5]], dtype=np.float32)
+        gain = 1.5
+        read_noise_e = 5.0
+        inv_var = _calculate_inverse_variance_theoretical(
+            sky_map=sky_map,
+            flat_map=flat_map,
+            gain=gain,
+            read_noise_e=read_noise_e,
+            epsilon=1e-9,
+        )
+        elixir = (gain**2 * 0.5**2) / (1000.0 * gain + read_noise_e**2)
+        poisson_flat = (gain**2 * 0.5**2) / (1000.0 * gain * 0.5 + read_noise_e**2)
+        np.testing.assert_allclose(inv_var[0, 0], elixir, rtol=1e-5)
+        self.assertGreater(abs(float(inv_var[0, 0]) - poisson_flat) / poisson_flat, 0.4)
+
     def test__calculate_inverse_variance_theoretical_edge_cases(self):
         """Test internal theoretical inverse variance logic with edge cases like negative sky and zero flat."""
         sky_map = np.array([[100.0, -50.0], [100.0, 100.0]], dtype=np.float32)  # Negative sky

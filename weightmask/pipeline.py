@@ -12,7 +12,7 @@ class WeightMapGenerator:
         """
         self.config = config
         if not validate_config(self.config):
-            print("WARNING: Configuration validation failed during initialization.")
+            raise ValueError("Invalid WeightMask configuration")
 
     def process(
         self,
@@ -58,7 +58,6 @@ class WeightMapGenerator:
             "inv_variance_map": inv_var,
             "confidence_map": confidence,
             "sky_map": sky,
-            "bkg_rms_map": info.get("individual_masks", {}).get("bkg_rms"),
             "individual_masks": info.get("individual_masks", {}),
         }
         if contract_product is not None:

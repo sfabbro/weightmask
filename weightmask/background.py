@@ -200,10 +200,17 @@ def _as_box(box, default=128):
         return default
 
 
+def _mesh_node_coords(n, size, box):
+    """SEP node abscissae ``(k + 0.5) * box``, clipped to ``[0, size-1]``."""
+    if n <= 0:
+        return np.zeros(0, dtype=np.float64)
+    return np.clip(np.rint((np.arange(n) + 0.5) * box), 0, max(size - 1, 0))
+
+
 def sky_to_mesh(sky_map, box):
     """Downsample full-res sky to SEP mesh nodes + FITS rebuild cards.
 
-    ``n = (size - 1) // box + 1`` nodes at ``(k + 0.5) * box`` (clipped).
+    ``n = (size - 1) // box + 1`` nodes at clipped ``(k + 0.5) * box``.
     Returns ``(mesh_float32, cards_dict)``.
     """
     box = _as_box(box)
@@ -211,8 +218,8 @@ def sky_to_mesh(sky_map, box):
     h, w = arr.shape
     ny = max(1, (h - 1) // box + 1) if h > 0 else 1
     nx = max(1, (w - 1) // box + 1) if w > 0 else 1
-    yi = np.clip(np.rint((np.arange(ny) + 0.5) * box).astype(np.intp), 0, max(h - 1, 0))
-    xi = np.clip(np.rint((np.arange(nx) + 0.5) * box).astype(np.intp), 0, max(w - 1, 0))
+    yi = _mesh_node_coords(ny, h, box).astype(np.intp)
+    xi = _mesh_node_coords(nx, w, box).astype(np.intp)
     mesh = arr[np.ix_(yi, xi)] if h > 0 and w > 0 else np.zeros((ny, nx), dtype=np.float32)
     cards = {"SKYMESH": True, "MESHBW": box, "MESHBH": box, "SKYH": h, "SKYW": w}
     return np.ascontiguousarray(mesh, dtype=np.float32), cards
@@ -232,8 +239,8 @@ def reconstruct_sky_mesh(mesh, shape, box):
     ny, nx = m.shape
     if ny == 1 and nx == 1:
         return np.full((h, w), float(m[0, 0]), dtype=np.float32)
-    node_y = (np.arange(ny) + 0.5) * box
-    node_x = (np.arange(nx) + 0.5) * box
+    node_y = _mesh_node_coords(ny, h, box)
+    node_x = _mesh_node_coords(nx, w, box)
     ys = np.arange(h, dtype=np.float64)
     xs = np.arange(w, dtype=np.float64)
     if ny > 1:

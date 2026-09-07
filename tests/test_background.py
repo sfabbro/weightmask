@@ -120,6 +120,18 @@ class TestSkyMeshRoundtrip(unittest.TestCase):
         self.assertLess(float(np.sqrt(np.mean(diff**2))), 0.02)
         self.assertLess(float(np.percentile(diff, 99)), 0.1)
 
+    def test_gradient_roundtrip_uses_clipped_node_abscissae(self):
+        """Encode and decode must share clipped (k+0.5)*box nodes."""
+        from weightmask.background import reconstruct_sky_mesh, sky_to_mesh
+
+        h, w, box = 300, 200, 128
+        sky = (1200.0 + 0.5 * np.arange(w) + 0.3 * np.arange(h)[:, None]).astype(np.float32)
+        mesh, _cards = sky_to_mesh(sky, box)
+        rec = reconstruct_sky_mesh(mesh, sky.shape, box)
+        diff = np.abs(rec.astype(np.float64) - sky.astype(np.float64))
+        self.assertLess(float(diff[-16:].max()), 0.5)
+        self.assertLess(float(diff.max()), 0.5)
+
     def test_diagnostics_records_actual_sep_box(self):
         from weightmask.background import estimate_background
 

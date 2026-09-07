@@ -58,7 +58,14 @@ def _run(in_path, flat_path, out_dir, tag, max_workers):
         idx = list(range(len(hi)))[1:]  # skip empty primary
         # hdus_to_process are 1-based for empty-primary MEFs
         n = process_all_hdus(
-            idx, hi, hf, cfg, paths, args, flat_path=flat_path, max_workers=max_workers,
+            idx,
+            hi,
+            hf,
+            cfg,
+            paths,
+            args,
+            flat_path=flat_path,
+            max_workers=max_workers,
             input_path=in_path,
         )
     assert n == len(idx), f"{tag}: processed {n} != {len(idx)}"
@@ -184,6 +191,43 @@ class TestParallelEquivalence(unittest.TestCase):
                     if f[i].get_info().get("ndims") == 2:
                         self.assertEqual(f[i].read().dtype, np.float32)
                         break
+
+    def test_parallel_different_gain_does_not_crosstalk(self):
+        shape = (48, 48)
+        with tempfile.TemporaryDirectory() as tmp:
+            sp = os.path.join(tmp, "sgain.fits")
+            fp = os.path.join(tmp, "fgain.fits")
+            rng = np.random.default_rng(4)
+            fitsio.write(sp, None, clobber=True)
+            with fitsio.FITS(sp, "rw") as f:
+                for gain in (1.0, 4.0):
+                    d = (1000 + 30 * rng.standard_normal(shape)).astype(np.float32)
+                    f.write(d, header={"GAIN": gain, "RDNOISE": 5.0})
+            fitsio.write(fp, None, clobber=True)
+            with fitsio.FITS(fp, "rw") as f:
+                for _ in range(2):
+                    f.write(np.ones(shape, dtype=np.float32))
+            paths = {
+                "out_map_path": os.path.join(tmp, "g.weight.fits"),
+                "out_mask_path": os.path.join(tmp, "g.mask.fits"),
+                "out_invvar_path": os.path.join(tmp, "g.ivar.fits"),
+                "out_sky_path": None,
+                "out_weight_raw_path": None,
+                "individual_mask_paths": {},
+            }
+            args = Namespace(tile_size=32, individual_masks=False, max_workers=2)
+            cfg = _load_cfg()
+            cfg["variance"]["rescale_variance"] = False
+            with fitsio.FITS(sp) as hi, fitsio.FITS(fp) as hf:
+                n = process_all_hdus([1, 2], hi, hf, cfg, paths, args, flat_path=fp, max_workers=2, input_path=sp)
+            self.assertEqual(n, 2)
+            with fitsio.FITS(paths["out_invvar_path"]) as f:
+                ivars = [f[i].read() for i in range(len(f)) if i > 0 or len(f) == 1]
+            med = [float(np.median(a[a > 0])) for a in ivars]
+            self.assertEqual(len(med), 2)
+            ratio = med[1] / med[0]
+            self.assertGreater(ratio, 3.0)
+            self.assertLess(ratio, 5.5)
 
 
 if __name__ == "__main__":

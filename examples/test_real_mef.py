@@ -18,8 +18,8 @@ def evaluate_real_mef():
 
     print(f"Loading {fits_path} ...")
 
-    with yaml.safe_load(open(config_path, "r")) as f:
-        config = f
+    with open(config_path, "r") as f:
+        config = yaml.safe_load(f)
 
     # Instantiate the pipeline
     wg = WeightMapGenerator(config)

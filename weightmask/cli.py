@@ -11,6 +11,7 @@ import time
 import fitsio
 import yaml
 
+from . import __version__
 from .mef import process_all_hdus
 from .process import validate_config
 from .utils import clean_config_dict, extract_hdu_spec
@@ -31,91 +32,108 @@ def validate_fits_file(file_path: str) -> bool:
 
 def parse_arguments(argv=None) -> argparse.Namespace:
     parser = argparse.ArgumentParser(
-        description="Generate Mask and Weight/Confidence Maps for FITS files.",
+        description=(
+            "Build weight, mask, inverse-variance, and sky maps for astronomical "
+            "FITS/MEF images. A YAML config is required."
+        ),
         epilog=(
             "Examples:\n"
-            "  weightmask science.fits --config weightmask.yml\n"
-            "  weightmask science.fits --output_sky sky.fits\n"
+            "  weightmask science.fits --config weightmask.yml --flat_image flat.fits "
+            "-o out.weight.fits --output_mask out.mask.fits\n"
+            "  weightmask science.fits --config weightmask.yml --output_sky sky.fits "
+            "--output_invvar invvar.fits\n"
             "  weightmask-reconstruct-sky sky_mesh.fits -o sky_full.fits\n"
+            "\n"
+            "Config keys: weightmask.yml (copy into the working directory; not installed "
+            "with the package). Usage: docs/usage.md\n"
+            "Mesh skies: weightmask-reconstruct-sky (also: weightmask reconstruct-sky ...)."
         ),
         formatter_class=argparse.RawDescriptionHelpFormatter,
     )
-    parser.add_argument("input_file", type=str, help="Path to input FITS file.")
-    parser.add_argument(
+    inputs = parser.add_argument_group("Inputs")
+    outputs = parser.add_argument_group("Outputs")
+    run = parser.add_argument_group("Run")
+
+    inputs.add_argument("input_file", type=str, help="Path to the science FITS/MEF.")
+    inputs.add_argument(
+        "--config",
+        type=str,
+        default=None,
+        help="YAML config. If omitted, looks for weightmask.yml in the current "
+        "directory (also config.yml, .weightmask.yml). Not bundled in the wheel.",
+    )
+    inputs.add_argument(
+        "--flat_image",
+        type=str,
+        default=None,
+        help="Flat-field FITS/MEF used for BAD pixels and the F² weight term.",
+    )
+    inputs.add_argument(
+        "--dark_image",
+        type=str,
+        default=None,
+        help="Dark frame FITS/MEF. Hot pixels from dark_masking are OR'd into BAD.",
+    )
+    inputs.add_argument(
+        "--badpix_mask",
+        type=str,
+        default=None,
+        help="External Elixir keep-map MEF (0 = bad, 1 = good). Zeros are OR'd into BAD.",
+    )
+    outputs.add_argument(
         "--output_map",
         "-o",
         type=str,
         default=None,
-        help="Path for primary output map (Weight or Confidence). Default: <input_base>.weight.fits",
+        help="Primary map (weight or confidence). Default: <input_base>.weight.fits",
     )
-    parser.add_argument(
-        "--config",
-        type=str,
-        default=None,
-        help="Path to YAML configuration file (optional, attempts default locations).",
-    )
-    parser.add_argument(
-        "--flat_image",
-        type=str,
-        default=None,
-        help="Path to input flat field FITS file (optional).",
-    )
-    parser.add_argument(
-        "--dark_image",
-        type=str,
-        default=None,
-        help="Path to input dark frame FITS file (optional). Hot pixels are "
-        "detected with the dark_masking section and OR'd into the BAD bit.",
-    )
-    parser.add_argument(
-        "--badpix_mask",
-        type=str,
-        default=None,
-        help="Path to an external bad-pixel mask MEF (Elixir keep-map convention: 0 = bad, 1 = good). "
-        "Each HDU's zero-valued pixels are OR'd into the BAD quality bit.",
-    )
-    parser.add_argument(
+    outputs.add_argument(
         "--output_mask",
         type=str,
         default=None,
-        help="Path for output bitmask FITS file (optional).",
+        help="Combined integer quality mask FITS.",
     )
-    parser.add_argument(
+    outputs.add_argument(
         "--output_invvar",
         type=str,
         default=None,
-        help="Path for output inverse variance FITS file (optional).",
+        help="Inverse-variance FITS (sanitized plane).",
     )
-    parser.add_argument(
+    outputs.add_argument(
         "--output_sky",
         type=str,
         default=None,
-        help="Path for output sky background map file (optional).",
+        help="Sky FITS (full map or SKYMESH, from output_params.sky_format).",
     )
-    parser.add_argument(
+    outputs.add_argument(
         "--output_weight_raw",
         type=str,
         default=None,
-        help="Path for unnormalized weight map (masked inv_var), if different from primary map.",
+        help="Unnormalized masked inverse variance, if different from the primary map.",
     )
-    parser.add_argument(
+    run.add_argument(
         "--hdu",
         type=int,
         default=None,
-        help="HDU index to process (e.g., 0, 1). Processes extensions if omitted.",
+        help="HDU index to process. Default: every 2-D image extension.",
     )
-    parser.add_argument(
+    run.add_argument(
         "--individual_masks",
         action="store_true",
-        help="Output individual mask component files.",
+        help="Also write per-component mask FITS files.",
     )
-    parser.add_argument(
+    run.add_argument(
         "--nproc",
         "--max-workers",
         dest="max_workers",
         type=int,
         default=None,
         help="Max parallel HDU workers (default min(8, ncpu); 0/1 = sequential).",
+    )
+    run.add_argument(
+        "--version",
+        action="version",
+        version=f"%(prog)s {__version__}",
     )
     return parser.parse_args(argv)
 

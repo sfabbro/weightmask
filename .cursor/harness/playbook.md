@@ -12,7 +12,10 @@
   desc: Smallest correct change; match existing repo style and tools.
 
 - id: sky-mesh-sep
-  desc: Sky mesh uses SEP n=(size-1)//box+1, nodes (k+0.5)*box; reconstruct via CubicSpline (not map_coordinates).
+  desc: Sky mesh uses SEP n=(size-1)//box+1, nodes clip(rint((k+0.5)*box)) on encode and decode; reconstruct via CubicSpline (not map_coordinates).
 
 - id: reconstruct-sky-cli
   desc: Rebuild mesh skies with weightmask-reconstruct-sky (module weightmask.reconstruct_sky); thin `weightmask reconstruct-sky` compat dispatch only.
+
+- id: user-docs-v01
+  desc: User path is README + docs/{installation,usage,algorithms,api}; YAML comments are the key list; research notes live in docs/research/ and are not advertised.

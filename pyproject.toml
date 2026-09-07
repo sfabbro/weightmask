@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "weightmask"
-version = "0.1"
+version = "0.1.0"
 authors = [
   { name="Seb Fabbro", email="sebfabbro@gmail.com" },
 ]
@@ -14,6 +14,10 @@ license = { file="LICENSE" }
 requires-python = ">=3.10"
 classifiers = [
     "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
     "License :: OSI Approved :: MIT License",
     "Operating System :: OS Independent",
     "Topic :: Scientific/Engineering :: Astronomy",
@@ -29,13 +33,9 @@ dependencies = [
     "astroscrappy",
 ]
 
-[project.optional-dependencies]
-benchmarks = [
-    "galsim",
-]
-
 [project.urls]
-"Homepage" = "https://github.com/sfabbro/weightmask"
+"Homepage" = "https://github.com/astroai/weightmask"
+"Issues" = "https://github.com/astroai/weightmask/issues"
 
 [tool.setuptools.packages.find]
 exclude = ["sandbox*"]
@@ -47,6 +47,7 @@ weightmask-reconstruct-sky = "weightmask.reconstruct_sky:main"
 
 [tool.ruff]
 line-length = 120
+extend-exclude = ["benchmarks"]
 
 [tool.ruff.lint]
 select = ["E", "F", "W", "I"]

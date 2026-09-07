@@ -265,7 +265,7 @@ def process_image(
     # --- 2. First-Pass Cosmic Ray Detection ---
     print("  (2/7) Running first-pass Cosmic Ray detection...")
     cosmic_cfg = config.get("cosmic_ray", {})
-    variance_cfg = config.get("variance", {})
+    variance_cfg = dict(config.get("variance", {}))
     gain_raw = _header_lookup(sci_hdr, variance_cfg.get("gain_keyword", "GAIN"), variance_cfg.get("default_gain", 1.0))
     rdnoise_raw = _header_lookup(
         sci_hdr,
@@ -401,9 +401,11 @@ def process_image(
 
     hdu_elapsed = time.time() - hdu_start_time
     print(f"--- Image processed in {hdu_elapsed:.2f} seconds ---")
+    out_mask = contract_product.quality_mask if contract_product is not None else final_mask_int
+    out_ivar = contract_product.inverse_variance if contract_product is not None else inv_variance_map
     return (
-        final_mask_int,
-        inv_variance_map,
+        out_mask,
+        out_ivar,
         weight_map,
         confidence_map,
         sky_out,

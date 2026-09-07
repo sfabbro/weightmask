@@ -10,7 +10,7 @@ metadata:
 
 Builds weight maps, confidence maps, and defect masks for astronomical FITS
 images, aimed at stacking/coaddition: usable mask plane, inverse-variance
-estimate, and separate outputs for key contaminants. See `docs/` and `TODO.md`.
+estimate, and separate outputs for key contaminants. See `docs/`.
 
 ## Contract
 

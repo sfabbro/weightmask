@@ -15,6 +15,7 @@ from unittest.mock import MagicMock, patch
 
 import fitsio
 import numpy as np
+import yaml
 
 from weightmask.contract import QualityBit, build_weight_product
 from weightmask.mef import process_all_hdus
@@ -96,6 +97,101 @@ class TestInvalidVarianceEndToEnd(unittest.TestCase):
         self.assertGreater(product.weight[0, 0], 0.0)
 
 
+class TestInvalidVarianceWritten(unittest.TestCase):
+    def test_nan_ivar_sets_bit_on_disk(self):
+        shape = (32, 32)
+
+        def fake_ivar(_cfg, sky_map, *_args, **_kwargs):
+            out = np.full(sky_map.shape, 0.01, dtype=np.float32)
+            out[3, 3] = np.nan
+            out[4, 4] = -1.0
+            return out
+
+        with tempfile.TemporaryDirectory() as tmp:
+            sp = os.path.join(tmp, "sci.fits")
+            fp = os.path.join(tmp, "flat.fits")
+            rng = np.random.default_rng(0)
+            fitsio.write(sp, (1000 + 10 * rng.standard_normal(shape)).astype(np.float32), clobber=True)
+            fitsio.write(fp, np.ones(shape, dtype=np.float32), clobber=True)
+            paths = {
+                "out_map_path": os.path.join(tmp, "o.weight.fits"),
+                "out_mask_path": os.path.join(tmp, "o.mask.fits"),
+                "out_invvar_path": os.path.join(tmp, "o.ivar.fits"),
+                "out_sky_path": None,
+                "out_weight_raw_path": None,
+                "individual_mask_paths": {},
+            }
+            args = Namespace(tile_size=32, individual_masks=False, max_workers=1)
+            cfg = yaml.safe_load(open("weightmask.yml"))
+            cfg["streak_masking"]["enable"] = False
+            with patch("weightmask.process.calculate_inverse_variance", side_effect=fake_ivar):
+                with fitsio.FITS(sp) as hi, fitsio.FITS(fp) as hf:
+                    n = process_all_hdus([0], hi, hf, cfg, paths, args, flat_path=fp, input_path=sp)
+            self.assertEqual(n, 1)
+            with fitsio.FITS(paths["out_mask_path"]) as f:
+                mask = f[0].read()
+            with fitsio.FITS(paths["out_invvar_path"]) as f:
+                ivar = f[0].read()
+            with fitsio.FITS(paths["out_map_path"]) as f:
+                weight = f[0].read()
+            invalid_bit = int(QualityBit.INVALID_VARIANCE)
+            self.assertTrue(bool(mask[3, 3] & invalid_bit))
+            self.assertTrue(bool(mask[4, 4] & invalid_bit))
+            self.assertEqual(float(ivar[3, 3]), 0.0)
+            self.assertEqual(float(ivar[4, 4]), 0.0)
+            self.assertTrue(np.isfinite(ivar).all())
+            self.assertEqual(float(weight[3, 3]), 0.0)
+            self.assertEqual(float(weight[4, 4]), 0.0)
+
+
+class TestProcessImageConfigIsolation(unittest.TestCase):
+    def test_process_image_does_not_mutate_variance_config(self):
+        from weightmask.process import process_image
+
+        cfg = yaml.safe_load(open("weightmask.yml"))
+        cfg["streak_masking"]["enable"] = False
+        self.assertNotIn("gain", cfg["variance"])
+        rng = np.random.default_rng(1)
+        data = (1000 + 10 * rng.standard_normal((48, 48))).astype(np.float32)
+        process_image(data, {"GAIN": 2.5, "RDNOISE": 5.0}, np.ones_like(data), cfg, tile_size=32)
+        self.assertNotIn("gain", cfg["variance"])
+        self.assertNotIn("read_noise", cfg["variance"])
+
+
+class TestElixirKeepMap(unittest.TestCase):
+    def test_keep_map_zero_sets_bad_bit(self):
+        shape = (48, 48)
+        with tempfile.TemporaryDirectory() as tmp:
+            sp = os.path.join(tmp, "sci.fits")
+            fp = os.path.join(tmp, "flat.fits")
+            bp = os.path.join(tmp, "keep.fits")
+            rng = np.random.default_rng(2)
+            fitsio.write(sp, (1000 + 30 * rng.standard_normal(shape)).astype(np.float32), clobber=True)
+            fitsio.write(fp, np.ones(shape, dtype=np.float32), clobber=True)
+            keep = np.ones(shape, dtype=np.uint8)
+            keep[7, 11] = 0
+            fitsio.write(bp, keep, clobber=True)
+            paths = {
+                "out_map_path": os.path.join(tmp, "o.weight.fits"),
+                "out_mask_path": os.path.join(tmp, "o.mask.fits"),
+                "out_invvar_path": None,
+                "out_sky_path": None,
+                "out_weight_raw_path": None,
+                "individual_mask_paths": {},
+            }
+            args = Namespace(tile_size=32, individual_masks=False, max_workers=1)
+            cfg = yaml.safe_load(open("weightmask.yml"))
+            cfg["streak_masking"]["enable"] = False
+            with fitsio.FITS(sp) as hi, fitsio.FITS(fp) as hf, fitsio.FITS(bp) as hb:
+                n = process_all_hdus(
+                    [0], hi, hf, cfg, paths, args, flat_path=fp, input_path=sp, hdul_badpix=hb, badpix_path=bp
+                )
+            self.assertEqual(n, 1)
+            with fitsio.FITS(paths["out_mask_path"]) as f:
+                mask = f[0].read()
+            self.assertTrue(bool((mask[7, 11] & int(QualityBit.BAD_PIXEL)) != 0))
+
+
 class TestDeadCcdVeto(unittest.TestCase):
     def test_outlier_hdu_goes_fully_bad(self):
         from weightmask.mef import _veto_dead_ccd_hdus
@@ -125,6 +221,7 @@ class TestDeadCcdVeto(unittest.TestCase):
         _veto_dead_ccd_hdus(masks, {0: 99.0}, {})
         self.assertFalse(bool(masks[0].any()))
 
+
 class TestConfidenceGlobalHookup(unittest.TestCase):
     def test_confidence_mode_uses_global_p99(self):
 
@@ -149,9 +246,14 @@ class TestConfidenceGlobalHookup(unittest.TestCase):
                 f.write(s1)
                 f.write(s2)
             fitsio.write(fp, np.ones((64, 64), dtype=np.float32), clobber=True)
-            paths = {"out_map_path": os.path.join(tmp, "o.conf.fits"), "out_mask_path": None,
-                     "out_invvar_path": None, "out_sky_path": None,
-                     "out_weight_raw_path": None, "individual_mask_paths": {}}
+            paths = {
+                "out_map_path": os.path.join(tmp, "o.conf.fits"),
+                "out_mask_path": None,
+                "out_invvar_path": None,
+                "out_sky_path": None,
+                "out_weight_raw_path": None,
+                "individual_mask_paths": {},
+            }
             args = Namespace(tile_size=1024, individual_masks=False)
             with fitsio.FITS(sp) as hi, fitsio.FITS(fp) as hf:
                 n = process_all_hdus([1, 2], hi, hf, cfg, paths, args, flat_path=fp)
@@ -161,6 +263,7 @@ class TestConfidenceGlobalHookup(unittest.TestCase):
             # low-sky HDU pins 1.0; high-sky HDU scales down -> comparable
             self.assertAlmostEqual(float(np.percentile(c1[c1 > 0], 99)), 1.0, places=2)
             self.assertLess(float(np.percentile(c2[c2 > 0], 99)), 0.5)
+
 
 class TestDarkLeg(unittest.TestCase):
     def test_dark_hot_pixels_join_bad(self):
@@ -185,10 +288,14 @@ class TestDarkLeg(unittest.TestCase):
             dark = np.full((64, 64), 5.0, dtype=np.float32)
             dark[10, 10] = 500.0
             fitsio.write(dp, dark, clobber=True)
-            paths = {"out_map_path": os.path.join(tmp, "o.weight.fits"),
-                     "out_mask_path": os.path.join(tmp, "o.mask.fits"),
-                     "out_invvar_path": None, "out_sky_path": None,
-                     "out_weight_raw_path": None, "individual_mask_paths": {}}
+            paths = {
+                "out_map_path": os.path.join(tmp, "o.weight.fits"),
+                "out_mask_path": os.path.join(tmp, "o.mask.fits"),
+                "out_invvar_path": None,
+                "out_sky_path": None,
+                "out_weight_raw_path": None,
+                "individual_mask_paths": {},
+            }
             args = Namespace(tile_size=1024, individual_masks=False)
             with fitsio.FITS(sp) as hi, fitsio.FITS(fp) as hf, fitsio.FITS(dp) as hd:
                 n = process_all_hdus([0], hi, hf, cfg, paths, args, flat_path=fp, hdul_dark=hd)
@@ -196,6 +303,7 @@ class TestDarkLeg(unittest.TestCase):
             with fitsio.FITS(os.path.join(tmp, "o.mask.fits")) as f:
                 m = f[0].read()
             self.assertTrue(bool(m[10, 10] & 1))
+
 
 class TestGlobalConfidenceRescale(unittest.TestCase):
     def test_rescale_matches_global_p99(self):
@@ -213,8 +321,7 @@ class TestGlobalConfidenceRescale(unittest.TestCase):
             s1 = np.full(64, 1.0)
             s2 = np.full(64, 10.0)
             cfg = {"output_params": {"output_map_format": "confidence"}}
-            _rescale_confidence_to_global({"out_map_path": path}, {"map": w},
-                                          {1: s1, 2: s2}, {1: 1.0, 2: 10.0}, cfg)
+            _rescale_confidence_to_global({"out_map_path": path}, {"map": w}, {1: s1, 2: s2}, {1: 1.0, 2: 10.0}, cfg)
             import fitsio
 
             with fitsio.FITS(path) as f:
@@ -226,9 +333,14 @@ class TestGlobalConfidenceRescale(unittest.TestCase):
         from weightmask.mef import _rescale_confidence_to_global
 
         # Must not touch anything when the map product holds weight.
-        _rescale_confidence_to_global({"out_map_path": "/nonexistent.fits"}, {},
-                                      {1: np.ones(8)}, {1: 1.0},
-                                      {"output_params": {"output_map_format": "weight"}})
+        _rescale_confidence_to_global(
+            {"out_map_path": "/nonexistent.fits"},
+            {},
+            {1: np.ones(8)},
+            {1: 1.0},
+            {"output_params": {"output_map_format": "weight"}},
+        )
+
 
 class TestFlatNoiseVariance(unittest.TestCase):
     def test_term_lowes_vignetted_more(self):
@@ -246,6 +358,7 @@ class TestFlatNoiseVariance(unittest.TestCase):
         same = f(sky, flat, 1.5, 5.0, 1e-9, 0.0)
         np.testing.assert_array_equal(same, base)
 
+
 class TestBleedAdaptiveCap(unittest.TestCase):
     def _setup(self):
         sci = np.full((200, 20), 100.0, dtype=np.float32)
@@ -261,17 +374,32 @@ class TestBleedAdaptiveCap(unittest.TestCase):
         from weightmask.satur import grow_bleed_trails
 
         sci, sat, sky, rms = self._setup()
-        base = {"mask_bleed_trails": True, "bleed_thresh_sigma": 5.0,
-                "bleed_grow_vertical": 50, "bleed_grow_horizontal": 0}
+        base = {
+            "mask_bleed_trails": True,
+            "bleed_thresh_sigma": 5.0,
+            "bleed_grow_vertical": 50,
+            "bleed_grow_horizontal": 0,
+        }
         fixed = grow_bleed_trails(sci, sat, sky, rms, dict(base))
-        adap = grow_bleed_trails(sci, sat, sky, rms, {**base, "bleed_adaptive_cap": True,
-                                                     "bleed_cap_core_factor": 3.0,
-                                                     "bleed_cap_min": 20, "bleed_cap_max": 200})
+        adap = grow_bleed_trails(
+            sci,
+            sat,
+            sky,
+            rms,
+            {
+                **base,
+                "bleed_adaptive_cap": True,
+                "bleed_cap_core_factor": 3.0,
+                "bleed_cap_min": 20,
+                "bleed_cap_max": 200,
+            },
+        )
         # core_rows=1 -> cap=clip(3,20,200)=20: stops at ±20 while fixed runs to ±50
         self.assertTrue(bool(adap[80:121, 10].all()))
         self.assertFalse(bool(adap[79, 10]))
         self.assertTrue(bool(fixed[50:151, 10].all()))
         self.assertLessEqual(int(adap.sum()), int(fixed.sum()))
+
 
 class TestFaintCrGate(unittest.TestCase):
     def test_worm_kept_single_dropped(self):
@@ -284,8 +412,12 @@ class TestFaintCrGate(unittest.TestCase):
         sci[5, 5:10] = 500.0
         raw[20, 20] = True  # single-pixel hit
         sci[20, 20] = 500.0
-        kept = _filter_faint_components(raw, sci, rms, {"min_component_area": 3, "max_component_area": 12,
-                                                        "min_elongation": 2.0, "min_contrast_sigma": 4.0})
+        kept = _filter_faint_components(
+            raw,
+            sci,
+            rms,
+            {"min_component_area": 3, "max_component_area": 12, "min_elongation": 2.0, "min_contrast_sigma": 4.0},
+        )
         self.assertTrue(bool(kept[5, 5:10].all()))
         self.assertFalse(bool(kept[20, 20]))
 

@@ -130,22 +130,26 @@ def _calculate_empirical_noise_params(sci_data, obj_mask, patch_size, robust_sig
 
 
 def _calculate_inverse_variance_theoretical(sky_map, flat_map, gain, read_noise_e, epsilon, flat_rel_noise=0.0):
-    """
-    Internal: Calculate inverse variance based on theoretical noise model.
+    """Elixir-style F² coadd weight, in ADU⁻².
 
-    ``flat_rel_noise`` is the master flat's fractional uncertainty (Elixir
-    stack ballpark ~0.003). It enters as a second-order quotient term
-    ``(sky_e * rel)^2`` scaled up where the flat response is low (vignetted
-    pixels stacked fewer counts), so edge weights stop pretending the flat
-    is exact. Zero disables the term (backward compatible).
+    Frozen 0.1 formula (sky ``S`` in ADU, flat ``F``, gain ``g`` in e⁻/ADU,
+    read noise ``r`` in e⁻)::
+
+        ivar = g² F² / (S g + r²)
+
+    At ``F = 1`` this is Poisson + read noise. At ``F ≠ 1`` it is a sensitivity
+    weight (``F²`` in the numerator, Poisson term from the flattened sky), not
+    the flat-fielded identity ``g² F² / (S g F + r²)``.
+
+    ``flat_rel_noise`` is an optional extra term ``(S g · rel)²`` in the
+    electron denominator, with ``rel`` boosted where the flat is below its
+    median. Zero disables it.
     """
     valid_flat_mask = flat_map > epsilon
     safe_flat = np.where(valid_flat_mask, flat_map, epsilon)
     safe_sky = np.maximum(sky_map, 0.0)
 
-    # Variance in electrons before flat fielding = (Sky Signal in electrons) + (Read Noise in electrons)^2
-    # After flat fielding (division by flat), variance in electrons scales by 1 / flat^2.
-    # Inverse variance in ADU^2 = (gain^2 * safe_flat^2) / (safe_sky * gain + read_noise_e**2)
+    # Frozen 0.1: ivar = g² F² / (S g + RN²). Exact Poisson+RN at F=1.
     sky_e = safe_sky * gain
     denom = sky_e + read_noise_e**2
     if flat_rel_noise > 0:
