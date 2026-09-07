@@ -298,5 +298,35 @@ class TestCLIConfigFallback(unittest.TestCase):
             mock_print.assert_any_call("Using default config file found at: .weightmask.yml")
 
 
+class TestReconstructSkyCLI(unittest.TestCase):
+    def test_reconstruct_sky_roundtrip_fits(self):
+        import sep
+
+        from weightmask.background import sky_to_mesh
+        from weightmask.cli import run_pipeline
+
+        rng = np.random.default_rng(1)
+        data = (1100.0 + rng.normal(0.0, 5.0, (96, 128))).astype(np.float64)
+        sky = sep.Background(data, bw=32, bh=32, fw=3, fh=3).back().astype(np.float32)
+        mesh, cards = sky_to_mesh(sky, 32)
+        with tempfile.TemporaryDirectory() as tmp:
+            mesh_path = os.path.join(tmp, "sky_mesh.fits")
+            out_path = os.path.join(tmp, "sky_full.fits")
+            fitsio.write(mesh_path, mesh, header=cards, clobber=True)
+            rc = run_pipeline(["reconstruct-sky", mesh_path, "-o", out_path])
+            self.assertEqual(rc, 0)
+            with fitsio.FITS(out_path, "r") as f:
+                rec = f[0].read()
+                hdr = f[0].read_header()
+            self.assertEqual(rec.shape, sky.shape)
+            self.assertNotIn("SKYMESH", {str(k).upper() for k in hdr.keys()})
+            self.assertLess(float(np.max(np.abs(rec - sky))), 0.05)
+
+    def test_reconstruct_sky_missing_output_flag(self):
+        with self.assertRaises(SystemExit) as cm:
+            run_pipeline(["reconstruct-sky", "missing.fits"])
+        self.assertEqual(cm.exception.code, 2)
+
+
 if __name__ == "__main__":
     unittest.main()

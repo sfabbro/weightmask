@@ -10,3 +10,9 @@
 
 - id: minimal-diff
   desc: Smallest correct change; match existing repo style and tools.
+
+- id: sky-mesh-sep
+  desc: Sky mesh uses SEP n=(size-1)//box+1, nodes (k+0.5)*box; reconstruct via CubicSpline (not map_coordinates).
+
+- id: reconstruct-sky-cli
+  desc: Rebuild mesh skies with `weightmask reconstruct-sky mesh.fits -o full.fits` (SKYMESH cards).

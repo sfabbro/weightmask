@@ -40,6 +40,8 @@ weightmask [OPTIONS] INPUT_FILE
 - `--output_mask`: Path for output bitmask FITS file (optional)
 - `--output_invvar`: Path for output inverse variance FITS file (optional)
 - `--output_sky`: Path for output sky background map file (optional)
+- `reconstruct-sky` subcommand: rebuild full sky from a `sky_format: mesh` product
+  (`weightmask reconstruct-sky mesh.fits -o full.fits`)
 - `--output_weight_raw`: Path for unnormalized weight map (masked inv_var), if different from primary map
 - `--hdu`: HDU index to process (e.g., 0, 1). Processes extensions if omitted
 - `--individual_masks`: Output individual mask component files
@@ -229,6 +231,16 @@ weightmask science.fits --config my_config.yml
 ### Generate Individual Masks
 ```bash
 weightmask science.fits --individual_masks
+```
+
+### Compact sky mesh + rebuild
+Set `output_params.sky_format: mesh` in the config to write a coarse SEP mesh
+(~2.5 KB/CCD) with `SKYMESH` / `MESHBW` / `SKYH` / `SKYW` cards instead of the
+full map. Rebuild anytime with:
+
+```bash
+weightmask reconstruct-sky sky_mesh.fits -o sky_full.fits
+weightmask reconstruct-sky sky_mesh.fits -o sky_full.fits --hdu 1
 ```
 
 ## Benchmark Runner

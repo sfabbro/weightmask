@@ -7,6 +7,7 @@ import argparse
 import concurrent.futures
 import hashlib
 import os
+import sys
 import threading
 import time
 from typing import Optional, Tuple
@@ -262,8 +263,10 @@ def validate_config(config: dict) -> bool:
     if "compress" in _op and not isinstance(_op["compress"], bool):
         print("ERROR: 'output_params.compress' must be a boolean.")
         return False
+    if "sky_format" in _op and str(_op["sky_format"]).lower() not in ("full", "mesh"):
+        print("ERROR: 'output_params.sky_format' must be 'full' or 'mesh'.")
+        return False
     return True
-
 
 def _header_lookup(header, key_cfg, default):
     """First-present header value for a str-or-list keyword config, else default."""
@@ -431,13 +434,14 @@ def process_image(
     object_cfg = config.get("sep_objects", {})
     iterations = sep_bg_cfg.get("iterations", 2)
     current_obj_mask = np.zeros(sci_shape, dtype=bool)
+    bg_diag: dict = {}
     last_bg_mask = None
     last_bkg_map = None
     last_bkg_rms_map = None
     for i in range(iterations):
         print(f"    Iteration {i + 1}/{iterations}...")
         total_mask_for_bg = interim_mask_bool | current_obj_mask
-        bkg_map, bkg_rms_map = estimate_background(sci_data_full, total_mask_for_bg, sep_bg_cfg)
+        bkg_map, bkg_rms_map = estimate_background(sci_data_full, total_mask_for_bg, {**sep_bg_cfg, "_diagnostics": bg_diag})
         if bkg_map is None:
             return None, None, None, None, None, None
 
@@ -463,9 +467,13 @@ def process_image(
         print("  Reusing iteration background (mask unchanged)...")
         sky_map, final_bkg_rms_map = last_bkg_map, last_bkg_rms_map
     else:
-        sky_map, final_bkg_rms_map = estimate_background(sci_data_full, final_full_mask, sep_bg_cfg)
+        sky_map, final_bkg_rms_map = estimate_background(sci_data_full, final_full_mask, {**sep_bg_cfg, "_diagnostics": bg_diag})
     if sky_map is None:
         return None, None, None, None, None, None
+    try:
+        header_info["sky_box"] = int(bg_diag.get("box_size", max(sci_shape)))
+    except (TypeError, ValueError):
+        header_info["sky_box"] = int(max(sci_shape))
 
     # --- 5. Inverse Variance Map ---
     print("  (5/7) Calculating inverse variance map...")
@@ -587,8 +595,17 @@ def process_hdu(
 # --- Main execution function called by entry point ---
 
 
-def parse_arguments() -> argparse.Namespace:
-    parser = argparse.ArgumentParser(description="Generate Mask and Weight/Confidence Maps for FITS files.")
+def parse_arguments(argv=None) -> argparse.Namespace:
+    parser = argparse.ArgumentParser(
+        description="Generate Mask and Weight/Confidence Maps for FITS files.",
+        epilog=(
+            "Examples:\n"
+            "  weightmask science.fits --config weightmask.yml\n"
+            "  weightmask science.fits --output_sky sky.fits\n"
+            "  weightmask reconstruct-sky sky_mesh.fits -o sky_full.fits\n"
+        ),
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+    )
     parser.add_argument("input_file", type=str, help="Path to input FITS file.")
     parser.add_argument(
         "--output_map",
@@ -666,7 +683,87 @@ def parse_arguments() -> argparse.Namespace:
         default=None,
         help="Max parallel HDU workers (default min(8, ncpu); 0/1 = sequential).",
     )
-    return parser.parse_args()
+    return parser.parse_args(argv)
+
+
+def parse_reconstruct_sky_arguments(argv=None) -> argparse.Namespace:
+    parser = argparse.ArgumentParser(
+        prog="weightmask reconstruct-sky",
+        description="Rebuild full-resolution sky maps from SKYMESH mesh FITS products.",
+        epilog="Example: weightmask reconstruct-sky sky_mesh.fits -o sky_full.fits",
+    )
+    parser.add_argument("input_file", type=str, help="Path to sky mesh FITS (SKYMESH cards required).")
+    parser.add_argument("-o", "--output", type=str, required=True, help="Output full-resolution sky FITS.")
+    parser.add_argument("--hdu", type=int, default=None, help="HDU index (default: all SKYMESH image HDUs).")
+    return parser.parse_args(argv)
+
+
+def reconstruct_sky_fits(input_path: str, output_path: str, hdu: int | None = None) -> int:
+    """Rebuild full-res sky FITS from a SKYMESH mesh product. Returns exit code."""
+    from .background import parse_sky_mesh_header, reconstruct_sky_from_header
+
+    if not os.path.exists(input_path):
+        print(f"ERROR: Input file not found: {input_path}")
+        print("  weightmask reconstruct-sky <mesh.fits> -o <full.fits>")
+        return 1
+    try:
+        hdul = fitsio.FITS(input_path, "r")
+    except OSError as e:
+        print(f"ERROR: Could not open {input_path}: {e}")
+        return 1
+
+    try:
+        candidates = get_hdus_to_process(hdul, hdu)
+        if not candidates:
+            return 1
+        jobs = []
+        for i in candidates:
+            hdr = hdul[i].read_header()
+            try:
+                parse_sky_mesh_header(hdr)
+            except ValueError as e:
+                if hdu is not None:
+                    print(f"ERROR: HDU {i}: {e}")
+                    return 1
+                continue
+            full = reconstruct_sky_from_header(hdul[i].read(), hdr)
+            try:
+                name = hdul[i].get_extname() or f"SKY_{i}"
+            except Exception:
+                name = f"SKY_{i}"
+            out_hdr = {k: v for k, v in dict(hdr).items() if str(k).upper() not in
+                       {"SKYMESH", "MESHBW", "MESHBH", "SKYH", "SKYW"}}
+            jobs.append((full, out_hdr, name))
+        if not jobs:
+            print("ERROR: No SKYMESH image HDUs found to rebuild.")
+            print("  weightmask reconstruct-sky <mesh.fits> -o <full.fits>")
+            return 1
+
+        os.makedirs(os.path.dirname(os.path.abspath(output_path)) or ".", exist_ok=True)
+        if len(jobs) == 1:
+            fitsio.write(output_path, jobs[0][0], header=jobs[0][1], clobber=True)
+        else:
+            fitsio.write(output_path, None, header=None, clobber=True)
+            with fitsio.FITS(output_path, "rw") as fout:
+                for data, hdr, name in jobs:
+                    fout.write(data, header=hdr, extname=name)
+        for data, _hdr, name in jobs:
+            print(f"  Rebuilt {name}: {data.shape[0]}x{data.shape[1]}")
+        print(f"Wrote full sky map: {output_path}")
+        return 0
+    finally:
+        try:
+            hdul.close()
+        except Exception:
+            pass
+
+
+def run_reconstruct_sky(argv=None) -> int:
+    args = parse_reconstruct_sky_arguments(argv)
+    input_path, input_hdu = extract_hdu_spec(args.input_file)
+    hdu = args.hdu if args.hdu is not None else input_hdu
+    print("Reconstructing full sky from SKYMESH product...")
+    return reconstruct_sky_fits(input_path, args.output, hdu=hdu)
 
 
 def validate_input_files(args: argparse.Namespace) -> bool:
@@ -750,6 +847,7 @@ def load_configuration(config_path: str) -> dict:
     config["output_params"].setdefault("mask_bitpix", 16)
     config["output_params"].setdefault("ivar_bitpix", 32)
     config["output_params"].setdefault("compress", False)
+    config["output_params"].setdefault("sky_format", "full")
 
     if not validate_config(config):
         print("ERROR: Configuration validation failed.")
@@ -1003,6 +1101,7 @@ def _store_output_maps(
     obj_mask,
     streak_mask,
     paths,
+    header_info,
 ):
     if paths["out_map_path"]:
         output_format = config.get("output_params", {}).get("output_map_format", "weight").lower()
@@ -1035,6 +1134,16 @@ def _store_output_maps(
             hdu_name,
         )
     if paths["out_sky_path"]:
+        sky_format = str(config.get("output_params", {}).get("sky_format", "full")).lower()
+        if sky_format == "mesh" and sky_map is not None:
+            from .background import sky_to_mesh
+
+            try:
+                mesh_box = int(header_info.get("sky_box", max(sky_map.shape)))
+            except (TypeError, ValueError):
+                mesh_box = int(max(sky_map.shape))
+            sky_map, mesh_cards = sky_to_mesh(sky_map, mesh_box)
+            hdu_header = {**(hdu_header or {}), **mesh_cards}
         _assign_map_if_valid(output_data, i, "sky", sky_map, hdu_header, hdu_name)
     if paths["out_weight_raw_path"] and weight_map is not None:
         if i not in output_data:
@@ -1399,7 +1508,7 @@ def process_all_hdus(
                 hdu_header = fitsio.FITSHDR()
             hdu_header = _strip_compression_keywords(hdu_header)
             hdu_output: dict = {}
-            _store_output_maps(hdu_output, i, hdu_header, hdu_name, config, confidence_map, weight_map, mask_data, inv_var_data, sky_map, args, bad_mask, sat_mask, cr_mask, obj_mask, streak_mask, paths)
+            _store_output_maps(hdu_output, i, hdu_header, hdu_name, config, confidence_map, weight_map, mask_data, inv_var_data, sky_map, args, bad_mask, sat_mask, cr_mask, obj_mask, streak_mask, paths, header_info)
             _flush_hdu_output(writers, hdu_output, i)
         except Exception as e:
             import traceback
@@ -1548,9 +1657,13 @@ def _cleanup_hdul(hdul_input, hdul_flat, hdul_badpix=None, hdul_dark=None):
         hdul_dark.close()
 
 
-def run_pipeline() -> int:
+def run_pipeline(argv=None) -> int:
     """Main function to parse arguments and run the pipeline."""
-    args = parse_arguments()
+    argv = list(sys.argv[1:] if argv is None else argv)
+    if argv and argv[0] == "reconstruct-sky":
+        return run_reconstruct_sky(argv[1:])
+
+    args = parse_arguments(argv)
 
     print("Starting WeightMask Pipeline...")
     start_pipeline_time = time.time()
@@ -1621,6 +1734,4 @@ def run_pipeline() -> int:
 
 
 if __name__ == "__main__":
-    import sys
-
     sys.exit(run_pipeline())

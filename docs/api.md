@@ -21,9 +21,12 @@ WeightMask is organized into several modules, each responsible for a specific as
 
 ### run_pipeline()
 ```python
-def run_pipeline() -> int
+def run_pipeline(argv=None) -> int
 ```
-Main function to parse arguments and run the pipeline.
+Main function to parse arguments and run the pipeline. Pass
+`argv=["reconstruct-sky", "mesh.fits", "-o", "full.fits"]` (or invoke
+`weightmask reconstruct-sky ...`) to rebuild a full sky map from a SKYMESH
+product without running the mask/weight pipeline.
 
 Returns:
 - `int`: Exit code (0 for success, 1 for error)
@@ -134,6 +137,18 @@ Args:
 
 Returns:
 - `tuple`: (background_map, background_rms_map)
+
+### sky_to_mesh() / reconstruct_sky_mesh()
+```python
+def sky_to_mesh(sky_map, box) -> tuple[np.ndarray, dict]
+def reconstruct_sky_mesh(mesh, shape, box) -> np.ndarray
+def reconstruct_sky_from_header(mesh, header) -> np.ndarray
+def parse_sky_mesh_header(header) -> tuple[tuple[int, int], int]
+```
+Compact SEP-aligned sky mesh codec. `sky_to_mesh` downsamples a full map to
+nodes at `(k + 0.5) * box` with `n = (size - 1) // box + 1` and returns FITS
+cards (`SKYMESH`, `MESHBW`, `MESHBH`, `SKYH`, `SKYW`). `reconstruct_sky_mesh`
+rebuilds with natural cubic interpolation at that node phase (sub-ADU roundtrip).
 
 ## Variance Calculation
 

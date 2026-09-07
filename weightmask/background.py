@@ -190,6 +190,86 @@ def _auto_box_size(sci_data_shape, mask_fraction, config):
     return max(16, min(auto, cfg_box))
 
 
+def _as_box(box, default=128):
+    try:
+        return max(1, int(box))
+    except (TypeError, ValueError):
+        return default
+
+
+def sky_to_mesh(sky_map, box):
+    """Downsample full-res sky to SEP mesh nodes + FITS rebuild cards.
+
+    ``n = (size - 1) // box + 1`` nodes at ``(k + 0.5) * box`` (clipped).
+    Returns ``(mesh_float32, cards_dict)``.
+    """
+    box = _as_box(box)
+    arr = np.ascontiguousarray(sky_map, dtype=np.float32)
+    h, w = arr.shape
+    ny = max(1, (h - 1) // box + 1) if h > 0 else 1
+    nx = max(1, (w - 1) // box + 1) if w > 0 else 1
+    yi = np.clip(np.rint((np.arange(ny) + 0.5) * box).astype(np.intp), 0, max(h - 1, 0))
+    xi = np.clip(np.rint((np.arange(nx) + 0.5) * box).astype(np.intp), 0, max(w - 1, 0))
+    mesh = arr[np.ix_(yi, xi)] if h > 0 and w > 0 else np.zeros((ny, nx), dtype=np.float32)
+    cards = {"SKYMESH": True, "MESHBW": box, "MESHBH": box, "SKYH": h, "SKYW": w}
+    return np.ascontiguousarray(mesh, dtype=np.float32), cards
+
+
+def reconstruct_sky_mesh(mesh, shape, box):
+    """Rebuild full-res sky from mesh (SEP node phase + natural cubic)."""
+    # ponytail: scipy CubicSpline, not SEP C bicubic; sub-ADU on MegaPrime.
+    # Swap back to a SEP port if bit-identical back() is required.
+    from scipy.interpolate import CubicSpline
+
+    box = _as_box(box)
+    m = np.atleast_2d(np.asarray(mesh, dtype=np.float64))
+    h, w = int(shape[0]), int(shape[1])
+    if m.size == 0 or h <= 0 or w <= 0:
+        return np.zeros((max(h, 0), max(w, 0)), dtype=np.float32)
+    ny, nx = m.shape
+    if ny == 1 and nx == 1:
+        return np.full((h, w), float(m[0, 0]), dtype=np.float32)
+    node_y = (np.arange(ny) + 0.5) * box
+    node_x = (np.arange(nx) + 0.5) * box
+    ys = np.arange(h, dtype=np.float64)
+    xs = np.arange(w, dtype=np.float64)
+    if ny > 1:
+        cols = np.column_stack([CubicSpline(node_y, m[:, j], bc_type="natural")(ys) for j in range(nx)])
+    else:
+        cols = np.broadcast_to(m, (h, nx)).copy()
+    if nx > 1:
+        out = np.vstack([CubicSpline(node_x, cols[i], bc_type="natural")(xs) for i in range(h)])
+    else:
+        out = cols
+    return np.ascontiguousarray(out, dtype=np.float32)
+
+
+def parse_sky_mesh_header(header):
+    """Parse SKYMESH cards into ``((h, w), box)``."""
+    if header is None:
+        raise ValueError("Header is missing SKYMESH=T (not a sky mesh product)")
+    try:
+        skymesh = header["SKYMESH"]
+    except Exception as e:
+        raise ValueError("Header is missing SKYMESH=T (not a sky mesh product)") from e
+    if skymesh is not True and str(skymesh).strip().upper() not in ("T", "TRUE", "1"):
+        raise ValueError("Header is missing SKYMESH=T (not a sky mesh product)")
+    try:
+        h, w = int(header["SKYH"]), int(header["SKYW"])
+        box = int(header["MESHBW"] if "MESHBW" in header else header["MESHBH"])
+    except Exception as e:
+        raise ValueError("SKYMESH header requires SKYH, SKYW, and MESHBW/MESHBH") from e
+    if h <= 0 or w <= 0:
+        raise ValueError(f"Invalid SKYH/SKYW shape ({h}, {w})")
+    return (h, w), max(1, box)
+
+
+def reconstruct_sky_from_header(mesh, header):
+    """Rebuild full-res sky from a mesh array and its SKYMESH FITS header cards."""
+    shape, box = parse_sky_mesh_header(header)
+    return reconstruct_sky_mesh(mesh, shape, box)
+
+
 def _repair_negative_dips(bkg_map, sci_data, bkg_rms_map, mask, config, diagnostics=None):
     """Nearest-valid fill for unphysical negative-sky interpolation overshoots.
 
@@ -280,18 +360,6 @@ def _repair_negative_dips(bkg_map, sci_data, bkg_rms_map, mask, config, diagnost
     return out.astype(np.asarray(bkg_map).dtype, copy=False)
 
 
-    """Estimate background and return diagnostic metadata for benchmarking."""
-    diagnostics = {
-        "requested_method": config.get("method", "sep").lower(),
-        "mask_fraction": float(np.mean(mask)),
-        "effective_method": None,
-        "fallback": None,
-        "box_size": None,
-    }
-    bkg_map, bkg_rms_map = estimate_background(sci_data, mask, {**config, "_diagnostics": diagnostics})
-    return bkg_map, bkg_rms_map, diagnostics
-
-
 def estimate_background(sci_data, mask, config):
     """
     Estimate background and background RMS using a configured method.
@@ -327,10 +395,14 @@ def estimate_background(sci_data, mask, config):
                 if config.get("auto_box_scaling", True)
                 else config.get("box_size", 128)
             )
+            try:
+                box_size = max(1, int(box_size))
+            except (TypeError, ValueError):
+                box_size = 128
             filter_size = config.get("filter_size", 3)
             max_box_size = config.get("max_box_size", max(box_size, 1024))
             if diagnostics is not None:
-                diagnostics["box_size"] = int(box_size)
+                diagnostics["box_size"] = box_size
             bkg_map, bkg_rms_map = _estimate_sep_tiered(sci_data, mask, box_size, filter_size, max_box_size)
             if bkg_map is None:
                 print("    SEP tiered retries failed; switching to robust median fallback.")
