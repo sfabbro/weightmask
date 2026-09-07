@@ -146,6 +146,45 @@ class TestParallelEquivalence(unittest.TestCase):
         self.assertEqual(_resolve_max_workers(4, 2), 2)
         self.assertEqual(_resolve_max_workers(None, 100), min(8, _os.cpu_count() or 4))
 
+    def test_small_format_generic_defaults(self):
+        # 512x512 vignetted flat + dead column, GAINA-only headers (no MegaPrime flat/GAIN).
+        shape = (512, 512)
+        with tempfile.TemporaryDirectory() as tmp:
+            sp = os.path.join(tmp, "small.fits")
+            fp = os.path.join(tmp, "small_flat.fits")
+            rng = np.random.default_rng(7)
+            fitsio.write(sp, None, clobber=True)
+            with fitsio.FITS(sp, "rw") as f:
+                for _ in range(4):
+                    d = (1000 + 30 * rng.standard_normal(shape)).astype(np.float32)
+                    f.write(d, header={"GAINA": 2.0, "RDNOIS": 6.0, "SATUR": 50000.0})
+            yy, xx = np.mgrid[0:512, 0:512]
+            flat1 = (0.8 + 0.2 * np.cos((xx - 256) / 256 * np.pi / 2) ** 2).astype(np.float32)
+            flat1[:, 100] = 0.0
+            fitsio.write(fp, None, clobber=True)
+            with fitsio.FITS(fp, "rw") as f:
+                for _ in range(4):
+                    f.write(flat1)
+            w_seq, m_seq = _run(sp, fp, tmp, "seqsmall", max_workers=1)
+            w_par, m_par = _run(sp, fp, tmp, "parsmall", max_workers=4)
+            self.assertEqual(len(w_seq), 4)
+            for a, b in zip(w_seq, w_par):
+                np.testing.assert_array_equal(a, b)
+            for a, b in zip(m_seq, m_par):
+                np.testing.assert_array_equal(a, b)
+            # Dead column flagged BAD; wire dtypes uint16/float32.
+            self.assertTrue(bool(((m_seq[0][:, 100] & 1) != 0).all()))
+            with fitsio.FITS(os.path.join(tmp, "seqsmall.mask.fits")) as f:
+                for i in range(len(f)):
+                    if f[i].get_info().get("ndims") == 2:
+                        self.assertEqual(f[i].read().dtype, np.uint16)
+                        break
+            with fitsio.FITS(os.path.join(tmp, "seqsmall.weight.fits")) as f:
+                for i in range(len(f)):
+                    if f[i].get_info().get("ndims") == 2:
+                        self.assertEqual(f[i].read().dtype, np.float32)
+                        break
+
 
 if __name__ == "__main__":
     unittest.main()
