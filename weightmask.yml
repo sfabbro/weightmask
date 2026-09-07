@@ -188,18 +188,6 @@ streak_masking:
     dilation_radius: 1
     max_trials: 300
     max_trails: 3
-  frangi_legacy_params:
-    block_size: 1024
-    block_pad: 32
-    tophat_radius: 10
-    sigmas: [1, 2, 4]
-    black_ridges: false
-    high_threshold: null
-    low_threshold: null
-    high_threshold_sig: 8.0
-    low_threshold_sig: 3.0
-    min_area: 25
-    min_elongation: 5.0
 
 variance:
   method: "theoretical"

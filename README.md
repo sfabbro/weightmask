@@ -21,7 +21,7 @@ The default streak detector is `auto_ground`:
 - MRT-like Radon rescue when the primary detector is low-confidence
 - optional sparse RANSAC recovery for intermittent trails
 
-`frangi_legacy` remains available only as a comparison path.
+`auto_ground` is the only production streak mode. Benchmark Frangi comparison lives in `benchmarks/frangi_legacy.py`.
 
 ## Quick Start
 

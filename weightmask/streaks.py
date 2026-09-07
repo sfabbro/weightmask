@@ -1,4 +1,3 @@
-import concurrent.futures
 import time
 import warnings
 
@@ -7,7 +6,6 @@ import scipy.ndimage as ndi
 from astropy.stats import mad_std
 from skimage.draw import line
 from skimage.feature import canny
-from skimage.filters import apply_hysteresis_threshold, frangi
 from skimage.measure import LineModelND, label, ransac, regionprops
 from skimage.morphology import dilation, disk, white_tophat
 from skimage.transform import probabilistic_hough_line, radon
@@ -55,13 +53,14 @@ def _prepare_streak_image(data_sub, existing_mask):
 
 
 def _resolve_streak_mode(config):
-    """Resolve the public streak mode while preserving method backward compatibility."""
+    """Production accepts only ``auto_ground`` (``method`` is a legacy alias for ``mode``)."""
     requested = (config.get("mode") or config.get("method") or "auto_ground").lower()
-    aliases = {
-        "satdet": "satdet_only",
-        "frangi_legacy": "legacy_compare",
-    }
-    return aliases.get(requested, requested)
+    if requested != "auto_ground":
+        raise ValueError(
+            f"Unknown streak detection mode {requested!r}. "
+            "Valid mode: ('auto_ground',). Benchmark Frangi lives in benchmarks.frangi_legacy."
+        )
+    return "auto_ground"
 
 
 def _extract_multiscale_segments(data_sub, existing_mask, cfg):
@@ -695,7 +694,6 @@ def _refine_trail_mask(data_sub, bkg_rms_map, candidate, mask_cfg, existing_mask
             endpoints = refit
         else:
             width1 = _support_count(centered, inside, bg_std)
-            bundle1 = (strip, sampled, inside, bg_med, bg_std, row_bg, centered)
             best_w = width1 if _better(width1, width0) else width0
             if _better(width0, width1):
                 strip, sampled, inside, bg_med, bg_std, row_bg, centered = bundle0
@@ -985,7 +983,7 @@ def _detect_streaks_houghpeaks(data_sub, bkg_rms_map, existing_mask, config):
     bh, bw = h // bfac, w // bfac
     if bh < 16 or bw < 16:
         return np.zeros(data_sub.shape, dtype=bool), [], {"peaks": 0}
-    tw, th_trim = w - bfac * bw, h - bfac * bh
+    _tw, _th_trim = w - bfac * bw, h - bfac * bh
     binned = data_sub[: bh * bfac, : bw * bfac].reshape(bh, bfac, bw, bfac).mean(axis=(1, 3))
     if bkg_rms_map is not None:
         brms = bkg_rms_map[: bh * bfac, : bw * bfac].reshape(bh, bfac, bw, bfac).mean(axis=(1, 3))
@@ -1056,7 +1054,7 @@ def _contour_candidates(data_sub, existing_mask, bkg_rms_map, config):
     from skimage import measure as _measure
 
     cfg = config.get("contour_params", {})
-    mask_cfg = config.get("mask_params", {})
+    config.get("mask_params", {})
     thresh_sig = float(cfg.get("thresh_sig", 2.5))
     min_span = float(cfg.get("min_span", 150.0))
     shape_cut = float(cfg.get("shape_cut", 0.2))
@@ -1228,159 +1226,6 @@ def _detect_streaks_satdet(data_sub, bkg_rms_map, existing_mask, config):
     )
 
 
-def _apply_frangi_filter(tophat_img, sigmas, black_ridges, block_size, pad, img_rows, img_cols):
-    """Legacy Frangi helper retained for benchmark comparisons."""
-    print(f"    Applying Frangi Filter (sigmas={sigmas})...")
-    ridge_map = np.zeros_like(tophat_img)
-
-    if img_rows > block_size or img_cols > block_size:
-        print(
-            f"    Image is large ({img_rows}x{img_cols}). "
-            f"Using parallel block processing (size={block_size}, pad={pad})."
-        )
-
-        def process_block(r, c):
-            r_start_pad = max(0, r - pad)
-            r_end_pad = min(img_rows, r + block_size + pad)
-            c_start_pad = max(0, c - pad)
-            c_end_pad = min(img_cols, c + block_size + pad)
-            block = tophat_img[r_start_pad:r_end_pad, c_start_pad:c_end_pad]
-
-            with warnings.catch_warnings():
-                warnings.simplefilter("ignore")
-                block_ridge = frangi(block, sigmas=sigmas, black_ridges=black_ridges)
-
-            valid_r_start = r - r_start_pad
-            valid_r_end = valid_r_start + min(block_size, img_rows - r)
-            valid_c_start = c - c_start_pad
-            valid_c_end = valid_c_start + min(block_size, img_cols - c)
-            return r, c, block_ridge[valid_r_start:valid_r_end, valid_c_start:valid_c_end]
-
-        futures = []
-        with concurrent.futures.ThreadPoolExecutor() as executor:
-            for r in range(0, img_rows, block_size):
-                for c in range(0, img_cols, block_size):
-                    futures.append(executor.submit(process_block, r, c))
-            for future in concurrent.futures.as_completed(futures):
-                r, c, block = future.result()
-                ridge_map[r : r + block.shape[0], c : c + block.shape[1]] = block
-    else:
-        with warnings.catch_warnings():
-            warnings.simplefilter("ignore")
-            ridge_map = frangi(tophat_img, sigmas=sigmas, black_ridges=black_ridges)
-
-    return ridge_map
-
-
-def _calculate_hysteresis_thresholds(cfg, tophat_img, ridge_map, existing_mask):
-    """Legacy Frangi threshold helper retained for comparison runs."""
-    high_thresh = cfg.get("high_threshold")
-    low_thresh = cfg.get("low_threshold")
-
-    if high_thresh is None or low_thresh is None:
-        high_threshold_sig = cfg.get("high_threshold_sig", 3.0)
-        low_threshold_sig = cfg.get("low_threshold_sig", 1.0)
-
-        bkg_mask = tophat_img < 1.0
-        if existing_mask is not None:
-            bkg_mask &= ~existing_mask
-        if np.count_nonzero(bkg_mask) < 1000:
-            bkg_mask = np.ones_like(tophat_img, dtype=bool)
-
-        bkg_ridge = ridge_map[bkg_mask]
-        if len(bkg_ridge) > 1000:
-            p50, p99 = np.percentile(bkg_ridge, [50, 99])
-            tail_spread = max(p99 - p50, 1e-9)
-            high_thresh = max(p50 + high_threshold_sig * tail_spread, 1e-6)
-            low_thresh = max(p50 + low_threshold_sig * tail_spread, 1e-7)
-        else:
-            high_thresh = 1e-5
-            low_thresh = 5e-6
-
-    return low_thresh, high_thresh
-
-
-def _filter_streak_regions(hyst_mask, min_area, min_elongation, existing_mask, data_sub_shape):
-    """Legacy Frangi region filter with explicit elongation gating."""
-    img_rows, img_cols = data_sub_shape
-    labeled_mask, num_labels = label(hyst_mask, connectivity=2, return_num=True)
-    if num_labels == 0:
-        return np.zeros(data_sub_shape, dtype=bool)
-
-    regions = regionprops(labeled_mask)
-    streak_core_mask = np.zeros(data_sub_shape, dtype=bool)
-    num_valid_streaks = 0
-
-    for region in regions:
-        if region.area < min_area or region.axis_major_length < 10:
-            continue
-
-        elongation = region.axis_major_length / max(region.axis_minor_length, 1e-6)
-        if elongation < min_elongation:
-            continue
-
-        if existing_mask is not None:
-            coords = region.coords
-            existing_fraction = np.mean(existing_mask[coords[:, 0], coords[:, 1]])
-            if existing_fraction > 0.5:
-                continue
-
-        num_valid_streaks += 1
-        coords = region.coords
-        idx = (coords[:, 0] >= 0) & (coords[:, 0] < img_rows) & (coords[:, 1] >= 0) & (coords[:, 1] < img_cols)
-        streak_core_mask[coords[idx, 0], coords[idx, 1]] = True
-
-    print(f"    Validated {num_valid_streaks} regions as streaks based on geometry.")
-    return streak_core_mask
-
-
-def _detect_streaks_frangi_legacy(data_sub, bkg_rms_map, existing_mask, config):
-    """Retained legacy Frangi detector for internal benchmarking only."""
-    cfg = config.get("frangi_legacy_params", {})
-    img_rows, img_cols = data_sub.shape
-    streak_mask_final_bool = np.zeros(data_sub.shape, dtype=bool)
-    tophat_radius = cfg.get("tophat_radius", 10)
-    sigmas = cfg.get("sigmas", [1, 2, 3])
-    black_ridges = cfg.get("black_ridges", False)
-    min_area = cfg.get("min_area", 50)
-    min_elongation = float(cfg.get("min_elongation", 5.0))
-    dilation_radius = config.get("dilation_radius", 3)
-
-    print("--> Using legacy Frangi streak detection")
-    try:
-        selem = disk(tophat_radius)
-        tophat_img = white_tophat(data_sub, footprint=selem) if selem.size > 0 else data_sub
-        if bkg_rms_map is not None:
-            safe_rms = np.where(bkg_rms_map <= 0, 1.0, bkg_rms_map)
-            tophat_img = tophat_img / safe_rms
-
-        ridge_map = _apply_frangi_filter(
-            tophat_img,
-            sigmas,
-            black_ridges,
-            int(cfg.get("block_size", 1024)),
-            int(cfg.get("block_pad", 32)),
-            img_rows,
-            img_cols,
-        )
-        low_thresh, high_thresh = _calculate_hysteresis_thresholds(cfg, tophat_img, ridge_map, existing_mask)
-        hyst_mask = apply_hysteresis_threshold(ridge_map, low_thresh, high_thresh)
-        streak_core_mask = _filter_streak_regions(
-            hyst_mask,
-            min_area,
-            min_elongation,
-            existing_mask,
-            data_sub.shape,
-        )
-        selem = disk(dilation_radius)
-        streak_mask_final_bool = dilation(streak_core_mask, footprint=selem) if selem.size > 0 else streak_core_mask
-    except Exception as e:
-        print(f"    Legacy Frangi streak detection failed: {e}")
-        return np.zeros(data_sub.shape, dtype=bool)
-
-    return streak_mask_final_bool
-
-
 def _detect_trails_sparse_ransac(data_sub, bkg_rms_map, existing_mask, config):
     """Detect intermittent trails using iterative RANSAC on residual candidate points."""
     cfg = config.get("sparse_ransac_params", {})
@@ -1456,13 +1301,13 @@ def _detect_trails_sparse_ransac(data_sub, bkg_rms_map, existing_mask, config):
 
 def detect_streaks(data_sub, bkg_rms_map, existing_mask, config):
     """
-    Detect linear streaks using the configured primary method plus optional sparse RANSAC.
+    Detect linear streaks via the production ``auto_ground`` path plus optional sparse RANSAC.
+
     Raises ValueError on unknown modes (fail fast on config typos).
-    Supported modes (via ``mode``; ``method`` accepted as an alias):
-    - 'auto_ground': binned-Hough peaks + satdet primary + unmasked retry + MRT rescue + conditional RANSAC.
-    - 'satdet_only': binned-Hough peaks + satdet primary + conditional RANSAC.
-    - 'mrt_only': Radon (MRT-like) detection + conditional RANSAC.
-    - 'legacy_compare': Frangi-vesselness path, retained only for benchmark comparisons.
+    Mode ``auto_ground`` (also via legacy ``method`` alias): binned-Hough peaks + satdet
+    primary + unmasked retry + MRT rescue + conditional RANSAC.
+
+    Benchmark-only Frangi lives in ``benchmarks.frangi_legacy``.
     """
     if not config.get("enable", False):
         print("Streak masking disabled in main config.")
@@ -1474,67 +1319,47 @@ def detect_streaks(data_sub, bkg_rms_map, existing_mask, config):
 
     print(f"  Detecting streaks (mode: {mode})...")
     streak_t0 = time.time()
-    if mode in {"auto_ground", "satdet_only"}:
-        hp_mask, hp_accepted, hp_debug = _detect_streaks_houghpeaks(data_sub, bkg_rms_map, existing_mask, config)
-        streak_mask_bool |= hp_mask
-        debug_info["houghpeaks"] = {"accepted": hp_accepted, **hp_debug}
-        ct_mask, ct_accepted, ct_debug = _detect_streaks_contours(data_sub, bkg_rms_map, existing_mask, config)
-        streak_mask_bool |= ct_mask
-        debug_info["contours"] = {"accepted": ct_accepted, **ct_debug}
-        print("    [streak] satdet primary pass...")
-        satdet_mask, accepted, primary_debug = _detect_streaks_satdet(data_sub, bkg_rms_map, existing_mask, config)
-        streak_mask_bool |= satdet_mask
-        debug_info["primary"] = {"accepted": accepted, **primary_debug}
-        print(f"    [streak] primary done in {time.time()-streak_t0:.1f}s: {len(accepted)} accepted.")
-        low_confidence = len(accepted) == 0 or np.count_nonzero(satdet_mask) < int(
-            config.get("mask_params", {}).get("min_mask_pixels", 64)
-        )
-        primary_area_fraction = float(np.mean(satdet_mask)) if satdet_mask.size > 0 else 0.0
-        suspicious_primary = False
-        if accepted:
-            support_widths = [float(item.get("support_width", 0.0)) for item in accepted]
-            suspicious_primary = primary_area_fraction > float(
-                config.get("retry_if_area_fraction_exceeds", 0.03)
-            ) or np.median(support_widths) > float(config.get("retry_if_support_width_exceeds", 10.0))
-        if (
-            mode == "auto_ground"
-            and low_confidence
-            and existing_mask is not None
-            and config.get("retry_without_existing_mask", True)
-        ):
-            print(f"    [streak] retrying satdet without existing mask (t+{time.time()-streak_t0:.1f}s)...")
-            retry_mask, retry_accepted, retry_debug = _detect_streaks_satdet(data_sub, bkg_rms_map, None, config)
-            if len(retry_accepted) > 0:
-                streak_mask_bool |= retry_mask
-            debug_info["retry_unmasked"] = {"accepted": retry_accepted, **retry_debug}
-            low_confidence = low_confidence and len(retry_accepted) == 0
-        elif (
-            mode == "auto_ground"
-            and suspicious_primary
-            and existing_mask is not None
-            and config.get("retry_without_existing_mask", True)
-        ):
-            print(f"    [streak] retrying satdet without existing mask (t+{time.time()-streak_t0:.1f}s)...")
-            retry_mask, retry_accepted, retry_debug = _detect_streaks_satdet(data_sub, bkg_rms_map, None, config)
-            retry_pixels = int(np.count_nonzero(retry_mask))
-            primary_pixels = int(np.count_nonzero(satdet_mask))
-            if len(retry_accepted) > 0 and retry_pixels > 0 and retry_pixels < primary_pixels:
-                streak_mask_bool = retry_mask.copy()
-            debug_info["retry_unmasked"] = {"accepted": retry_accepted, **retry_debug}
-        if mode == "auto_ground" and low_confidence:
-            print(f"    [streak] MRT rescue pass (t+{time.time()-streak_t0:.1f}s)...")
-            mrt_mask, mrt_candidates, mrt_debug = _detect_streaks_mrt_like(data_sub, bkg_rms_map, existing_mask, config)
-            streak_mask_bool |= mrt_mask
-            debug_info["mrt"] = {"accepted": mrt_candidates, **mrt_debug}
-    elif mode == "mrt_only":
+    hp_mask, hp_accepted, hp_debug = _detect_streaks_houghpeaks(data_sub, bkg_rms_map, existing_mask, config)
+    streak_mask_bool |= hp_mask
+    debug_info["houghpeaks"] = {"accepted": hp_accepted, **hp_debug}
+    ct_mask, ct_accepted, ct_debug = _detect_streaks_contours(data_sub, bkg_rms_map, existing_mask, config)
+    streak_mask_bool |= ct_mask
+    debug_info["contours"] = {"accepted": ct_accepted, **ct_debug}
+    print("    [streak] satdet primary pass...")
+    satdet_mask, accepted, primary_debug = _detect_streaks_satdet(data_sub, bkg_rms_map, existing_mask, config)
+    streak_mask_bool |= satdet_mask
+    debug_info["primary"] = {"accepted": accepted, **primary_debug}
+    print(f"    [streak] primary done in {time.time()-streak_t0:.1f}s: {len(accepted)} accepted.")
+    low_confidence = len(accepted) == 0 or np.count_nonzero(satdet_mask) < int(
+        config.get("mask_params", {}).get("min_mask_pixels", 64)
+    )
+    primary_area_fraction = float(np.mean(satdet_mask)) if satdet_mask.size > 0 else 0.0
+    suspicious_primary = False
+    if accepted:
+        support_widths = [float(item.get("support_width", 0.0)) for item in accepted]
+        suspicious_primary = primary_area_fraction > float(
+            config.get("retry_if_area_fraction_exceeds", 0.03)
+        ) or np.median(support_widths) > float(config.get("retry_if_support_width_exceeds", 10.0))
+    if low_confidence and existing_mask is not None and config.get("retry_without_existing_mask", True):
+        print(f"    [streak] retrying satdet without existing mask (t+{time.time()-streak_t0:.1f}s)...")
+        retry_mask, retry_accepted, retry_debug = _detect_streaks_satdet(data_sub, bkg_rms_map, None, config)
+        if len(retry_accepted) > 0:
+            streak_mask_bool |= retry_mask
+        debug_info["retry_unmasked"] = {"accepted": retry_accepted, **retry_debug}
+        low_confidence = low_confidence and len(retry_accepted) == 0
+    elif suspicious_primary and existing_mask is not None and config.get("retry_without_existing_mask", True):
+        print(f"    [streak] retrying satdet without existing mask (t+{time.time()-streak_t0:.1f}s)...")
+        retry_mask, retry_accepted, retry_debug = _detect_streaks_satdet(data_sub, bkg_rms_map, None, config)
+        retry_pixels = int(np.count_nonzero(retry_mask))
+        primary_pixels = int(np.count_nonzero(satdet_mask))
+        if len(retry_accepted) > 0 and retry_pixels > 0 and retry_pixels < primary_pixels:
+            streak_mask_bool = retry_mask.copy()
+        debug_info["retry_unmasked"] = {"accepted": retry_accepted, **retry_debug}
+    if low_confidence:
+        print(f"    [streak] MRT rescue pass (t+{time.time()-streak_t0:.1f}s)...")
         mrt_mask, mrt_candidates, mrt_debug = _detect_streaks_mrt_like(data_sub, bkg_rms_map, existing_mask, config)
         streak_mask_bool |= mrt_mask
         debug_info["mrt"] = {"accepted": mrt_candidates, **mrt_debug}
-    elif mode == "legacy_compare":
-        streak_mask_bool |= _detect_streaks_frangi_legacy(data_sub, bkg_rms_map, existing_mask, config)
-    else:
-        valid = ("auto_ground", "satdet_only", "mrt_only", "legacy_compare")
-        raise ValueError(f"Unknown streak detection mode {mode!r}. Valid modes: {valid}.")
 
     run_sparse_ransac = bool(config.get("enable_sparse_ransac", True))
     if config.get("sparse_on_primary_weak_only", True):
@@ -1555,7 +1380,7 @@ def detect_streaks(data_sub, bkg_rms_map, existing_mask, config):
                 primary_accept_count += int(retry_debug["accepted"])
         run_sparse_ransac = run_sparse_ransac and (
             np.count_nonzero(streak_mask_bool) < int(config.get("mask_params", {}).get("min_mask_pixels", 64))
-            or (mode in {"auto_ground", "satdet_only"} and primary_accept_count == 0)
+            or primary_accept_count == 0
         )
 
     if run_sparse_ransac:

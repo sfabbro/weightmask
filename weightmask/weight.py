@@ -1,6 +1,7 @@
 # weight.py
 import numpy as np
 
+from . import __version__
 from .contract import ProducerMetadata, build_weight_product
 
 
@@ -17,11 +18,12 @@ def generate_weight_and_confidence(inv_variance_map, final_mask_int, config):
                        'confidence_params' (for normalization).
 
     Returns:
-        tuple: (weight_map, confidence_map)
-               Returns (None, None) if input inv_variance_map is None.
+        tuple: (weight_map, confidence_map, product)
+               product is a WeightMaskProduct, or None when inputs are None.
+               Returns (None, None, None) if input inv_variance_map is None.
     """
     if inv_variance_map is None:
-        return None, None
+        return None, None, None
 
     out_cfg = config.get("output_params", {})
     conf_cfg = config.get("confidence_params", {})
@@ -43,7 +45,7 @@ def generate_weight_and_confidence(inv_variance_map, final_mask_int, config):
         final_mask_int,
         exclude_detected=mask_detected,
         confidence_percentile=contract_percentile,
-        producer=ProducerMetadata(version="1.0.0"),
+        producer=ProducerMetadata(version=__version__),
     )
     weight_map = product.weight
     num_masked = np.count_nonzero(weight_map == 0.0)
@@ -68,4 +70,4 @@ def generate_weight_and_confidence(inv_variance_map, final_mask_int, config):
     # Ensure final map has the correct dtype
     confidence_map = confidence_map.astype(conf_dtype)
 
-    return weight_map, confidence_map
+    return weight_map, confidence_map, product

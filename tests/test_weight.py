@@ -26,11 +26,14 @@ class TestWeight(unittest.TestCase):
             },
         }
 
-        weight_map, confidence_map = generate_weight_and_confidence(inv_variance_map, final_mask_int, config)
+        weight_map, confidence_map, product = generate_weight_and_confidence(
+            inv_variance_map, final_mask_int, config
+        )
 
         # Check that we got results
         self.assertIsNotNone(weight_map)
         self.assertIsNotNone(confidence_map)
+        self.assertIsNotNone(product)
 
         # Check that results are numpy arrays
         self.assertIsInstance(weight_map, np.ndarray)
@@ -69,11 +72,14 @@ class TestWeight(unittest.TestCase):
             },
         }
 
-        weight_map, confidence_map = generate_weight_and_confidence(inv_variance_map, final_mask_int, config)
+        weight_map, confidence_map, product = generate_weight_and_confidence(
+            inv_variance_map, final_mask_int, config
+        )
 
         # Check that we got results
         self.assertIsNotNone(weight_map)
         self.assertIsNotNone(confidence_map)
+        self.assertIsNotNone(product)
 
         # Check that detected objects are masked when configured to do so (if we have a result)
         if weight_map is not None:
@@ -96,11 +102,14 @@ class TestWeight(unittest.TestCase):
             },
         }
 
-        weight_map, confidence_map = generate_weight_and_confidence(inv_variance_map, final_mask_int, config)
+        weight_map, confidence_map, product = generate_weight_and_confidence(
+            inv_variance_map, final_mask_int, config
+        )
 
         # Check that we got results
         self.assertIsNotNone(weight_map)
         self.assertIsNotNone(confidence_map)
+        self.assertIsNotNone(product)
 
         # Check that results are numpy arrays
         self.assertIsInstance(weight_map, np.ndarray)
@@ -112,11 +121,12 @@ class TestWeight(unittest.TestCase):
 
     def test_generate_weight_and_confidence_none_input(self):
         """Test weight and confidence map generation with None input."""
-        weight_map, confidence_map = generate_weight_and_confidence(None, None, {})
+        weight_map, confidence_map, product = generate_weight_and_confidence(None, None, {})
 
         # Should return None for both when inv_variance_map is None
         self.assertIsNone(weight_map)
         self.assertIsNone(confidence_map)
+        self.assertIsNone(product)
 
 
 if __name__ == "__main__":

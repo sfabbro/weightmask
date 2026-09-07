@@ -26,7 +26,7 @@ estimate, and separate outputs for key contaminants. See `docs/` and `TODO.md`.
 - Default streak detector is `auto_ground` (percentile rescaling + smoothing,
   compact-source suppression, multi-scale Canny + Hough/KHT segment extraction,
   trail-aligned strip refinement, MRT-like Radon rescue, optional sparse RANSAC).
-- `frangi_legacy` remains a COMPARISON path only — do not regress it to default.
+- Frangi comparison lives in `benchmarks/frangi_legacy.py` — not in the package.
 - Bad pixels from flats, saturation/bleed trails, cosmic rays, objects, and
   linear streaks.
 

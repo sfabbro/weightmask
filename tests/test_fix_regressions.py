@@ -1,8 +1,7 @@
 """Regression tests for the weightmask defect-review fix list (2026-09-05).
 
 Each test pins one fix behaviorally (observable result, not source text):
-- flat-cache hash covers tile_size (stale on tile change, hit on same tile)
-- process_all_hdus pre-computes each flat HDU mask exactly once (dedup)
+- process_all_hdus pre-computes each flat HDU mask exactly once (dedup; no disk cache)
 - unknown streak mode raises instead of silently returning zeros
 - non-finite inverse variance sets INVALID_VARIANCE and zeroes weight end to end
 - CR niter config is forwarded to astroscrappy (yml pins niter: 2)
@@ -17,13 +16,8 @@ from unittest.mock import MagicMock, patch
 import fitsio
 import numpy as np
 
-from weightmask.cli import (
-    _flat_cfg_hash,
-    ensure_flat_bad_mask_cache,
-    load_flat_bad_mask,
-    process_all_hdus,
-)
 from weightmask.contract import QualityBit, build_weight_product
+from weightmask.mef import process_all_hdus
 
 
 def _tiny_flat_config():
@@ -37,33 +31,9 @@ def _tiny_flat_config():
     }
 
 
-class TestFlatCacheTileHash(unittest.TestCase):
-    def test_hash_covers_tile_size(self):
-        cfg = {"local_low_thresh": 0.5}
-        self.assertNotEqual(_flat_cfg_hash(cfg, 1024), _flat_cfg_hash(cfg, 512))
-        self.assertEqual(_flat_cfg_hash(cfg, 1024), _flat_cfg_hash(cfg, 1024))
-
-    def test_cache_stale_on_tile_change(self):
-        cfg = _tiny_flat_config()
-        with tempfile.TemporaryDirectory() as tmp:
-            flat_path = os.path.join(tmp, "flat.fits")
-            data = np.ones((32, 32), dtype=np.float32)
-            data[5, 5] = 0.1
-            fitsio.write(flat_path, data, clobber=True)
-            with fitsio.FITS(flat_path, "rw") as f:
-                f.write(np.ones((32, 32), dtype=np.float32))
-
-            ensure_flat_bad_mask_cache(flat_path, cfg, tile_size=1024)
-            hit = load_flat_bad_mask(flat_path, 0, cfg, tile_size=1024)
-            self.assertIsNotNone(hit)
-            self.assertEqual(hit.shape, (32, 32))
-            # Same bytes on disk, different tile size -> stale, must miss.
-            self.assertIsNone(load_flat_bad_mask(flat_path, 0, cfg, tile_size=512))
-
-
 class TestSingleFlatPrecompute(unittest.TestCase):
     def test_each_flat_hdu_computed_once(self):
-        from weightmask import cli as cli_mod
+        from weightmask import mef as cli_mod
 
         config = _tiny_flat_config()
         flat_data = np.ones((32, 32), dtype=np.float32)
@@ -107,7 +77,8 @@ class TestSingleFlatPrecompute(unittest.TestCase):
 
         self.assertEqual(n, 1)
         self.assertEqual(len(calls), 1)  # regression: duplicated block computed twice
-        self.assertEqual(calls[0], 1024)
+        # MEF precompute uses _effective_tile_size (32x32 → 16), matching process_image.
+        self.assertEqual(calls[0], 16)
 
 
 class TestInvalidVarianceEndToEnd(unittest.TestCase):
@@ -127,7 +98,7 @@ class TestInvalidVarianceEndToEnd(unittest.TestCase):
 
 class TestDeadCcdVeto(unittest.TestCase):
     def test_outlier_hdu_goes_fully_bad(self):
-        from weightmask.cli import _veto_dead_ccd_hdus
+        from weightmask.mef import _veto_dead_ccd_hdus
 
         masks = {i: np.zeros((8, 8), dtype=bool) for i in range(1, 9)}
         meds = {i: 0.94 for i in range(1, 9)}
@@ -139,7 +110,7 @@ class TestDeadCcdVeto(unittest.TestCase):
                 self.assertFalse(bool(masks[i].any()))
 
     def test_agreeing_ccds_untouched(self):
-        from weightmask.cli import _veto_dead_ccd_hdus
+        from weightmask.mef import _veto_dead_ccd_hdus
 
         masks = {i: np.zeros((8, 8), dtype=bool) for i in range(1, 9)}
         meds = {i: 0.94 + 0.001 * i for i in range(1, 9)}
@@ -148,7 +119,7 @@ class TestDeadCcdVeto(unittest.TestCase):
             self.assertFalse(bool(masks[i].any()))
 
     def test_small_run_skipped(self):
-        from weightmask.cli import _veto_dead_ccd_hdus
+        from weightmask.mef import _veto_dead_ccd_hdus
 
         masks = {0: np.zeros((8, 8), dtype=bool)}
         _veto_dead_ccd_hdus(masks, {0: 99.0}, {})
@@ -156,13 +127,13 @@ class TestDeadCcdVeto(unittest.TestCase):
 
 class TestConfidenceGlobalHookup(unittest.TestCase):
     def test_confidence_mode_uses_global_p99(self):
-        import tempfile
+
+        from argparse import Namespace
 
         import fitsio
         import yaml
-        from argparse import Namespace
 
-        from weightmask.cli import process_all_hdus
+        from weightmask.mef import process_all_hdus
 
         cfg = yaml.safe_load(open("weightmask.yml"))
         cfg["streak_masking"]["enable"] = False
@@ -193,13 +164,13 @@ class TestConfidenceGlobalHookup(unittest.TestCase):
 
 class TestDarkLeg(unittest.TestCase):
     def test_dark_hot_pixels_join_bad(self):
-        import tempfile
+
+        from argparse import Namespace
 
         import fitsio
         import yaml
-        from argparse import Namespace
 
-        from weightmask.cli import process_all_hdus
+        from weightmask.mef import process_all_hdus
 
         cfg = yaml.safe_load(open("weightmask.yml"))
         cfg["streak_masking"]["enable"] = False
@@ -228,9 +199,8 @@ class TestDarkLeg(unittest.TestCase):
 
 class TestGlobalConfidenceRescale(unittest.TestCase):
     def test_rescale_matches_global_p99(self):
-        import tempfile
 
-        from weightmask.cli import _StreamingMapWriter, _rescale_confidence_to_global
+        from weightmask.mef import _rescale_confidence_to_global, _StreamingMapWriter
 
         with tempfile.TemporaryDirectory() as tmp:
             path = os.path.join(tmp, "conf.fits")
@@ -253,7 +223,7 @@ class TestGlobalConfidenceRescale(unittest.TestCase):
                 self.assertAlmostEqual(float(f[2].read().mean()), 1.0, places=5)
 
     def test_skip_when_weight_format(self):
-        from weightmask.cli import _rescale_confidence_to_global
+        from weightmask.mef import _rescale_confidence_to_global
 
         # Must not touch anything when the map product holds weight.
         _rescale_confidence_to_global({"out_map_path": "/nonexistent.fits"}, {},

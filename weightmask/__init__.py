@@ -20,3 +20,13 @@ from .contract import QUALITY_BITS
 MASK_BITS = QUALITY_BITS
 
 MASK_DTYPE = "uint32"  # Data type for the bitmask
+
+__all__ = ["MASK_BITS", "MASK_DTYPE", "QUALITY_BITS", "WeightMapGenerator", "__version__"]
+
+
+def __getattr__(name: str):
+    if name == "WeightMapGenerator":
+        from .pipeline import WeightMapGenerator
+
+        return WeightMapGenerator
+    raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
