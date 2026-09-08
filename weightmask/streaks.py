@@ -646,7 +646,12 @@ def _refine_trail_mask(data_sub, bkg_rms_map, candidate, mask_cfg, existing_mask
     for _pass in range(2):
         strip = _sample_trail_strip(detect_img, endpoints, strip_length, strip_width, interpolation_order)
         if strip is None:
-            return np.zeros(data_sub.shape, dtype=bool), {"support_width": 0, "row_hit_fraction": 0.0, "mask_pixels": 0, "reject_reason": "strip_none"}
+            return np.zeros(data_sub.shape, dtype=bool), {
+                "support_width": 0,
+                "row_hit_fraction": 0.0,
+                "mask_pixels": 0,
+                "reject_reason": "strip_none",
+            }
         sampled = strip["sampled"]
         inside = strip["inside"]
         width_axis = np.arange(sampled.shape[1], dtype=np.float32)
@@ -655,7 +660,12 @@ def _refine_trail_mask(data_sub, bkg_rms_map, candidate, mask_cfg, existing_mask
         background_pixels = sampled[:, sideband]
         bg_values = background_pixels[np.isfinite(background_pixels)]
         if bg_values.size < 50:
-            return np.zeros(data_sub.shape, dtype=bool), {"support_width": 0, "row_hit_fraction": 0.0, "mask_pixels": 0, "reject_reason": "bg_starved"}
+            return np.zeros(data_sub.shape, dtype=bool), {
+                "support_width": 0,
+                "row_hit_fraction": 0.0,
+                "mask_pixels": 0,
+                "reject_reason": "bg_starved",
+            }
         bg_med = np.median(bg_values)
         bg_std = mad_std(bg_values, ignore_nan=True)
         if not np.isfinite(bg_std) or bg_std <= 1e-6:
@@ -678,7 +688,7 @@ def _refine_trail_mask(data_sub, bkg_rms_map, candidate, mask_cfg, existing_mask
                     "support_width": 0,
                     "row_hit_fraction": 0.0,
                     "mask_pixels": 0,
-                "reject_reason": "step_discontinuity"
+                    "reject_reason": "step_discontinuity",
                 }
         with warnings.catch_warnings():
             warnings.simplefilter("ignore", category=RuntimeWarning)
@@ -711,7 +721,7 @@ def _refine_trail_mask(data_sub, bkg_rms_map, candidate, mask_cfg, existing_mask
                     ca = np.cos(np.radians(d_ang))
                     sa = np.sin(np.radians(d_ang))
                     rot = []
-                    for (qx, qy) in ((fx0, fy0), (fx1, fy1)):
+                    for qx, qy in ((fx0, fy0), (fx1, fy1)):
                         dx, dy = qx - fmx, qy - fmy
                         rot.append((fmx + dx * ca - dy * sa, fmy + dx * sa + dy * ca))
                     fan_geoms.append((rot[0], rot[1]))
@@ -725,7 +735,9 @@ def _refine_trail_mask(data_sub, bkg_rms_map, candidate, mask_cfg, existing_mask
                         )
                     )
                 for rot in fan_geoms:
-                    fs = _sample_trail_strip(detect_img, (rot[0], rot[1]), strip_length, strip_width, interpolation_order)
+                    fs = _sample_trail_strip(
+                        detect_img, (rot[0], rot[1]), strip_length, strip_width, interpolation_order
+                    )
                     if fs is None:
                         continue
                     fsmp = fs["sampled"]
@@ -756,13 +768,18 @@ def _refine_trail_mask(data_sub, bkg_rms_map, candidate, mask_cfg, existing_mask
         support_cols = ndi.binary_dilation(support_cols, structure=np.ones(2 * padding + 1, dtype=bool))
 
     if not np.any(support_cols):
-        return np.zeros(data_sub.shape, dtype=bool), {"support_width": 0, "row_hit_fraction": 0.0, "mask_pixels": 0, "reject_reason": "no_support"}
+        return np.zeros(data_sub.shape, dtype=bool), {
+            "support_width": 0,
+            "row_hit_fraction": 0.0,
+            "mask_pixels": 0,
+            "reject_reason": "no_support",
+        }
     if np.count_nonzero(support_cols) > max_support_width:
         return np.zeros(data_sub.shape, dtype=bool), {
             "support_width": int(np.count_nonzero(support_cols)),
             "row_hit_fraction": 0.0,
             "mask_pixels": 0,
-        "reject_reason": "width_over_max"
+            "reject_reason": "width_over_max",
         }
 
     hot_pixels = hot_pixels & support_cols[np.newaxis, :]
@@ -774,7 +791,7 @@ def _refine_trail_mask(data_sub, bkg_rms_map, candidate, mask_cfg, existing_mask
             "support_width": int(np.count_nonzero(support_cols)),
             "row_hit_fraction": float(np.mean(row_hits)),
             "mask_pixels": 0,
-        "reject_reason": "few_row_hits"
+            "reject_reason": "few_row_hits",
         }
     row_hit_fraction = float(np.mean(row_hits))
     if row_hit_fraction < min_row_hit_fraction:
@@ -782,7 +799,7 @@ def _refine_trail_mask(data_sub, bkg_rms_map, candidate, mask_cfg, existing_mask
             "support_width": int(np.count_nonzero(support_cols)),
             "row_hit_fraction": row_hit_fraction,
             "mask_pixels": 0,
-        "reject_reason": "low_row_hit_fraction"
+            "reject_reason": "low_row_hit_fraction",
         }
 
     refined_strip = np.zeros_like(hot_pixels, dtype=bool)
@@ -800,7 +817,7 @@ def _refine_trail_mask(data_sub, bkg_rms_map, candidate, mask_cfg, existing_mask
             "support_width": int(np.count_nonzero(support_cols)),
             "row_hit_fraction": row_hit_fraction,
             "mask_pixels": int(np.count_nonzero(valid)),
-        "reject_reason": "few_mask_pixels"
+            "reject_reason": "few_mask_pixels",
         }
 
     mask = np.zeros(data_sub.shape, dtype=bool)
@@ -991,11 +1008,7 @@ def _detect_streaks_houghpeaks(data_sub, bkg_rms_map, existing_mask, config):
     else:
         snr = binned
     if existing_mask is not None:
-        bex = (
-            existing_mask[: bh * bfac, : bw * bfac]
-            .reshape(bh, bfac, bw, bfac)
-            .any(axis=(1, 3))
-        )
+        bex = existing_mask[: bh * bfac, : bw * bfac].reshape(bh, bfac, bw, bfac).any(axis=(1, 3))
         snr = np.where(bex, 0.0, snr)
     streak_mask = np.zeros(data_sub.shape, dtype=bool)
     accepted = []
@@ -1078,8 +1091,7 @@ def _contour_candidates(data_sub, existing_mask, bkg_rms_map, config):
         if len(x) < 10:
             continue
         # Shape factor 4*pi*A/P^2 via poly area/perimeter on the path.
-        peri = float(np.sum(np.hypot(np.diff(x), np.diff(y)))) + float(
-            np.hypot(x[0] - x[-1], y[0] - y[-1]))
+        peri = float(np.sum(np.hypot(np.diff(x), np.diff(y)))) + float(np.hypot(x[0] - x[-1], y[0] - y[-1]))
         if peri <= 0:
             continue
         area = 0.5 * abs(float(np.sum(x[:-1] * y[1:] - x[1:] * y[:-1])))
@@ -1095,8 +1107,7 @@ def _contour_candidates(data_sub, existing_mask, bkg_rms_map, config):
             continue
         # PCA angle + extreme span.
         xc, yc = x - cx, y - cy
-        theta = 0.5 * np.arctan2(2.0 * float(np.sum(xc * yc)),
-                                 float(np.sum(xc * xc) - np.sum(yc * yc)))
+        theta = 0.5 * np.arctan2(2.0 * float(np.sum(xc * yc)), float(np.sum(xc * xc) - np.sum(yc * yc)))
         direction = np.array([np.cos(theta), np.sin(theta)], dtype=np.float64)
         proj = np.column_stack([xc, yc]) @ direction
         span = float(proj.max() - proj.min())
@@ -1104,22 +1115,25 @@ def _contour_candidates(data_sub, existing_mask, bkg_rms_map, config):
             continue
         p0 = (cx + proj.min() * direction[0], cy + proj.min() * direction[1])
         p1 = (cx + proj.max() * direction[0], cy + proj.max() * direction[1])
-        clipped = _clip_line_to_image(np.array([(p0[0] + p1[0]) / 2.0, (p0[1] + p1[1]) / 2.0]),
-                                      direction, data_sub.shape)
+        clipped = _clip_line_to_image(
+            np.array([(p0[0] + p1[0]) / 2.0, (p0[1] + p1[1]) / 2.0]), direction, data_sub.shape
+        )
         if clipped is None:
             continue
         (ex0, ey0), (ex1, ey1) = clipped
         seg = ((float(ex0), float(ey0)), (float(ex1), float(ey1)))
-        out.append({
-            "segments": [seg],
-            "angle_deg": float(_normalize_angle_deg(np.degrees(theta))),
-            "endpoints": seg,
-            "clipped_endpoints": seg,
-            "span": float(np.hypot(ex1 - ex0, ey1 - ey0)),
-            "raw_span": span,
-            "edge_touches": len(_edges_touched(clipped, data_sub.shape, 16)),
-            "corridor_overlap": 0.0,
-        })
+        out.append(
+            {
+                "segments": [seg],
+                "angle_deg": float(_normalize_angle_deg(np.degrees(theta))),
+                "endpoints": seg,
+                "clipped_endpoints": seg,
+                "span": float(np.hypot(ex1 - ex0, ey1 - ey0)),
+                "raw_span": span,
+                "edge_touches": len(_edges_touched(clipped, data_sub.shape, 16)),
+                "corridor_overlap": 0.0,
+            }
+        )
     return out
 
 
@@ -1167,7 +1181,9 @@ def _detect_streaks_satdet(data_sub, bkg_rms_map, existing_mask, config):
     if bin_factor > 1:
         print(f"    Binning {bin_factor}x{bin_factor} for Hough prescreen (confirm at full res)...")
         bh, bw = data_sub.shape[0] // bin_factor, data_sub.shape[1] // bin_factor
-        binned = data_sub[: bh * bin_factor, : bw * bin_factor].reshape(bh, bin_factor, bw, bin_factor).mean(axis=(1, 3))
+        binned = (
+            data_sub[: bh * bin_factor, : bw * bin_factor].reshape(bh, bin_factor, bw, bin_factor).mean(axis=(1, 3))
+        )
         binned_mask = None
         if existing_mask is not None:
             binned_mask = (
@@ -1185,8 +1201,7 @@ def _detect_streaks_satdet(data_sub, bkg_rms_map, existing_mask, config):
             bin_cfg["gaussian_sigma"] = float(bin_cfg["gaussian_sigma"]) / bin_factor
         segments, debug_scales = _extract_multiscale_segments(binned, binned_mask, bin_cfg)
         segments = [
-            ((x0 * bin_factor, y0 * bin_factor), (x1 * bin_factor, y1 * bin_factor))
-            for (x0, y0), (x1, y1) in segments
+            ((x0 * bin_factor, y0 * bin_factor), (x1 * bin_factor, y1 * bin_factor)) for (x0, y0), (x1, y1) in segments
         ]
     else:
         segments, debug_scales = _extract_multiscale_segments(data_sub, existing_mask, cfg)
@@ -1329,7 +1344,12 @@ def detect_streaks(data_sub, bkg_rms_map, existing_mask, config):
     satdet_mask, accepted, primary_debug = _detect_streaks_satdet(data_sub, bkg_rms_map, existing_mask, config)
     streak_mask_bool |= satdet_mask
     debug_info["primary"] = {"accepted": accepted, **primary_debug}
-    print(f"    [streak] primary done in {time.time()-streak_t0:.1f}s: {len(accepted)} accepted.")
+    # Tactic C: "primary accepted" spans every primary stage (houghpeaks +
+    # contours + satdet), each of which applies its own accept thresholds.
+    # Counting only satdet kept rescue/RANSAC running on HDUs where an
+    # earlier stage had already accepted trails.
+    n_early_accepted = len(hp_accepted) + len(ct_accepted)
+    print(f"    [streak] primary done in {time.time() - streak_t0:.1f}s: {len(accepted)} accepted.")
     low_confidence = len(accepted) == 0 or np.count_nonzero(satdet_mask) < int(
         config.get("mask_params", {}).get("min_mask_pixels", 64)
     )
@@ -1340,37 +1360,49 @@ def detect_streaks(data_sub, bkg_rms_map, existing_mask, config):
         suspicious_primary = primary_area_fraction > float(
             config.get("retry_if_area_fraction_exceeds", 0.03)
         ) or np.median(support_widths) > float(config.get("retry_if_support_width_exceeds", 10.0))
-    if low_confidence and existing_mask is not None and config.get("retry_without_existing_mask", True):
-        print(f"    [streak] retrying satdet without existing mask (t+{time.time()-streak_t0:.1f}s)...")
+    # Same all-primary rule for the unmasked retry: skip it when houghpeaks /
+    # contours already accepted trails. The suspicious-phantom recovery below
+    # is untouched, as is the retry when no primary stage accepted anything.
+    if (
+        low_confidence
+        and n_early_accepted == 0
+        and existing_mask is not None
+        and config.get("retry_without_existing_mask", True)
+    ):
+        print(f"    [streak] retrying satdet without existing mask (t+{time.time() - streak_t0:.1f}s)...")
         retry_mask, retry_accepted, retry_debug = _detect_streaks_satdet(data_sub, bkg_rms_map, None, config)
         if len(retry_accepted) > 0:
             streak_mask_bool |= retry_mask
         debug_info["retry_unmasked"] = {"accepted": retry_accepted, **retry_debug}
         low_confidence = low_confidence and len(retry_accepted) == 0
     elif suspicious_primary and existing_mask is not None and config.get("retry_without_existing_mask", True):
-        print(f"    [streak] retrying satdet without existing mask (t+{time.time()-streak_t0:.1f}s)...")
+        print(f"    [streak] retrying satdet without existing mask (t+{time.time() - streak_t0:.1f}s)...")
         retry_mask, retry_accepted, retry_debug = _detect_streaks_satdet(data_sub, bkg_rms_map, None, config)
         retry_pixels = int(np.count_nonzero(retry_mask))
         primary_pixels = int(np.count_nonzero(satdet_mask))
         if len(retry_accepted) > 0 and retry_pixels > 0 and retry_pixels < primary_pixels:
             streak_mask_bool = retry_mask.copy()
         debug_info["retry_unmasked"] = {"accepted": retry_accepted, **retry_debug}
-    if low_confidence:
-        print(f"    [streak] MRT rescue pass (t+{time.time()-streak_t0:.1f}s)...")
+    min_streak_px = int(config.get("mask_params", {}).get("min_mask_pixels", 64))
+    n_primary_total = (
+        n_early_accepted + len(accepted) + len(debug_info.get("retry_unmasked", {}).get("accepted", []) or [])
+    )
+    if low_confidence and (n_primary_total == 0 or np.count_nonzero(streak_mask_bool) < min_streak_px):
+        print(f"    [streak] MRT rescue pass (t+{time.time() - streak_t0:.1f}s)...")
         mrt_mask, mrt_candidates, mrt_debug = _detect_streaks_mrt_like(data_sub, bkg_rms_map, existing_mask, config)
         streak_mask_bool |= mrt_mask
         debug_info["mrt"] = {"accepted": mrt_candidates, **mrt_debug}
 
     run_sparse_ransac = bool(config.get("enable_sparse_ransac", True))
     if config.get("sparse_on_primary_weak_only", True):
-        primary_accept_count = 0
+        primary_accept_count = n_early_accepted
         primary_debug = debug_info.get("primary", {})
         if isinstance(primary_debug, dict):
             accepted_value = primary_debug.get("accepted", [])
             if isinstance(accepted_value, list):
-                primary_accept_count = len(accepted_value)
+                primary_accept_count += len(accepted_value)
             elif isinstance(primary_debug.get("accepted"), int):
-                primary_accept_count = int(primary_debug["accepted"])
+                primary_accept_count += int(primary_debug["accepted"])
         retry_debug = debug_info.get("retry_unmasked", {})
         if isinstance(retry_debug, dict):
             accepted_value = retry_debug.get("accepted", [])
@@ -1387,7 +1419,7 @@ def detect_streaks(data_sub, bkg_rms_map, existing_mask, config):
         residual_existing = streak_mask_bool.copy()
         if existing_mask is not None:
             residual_existing |= existing_mask
-        print(f"    [streak] sparse RANSAC pass (t+{time.time()-streak_t0:.1f}s)...")
+        print(f"    [streak] sparse RANSAC pass (t+{time.time() - streak_t0:.1f}s)...")
         sparse_mask = _detect_trails_sparse_ransac(data_sub, bkg_rms_map, residual_existing, config)
         streak_mask_bool |= sparse_mask
         debug_info["sparse_ransac"] = int(np.count_nonzero(sparse_mask))
