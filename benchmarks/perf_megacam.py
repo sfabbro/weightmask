@@ -20,10 +20,8 @@ from __future__ import annotations
 
 import argparse
 import cProfile
-import io
 import json
 import platform
-import pstats
 import shutil
 import sys
 import threading
@@ -40,6 +38,9 @@ PERF_JSON = OUT_DIR / "megacam_perf.json"
 PERF_MD = OUT_DIR / "megacam_perf.md"
 CPROFILE_TXT = OUT_DIR / "cprofile_hdu.txt"
 CONFIG_PATH = ROOT / "weightmask.yml"
+FLAT_PID = "ivo://cadc.nrc.ca/CFHT?08Bm01.flat.r.36.02/08Bm01.flat.r.36.02"
+FLAT_FILE = PERF_DATA_DIR / "flat_08Bm01_r.fits.fz"
+FLATS_JSON = OUT_DIR / "flats.json"
 
 BASE_WHERE = (
     "Observation.collection = 'CFHT' AND "
@@ -421,7 +422,7 @@ def _uninstall_timing_collector(orig, proc_mod, mef_mod):
     mef_mod.process_image = orig
 
 
-def _process_one_exposure(rec, workers: int, out_suffix: str = "") -> dict:
+def _process_one_exposure(rec, workers: int, out_suffix: str = "", *, flat: str | None = None, write_mask: bool = False) -> dict:
     import argparse as _ap
 
     import fitsio
@@ -455,9 +456,11 @@ def _process_one_exposure(rec, workers: int, out_suffix: str = "") -> dict:
         file_bytes = 0
 
     tag = f"{safe}{out_suffix}.w{workers}"
+    if flat:
+        tag += ".flat"
     args = _ap.Namespace(
         output_map=str(OUT_DIR / f"{tag}.weight.fits"),
-        output_mask=None,
+        output_mask=str(OUT_DIR / f"{tag}.mask.fits") if write_mask else None,
         output_invvar=None,
         output_sky=None,
         output_weight_raw=None,
@@ -468,21 +471,24 @@ def _process_one_exposure(rec, workers: int, out_suffix: str = "") -> dict:
     from weightmask.cli import determine_output_paths
 
     paths = determine_output_paths(args, str(in_path), config)
-    for key in ("out_mask_path", "out_invvar_path", "out_sky_path", "out_weight_raw_path"):
+    for key in ("out_invvar_path", "out_sky_path", "out_weight_raw_path"):
         paths[key] = None
+    if not write_mask:
+        paths["out_mask_path"] = None
     paths["individual_mask_paths"] = {}
 
+    hdul_flat = fitsio.FITS(str(flat), "r") if flat else None
     records, orig, proc_mod, mef_mod = _install_timing_collector()
     t0 = time.perf_counter()
     try:
         n_ok = mef.process_all_hdus(
             hdus,
             hdul_input,
-            None,
+            hdul_flat,
             config,
             paths,
             args,
-            flat_path=None,
+            flat_path=str(flat) if flat else None,
             max_workers=workers,
             input_path=str(in_path),
         )
@@ -493,6 +499,11 @@ def _process_one_exposure(rec, workers: int, out_suffix: str = "") -> dict:
             hdul_input.close()
         except Exception:
             pass
+        if hdul_flat is not None:
+            try:
+                hdul_flat.close()
+            except Exception:
+                pass
     stage_totals: dict[str, float] = {}
     mpix = 0.0
     for r in records:
@@ -513,6 +524,7 @@ def _process_one_exposure(rec, workers: int, out_suffix: str = "") -> dict:
         "publisherID": rec["publisherID"],
         "safe_id": safe,
         "file": rec["file"],
+        "flat_file": str(flat) if flat else None,
         "exptime": rec.get("exptime"),
         "size_bytes": file_bytes,
         "nhdus_expected": nhdus_expected,
@@ -524,7 +536,7 @@ def _process_one_exposure(rec, workers: int, out_suffix: str = "") -> dict:
     }
 
 
-def _aggregate_report(per_exp: list[dict], total_wall: float) -> dict:
+def _aggregate_report(per_exp: list[dict], total_wall: float, *, extra_header: dict | None = None) -> dict:
     import os as _os
 
     totals: dict[str, float] = {}
@@ -544,15 +556,18 @@ def _aggregate_report(per_exp: list[dict], total_wall: float) -> dict:
             "mean_per_hdu_s": float(v / n_hdus) if n_hdus else 0.0,
             "share": float(share),
         }
+    header = {
+        "arch": platform.machine(),
+        "platform": platform.platform(),
+        "cpu_count": _os.cpu_count(),
+        "config": "weightmask.yml (unmodified)",
+        "n_exposures": len(per_exp),
+        "n_hdus": n_hdus,
+    }
+    if extra_header:
+        header.update(extra_header)
     return {
-        "header": {
-            "arch": platform.machine(),
-            "platform": platform.platform(),
-            "cpu_count": _os.cpu_count(),
-            "config": "weightmask.yml (unmodified)",
-            "n_exposures": len(per_exp),
-            "n_hdus": n_hdus,
-        },
+        "header": header,
         "total_wall_s": float(total_wall),
         "hdu_wall_s": float(hdu_wall),
         "mpix_total": float(mpix_total),
@@ -562,7 +577,7 @@ def _aggregate_report(per_exp: list[dict], total_wall: float) -> dict:
     }
 
 
-def _write_markdown(report: dict, sweep: dict, cprofile_note: str) -> None:
+def _write_markdown(report: dict, sweep: dict, cprofile_note: str, *, out_md=None) -> None:
     hdr = report["header"]
     lines = [
         "# MegaCam per-stage profile",
@@ -595,10 +610,10 @@ def _write_markdown(report: dict, sweep: dict, cprofile_note: str) -> None:
     else:
         lines.append("n/a")
     lines += ["", "## cProfile", "", cprofile_note, ""]
-    PERF_MD.write_text("\n".join(lines) + "\n")
+    (out_md or PERF_MD).write_text("\n".join(lines) + "\n")
 
 
-def _run_cprofile_first_hdu(first_rec: dict) -> str:
+def _run_cprofile_first_hdu(first_rec: dict, *, flat: str | None = None, out_txt=None) -> str:
     import fitsio
     import yaml
 
@@ -609,6 +624,7 @@ def _run_cprofile_first_hdu(first_rec: dict) -> str:
     with open(CONFIG_PATH) as fh:
         config = yaml.safe_load(fh)
     hdul = fitsio.FITS(str(in_path), "r")
+    hdul_flat = fitsio.FITS(str(flat), "r") if flat else None
     try:
         hdus = cli.get_hdus_to_process(hdul, None)
         mid = hdus[len(hdus) // 2]
@@ -616,25 +632,24 @@ def _run_cprofile_first_hdu(first_rec: dict) -> str:
 
         sci = np.ascontiguousarray(hdul[mid].read().astype(np.float32))
         hdr = hdul[mid].read_header()
+        flat_data = np.ascontiguousarray(hdul_flat[mid].read().astype(np.float32)) if hdul_flat is not None else None
     finally:
         hdul.close()
+        if hdul_flat is not None:
+            hdul_flat.close()
     pr = cProfile.Profile()
     pr.enable()
-    _orig(sci, hdr, None, config, 1024)
+    _orig(sci, hdr, flat_data, config, 1024)
     pr.disable()
-    buf = io.StringIO()
-    ps = pstats.Stats(pr, stream=buf).sort_stats("cumulative")
-    ps.print_stats(40)
-    CPROFILE_TXT.write_text(buf.getvalue())
-    return f"single HDU (exposure {first_rec['safe_id']} hdu {mid}) top-40 cumulative -> {CPROFILE_TXT.name}"
-
-
 def main(argv=None) -> int:
     ap = argparse.ArgumentParser(description="MegaCam 10-exposure perf harness.")
     ap.add_argument("--resolve-only", action="store_true")
     ap.add_argument("--all-hdus", action="store_true")
     ap.add_argument("--workers", type=int, default=None)
     ap.add_argument("--force-resolve", action="store_true")
+    ap.add_argument("--flat", type=str, default=None, help="Flat-field MEF for the with-flats variant.")
+    ap.add_argument("--tag", type=str, default="", help="Report/output tag (e.g. 'flat'); default untagged.")
+    ap.add_argument("--masks", action="store_true", help="Also write integer mask maps.")
     args = ap.parse_args(argv)
 
     records = resolve_exposures(force=args.force_resolve)
@@ -645,13 +660,33 @@ def main(argv=None) -> int:
         return 0
 
     OUT_DIR.mkdir(parents=True, exist_ok=True)
-    # (a) sequential baseline over all 10 x all HDUs.
-    print("Running sequential baseline (workers=1) over 10 exposures x all HDUs...")
+    suffix = f"_{args.tag}" if args.tag else ""
+    perf_json = OUT_DIR / f"megacam_perf{suffix}.json"
+    perf_md = OUT_DIR / f"megacam_perf{suffix}.md"
+    cprofile_txt = OUT_DIR / f"cprofile_hdu{suffix}.txt"
+
+    _flat_arg = Path(args.flat) if args.flat else None
+    flat = str(_flat_arg if (_flat_arg is None or _flat_arg.is_absolute()) else (ROOT / _flat_arg))
+    if flat and not Path(flat).exists():
+        raise SystemExit(f"--flat file not found: {flat}")
+    if flat:
+        from tests.benchmarks.download_data import validate_case_file
+        valid, reason = validate_case_file(
+            {"expected_instrument": "MegaPrime", "expected_detector": "MegaCam"}, flat
+        )
+        if not valid:
+            raise SystemExit(f"--flat validation failed: {reason}")
+        FLATS_JSON.write_text(json.dumps({"flat_publisherID": FLAT_PID, "file": str(Path(flat).relative_to(ROOT))}, indent=2) + "\n")
+        print(f"Pinned flat {flat} -> {FLATS_JSON}")
+
+    # (a) sequential pass over all 10 x all HDUs.
+    variant = f"with-flats ({flat})" if flat else "no-flat"
+    print(f"Running sequential {variant} pass (workers=1) over 10 exposures x all HDUs...")
     per_exp: list[dict] = []
     t_all = time.perf_counter()
     for rec in records:
         print(f"--- exposure {rec['safe_id']} ---")
-        per_exp.append(_process_one_exposure(rec, 1))
+        per_exp.append(_process_one_exposure(rec, 1, flat=flat, write_mask=args.masks))
     total_wall = time.perf_counter() - t_all
 
     # Sanity: every exposure processed all its 2-D HDUs.
@@ -659,36 +694,43 @@ def main(argv=None) -> int:
         if e["nhdus_processed"] != e["nhdus_expected"]:
             print(f"WARNING: {e['safe_id']}: processed {e['nhdus_processed']}/{e['nhdus_expected']}")
 
-    # (b) scaling sweep on first exposure only.
+    # (b) scaling sweep on first exposure only (untagged runs; tagged variants reuse it).
     from weightmask.mef import _resolve_max_workers
 
     sweep: dict[str, float] = {}
     first = records[0]
     n_first = per_exp[0]["nhdus_expected"]
-    for w in (1, 2, 4, 8):
-        eff = _resolve_max_workers(w, n_first)
-        print(f"--- sweep workers={w} (eff={eff}) on {first['safe_id']} ---")
-        if w == 1:
-            sweep["1"] = float(per_exp[0]["wall_s"])
-            continue
-        r = _process_one_exposure(first, eff, out_suffix=f".sweep{w}")
-        sweep[str(w)] = float(r["wall_s"])
+    if not args.tag:
+        for w in (1, 2, 4, 8):
+            eff = _resolve_max_workers(w, n_first)
+            print(f"--- sweep workers={w} (eff={eff}) on {first['safe_id']} ---")
+            if w == 1:
+                sweep["1"] = float(per_exp[0]["wall_s"])
+                continue
+            r = _process_one_exposure(first, eff, out_suffix=f".sweep{w}")
+            sweep[str(w)] = float(r["wall_s"])
+    else:
+        sweep["1"] = float(per_exp[0]["wall_s"])
 
     # (c) single-HDU cProfile.
-    note = _run_cprofile_first_hdu(first)
+    note = _run_cprofile_first_hdu(first, flat=flat, out_txt=cprofile_txt)
 
-    report = _aggregate_report(per_exp, total_wall)
+    extra = {"variant": ("with-flats" if flat else "no-flat"), "tag": args.tag or "baseline"}
+    if flat:
+        extra["flat_publisherID"] = FLAT_PID
+        extra["flat_file"] = str(Path(flat).relative_to(ROOT)) if str(flat).startswith(str(ROOT)) else str(flat)
+    report = _aggregate_report(per_exp, total_wall, extra_header=extra)
     report["sweep_workers"] = {k: float(v) for k, v in sweep.items()}
-    PERF_JSON.write_text(json.dumps(report, indent=2) + "\n")
-    _write_markdown(report, sweep, note)
-    print(f"Wrote {PERF_JSON} and {PERF_MD}")
+    perf_json.write_text(json.dumps(report, indent=2) + "\n")
+    _write_markdown(report, sweep, note, out_md=perf_md)
+    print(f"Wrote {perf_json} and {perf_md}")
 
     # Optional extra pass at a requested worker count (Step 5 comparison).
     if args.workers is not None and int(args.workers) != 1:
         print(f"Running extra full pass at workers={args.workers}...")
         t1 = time.perf_counter()
         for rec in records:
-            _process_one_exposure(rec, int(args.workers), out_suffix=f".w{args.workers}")
+            _process_one_exposure(rec, int(args.workers), out_suffix=f".w{args.workers}", flat=flat, write_mask=args.masks)
         print(f"Extra pass wall: {time.perf_counter() - t1:.1f}s")
     return 0
 
