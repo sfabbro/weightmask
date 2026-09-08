@@ -22,5 +22,5 @@ precision/recall against the injected truth.
 
 ## Quality bits
 
-Bits match the package contract. See the table in the root README and the
-per-artefact methods in [docs/algorithms.md](../docs/algorithms.md).
+Bits match the package contract. See [docs/usage.md](../docs/usage.md) and
+the per-artefact methods in [docs/algorithms.md](../docs/algorithms.md).

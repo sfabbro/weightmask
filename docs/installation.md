@@ -1,10 +1,20 @@
 # Installation
 
-WeightMask needs Python 3.10 or newer. CI tests 3.13 on linux-64. Runtime
+weightmask needs Python 3.10 or newer. CI tests 3.13 on linux-64. Runtime
 dependencies: numpy, astropy, fitsio, scipy, scikit-image, sep, PyYAML,
 astroscrappy.
 
-## Pixi (recommended)
+## pip (PyPI)
+
+```bash
+pip install weightmask
+weightmask --help
+```
+
+Copy [`weightmask.yml`](../weightmask.yml) from the source tree; it is not
+installed with the package.
+
+## Pixi (development)
 
 ```bash
 git clone https://github.com/astroai/weightmask.git
@@ -14,7 +24,7 @@ pixi run weightmask --help
 pixi run test
 ```
 
-## pip
+## pip from a clone
 
 ```bash
 git clone https://github.com/astroai/weightmask.git
@@ -34,9 +44,8 @@ pip install -e .
 weightmask --help
 ```
 
-A YAML config is required at run time. Copy `weightmask.yml` from the source
-tree; it is not installed with the package. Unknown top-level YAML sections
-are rejected.
+A YAML config is required at run time. Unknown top-level YAML sections are
+rejected.
 
 If `sep` fails to compile, install a pre-built wheel or `conda install sep`.
 Issues: [github.com/astroai/weightmask/issues](https://github.com/astroai/weightmask/issues).

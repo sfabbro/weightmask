@@ -1,4 +1,4 @@
-# Next-Generation WeightMask
+# Next-Generation weightmask
 
 **Status:** research and implementation plan, July 2026
 **Scope:** astronomical imaging, multi-extension FITS, calibration frames, and 2-D spectra
@@ -6,7 +6,7 @@
 
 ## Executive summary
 
-WeightMask already provides a useful classical pipeline for astronomical FITS images: background estimation, bad-pixel and saturation handling, cosmic-ray detection, satellite-trail detection, object masks, inverse-variance maps, confidence maps, bitmasks, MEF processing, and synthetic/real-data benchmarks. The next step should not be “a larger denoising network.” It should be a **calibration-conditioned, probabilistic detector-quality and empirical-likelihood system** that can operate when the upstream detrending pipeline is unavailable or opaque.
+weightmask already provides a useful classical pipeline for astronomical FITS images: background estimation, bad-pixel and saturation handling, cosmic-ray detection, satellite-trail detection, object masks, inverse-variance maps, confidence maps, bitmasks, MEF processing, and synthetic/real-data benchmarks. The next step should not be “a larger denoising network.” It should be a **calibration-conditioned, probabilistic detector-quality and empirical-likelihood system** that can operate when the upstream detrending pipeline is unavailable or opaque.
 
 The project should estimate the statistics of the *delivered image product* rather than pretending that the raw detector variance has been propagated exactly. It should combine:
 
@@ -24,7 +24,7 @@ The central output is not a single binary mask and not a single denoised image. 
 
 A concise project definition is:
 
-> **Next-generation WeightMask estimates calibrated defect probabilities, additive-contamination terms, effective post-detrending variance, and compact correlated-noise models for astronomical images and 2-D spectra, using science and calibration data with minimal human labelling.**
+> **Next-generation weightmask estimates calibrated defect probabilities, additive-contamination terms, effective post-detrending variance, and compact correlated-noise models for astronomical images and 2-D spectra, using science and calibration data with minimal human labelling.**
 
 ---
 
@@ -140,7 +140,7 @@ The practical representation should be a diagonal variance plane plus a local co
 
 ---
 
-## 3. Current WeightMask baseline
+## 3. Current weightmask baseline
 
 The existing code is a good classical foundation and should remain usable without Torch. It already exposes:
 
@@ -171,7 +171,7 @@ The current `WeightMapGenerator.process` interface returns `weight_map`, `flag_m
 
 The AstroSURE draft should remain a distinct, narrower contribution. It evaluates target-free denoising methods for *source detection*, comparing Noise2Noise, SURE, and blind-spot approaches on simulations and HST/CFHT data. Its current framing correctly limits claims about photometry, morphology, and PSF-sensitive measurements.
 
-The main lessons for WeightMask are:
+The main lessons for weightmask are:
 
 - self-supervision can improve detection in a domain-consistent setting;
 - transfer from space-like simulations to seeing-limited CFHT images is weak;
@@ -182,7 +182,7 @@ The main lessons for WeightMask are:
 The two projects should interact as follows:
 
 - AstroSURE provides denoising and detection-oriented auxiliary products;
-- next-generation WeightMask provides defect probabilities, empirical likelihoods, and masks for quantitative inference;
+- next-generation weightmask provides defect probabilities, empirical likelihoods, and masks for quantitative inference;
 - both share simulation, patch extraction, domain-adaptation, and benchmark infrastructure;
 - photometry and shape fitting always operate on the original delivered pixels unless a specific restoration method has passed dedicated bias and coverage validation.
 
@@ -240,7 +240,7 @@ Mission and survey pipelines provide a useful output contract even when their in
 - PypeIt stores processed images, inverse variance, bad-pixel masks, sky/object models, slit geometry, and detector metadata for 2-D spectra.
 - Astropy `CCDData` and `NDData` distinguish data, masks, flags, and uncertainty objects.
 
-The next-generation WeightMask contract should be interoperable with these conventions while adding probability and covariance products.
+The next-generation weightmask contract should be interoperable with these conventions while adding probability and covariance products.
 
 ### 5.3 Proper coaddition and sufficient statistics
 
@@ -273,7 +273,7 @@ LoTA-N2N introduces a trace-constrained zero-shot adaptation objective intended 
 
 #### Joint signal and noise inference
 
-Gibbs Diffusion treats unknown colored-noise parameters as latent variables and alternates signal and noise inference. This is conceptually closer to the WeightMask problem than fixed-noise SURE because the effective covariance of a detrended image may be unknown.
+Gibbs Diffusion treats unknown colored-noise parameters as latent variables and alternates signal and noise inference. This is conceptually closer to the weightmask problem than fixed-noise SURE because the effective covariance of a detrended image may be unknown.
 
 - Heurtel-Depeiges et al., 2024, *Listening to the Noise: Blind Denoising with Gibbs Diffusion*, <https://arxiv.org/abs/2402.19455>
 
@@ -318,7 +318,7 @@ DeepInverse is an actively developed PyTorch library covering differentiable phy
 - <https://deepinv.github.io/deepinv/>
 - <https://github.com/deepinv/deepinv>
 
-It is a strong dependency for research models and differentiable simulation, but astronomical FITS I/O, detector geometry, calibration semantics, DQ flags, and science validation should remain in WeightMask.
+It is a strong dependency for research models and differentiable simulation, but astronomical FITS I/O, detector geometry, calibration semantics, DQ flags, and science validation should remain in weightmask.
 
 ### 5.8 Literature gap
 
@@ -333,7 +333,7 @@ No reviewed system combines all of the following:
 - minimal manual labels;
 - science-task validation through bias and interval coverage.
 
-That is the defensible research space for next-generation WeightMask.
+That is the defensible research space for next-generation weightmask.
 
 ---
 
@@ -607,7 +607,7 @@ The benchmark fitter should return:
 - comparison with a conservative hard-mask fit;
 - sensitivity to additive-contamination correction.
 
-This creates a direct science-facing acceptance test for every WeightMask model.
+This creates a direct science-facing acceptance test for every weightmask model.
 
 ---
 
@@ -676,7 +676,7 @@ DeepInverse is most useful for:
 - self-supervised loss implementations;
 - posterior-sampling prototypes.
 
-WeightMask should own:
+weightmask should own:
 
 - FITS/MEF and spectrum I/O;
 - detector/amplifier geometry;
@@ -719,7 +719,7 @@ Use temporal medians, robust residuals, low-rank-plus-sparse decompositions, and
 
 Combine:
 
-- current WeightMask outputs;
+- current weightmask outputs;
 - Astro-SCRAPPY;
 - Cosmic-CoNN;
 - Radon/Hough/MRT detections;
@@ -1033,9 +1033,9 @@ The first learned targets should be the current benchmark weaknesses: low-surfac
 
 Keep the current paper focused on detection-oriented target-free denoising. Update its literature review with modern correlated-noise and low-assumption self-supervision, state the likelihood limitations more explicitly, and avoid implying that larger architectures alone solve domain transfer.
 
-### WeightMask methods paper
+### weightmask methods paper
 
-A first WeightMask paper can be predominantly statistical:
+A first weightmask paper can be predominantly statistical:
 
 > **Calibration-conditioned empirical likelihoods and probabilistic defect masks for post-detrending astronomical images.**
 
@@ -1082,4 +1082,4 @@ A second paper can focus on open-set and multi-modal learning:
 7. Define acceptance thresholds in terms of flux bias, interval coverage, trail recovery, and OOD behavior.
 8. Only then select the first Torch architecture and DeepInverse components.
 
-The strongest near-term deliverable is therefore not a general denoised image. It is a **calibration-aware product schema, empirical delivered-domain likelihood, and robust PSF-photometry validation loop** built on the existing WeightMask pipeline.
+The strongest near-term deliverable is therefore not a general denoised image. It is a **calibration-aware product schema, empirical delivered-domain likelihood, and robust PSF-photometry validation loop** built on the existing weightmask pipeline.

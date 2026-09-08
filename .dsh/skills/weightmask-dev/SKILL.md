@@ -9,8 +9,8 @@ metadata:
 # weightmask development
 
 Builds weight maps, confidence maps, and defect masks for astronomical FITS
-images, aimed at stacking/coaddition: usable mask plane, inverse-variance
-estimate, and separate outputs for key contaminants. See `docs/`.
+images. Those products are for coaddition and for single-exposure work (shape
+measurement, forced photometry, profile fitting, difference imaging). See `docs/`.
 
 ## Contract
 

@@ -19,3 +19,6 @@
 
 - id: user-docs-v01
   desc: User path is README + docs/{installation,usage,algorithms,api}; YAML comments are the key list; research notes live in docs/research/ and are not advertised.
+
+- id: pypi-oidc
+  desc: "0.1.0 publishes via .github/workflows/publish.yml on GitHub release; PyPI pending publisher owner=astroai repo=weightmask workflow=publish.yml environment=pypi."

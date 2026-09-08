@@ -1,5 +1,5 @@
 [build-system]
-requires = ["setuptools>=61.0"]
+requires = ["setuptools>=77.0"]
 build-backend = "setuptools.build_meta"
 
 [project]
@@ -8,17 +8,18 @@ version = "0.1.0"
 authors = [
   { name="Seb Fabbro", email="sebfabbro@gmail.com" },
 ]
-description = "Generates weight, mask, and confidence maps for astronomical FITS images."
+description = "Per-pixel weight, mask, inverse-variance, and sky maps for astronomical FITS images."
 readme = "README.md"
-license = { file="LICENSE" }
+license = "MIT"
+license-files = ["LICENSE"]
 requires-python = ">=3.10"
+keywords = ["astronomy", "FITS", "weight", "mask", "variance"]
 classifiers = [
     "Programming Language :: Python :: 3",
     "Programming Language :: Python :: 3.10",
     "Programming Language :: Python :: 3.11",
     "Programming Language :: Python :: 3.12",
     "Programming Language :: Python :: 3.13",
-    "License :: OSI Approved :: MIT License",
     "Operating System :: OS Independent",
     "Topic :: Scientific/Engineering :: Astronomy",
 ]
@@ -34,11 +35,15 @@ dependencies = [
 ]
 
 [project.urls]
-"Homepage" = "https://github.com/astroai/weightmask"
-"Issues" = "https://github.com/astroai/weightmask/issues"
+Homepage = "https://github.com/astroai/weightmask"
+Issues = "https://github.com/astroai/weightmask/issues"
+Changelog = "https://github.com/astroai/weightmask/blob/main/CHANGELOG.md"
+Source = "https://github.com/astroai/weightmask"
+PyPI = "https://pypi.org/project/weightmask/"
 
 [tool.setuptools.packages.find]
-exclude = ["sandbox*"]
+include = ["weightmask"]
+exclude = ["sandbox*", "tests*", "examples*", "benchmarks*"]
 
 # --- This section creates the command-line script ---
 [project.scripts]

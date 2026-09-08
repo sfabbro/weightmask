@@ -1,7 +1,9 @@
 # Algorithms
 
-WeightMask flags contaminants on a detrended FITS image and attaches a coadd
-weight. Processing is per HDU, in this order: bad pixels, saturation cores, a
+weightmask flags contaminants on a detrended FITS image and attaches a
+per-pixel weight. Use that weight for stacking or for single-exposure work
+(shape measurement, forced photometry, profile fitting, difference imaging).
+Processing is per HDU, in this order: bad pixels, saturation cores, a
 preliminary sky (for bleed and CRs), bleed grow, cosmic rays, iterative sky and
 objects, inverse variance, streaks, then weight and confidence. Config keys
 live in [`weightmask.yml`](../weightmask.yml).
@@ -118,7 +120,7 @@ Frangi-ridge comparison code is not in the package; it lives in
 
 ## Inverse variance, weight, and confidence
 
-**What.** A coadd weight and a normalized confidence map. The inverse-variance
+**What.** A per-pixel weight and a normalized confidence map. The inverse-variance
 FITS product is the same plane after sanitizing non-finite or non-positive
 values (`INVALID_VARIANCE`).
 
@@ -173,5 +175,5 @@ probabilistic products is sketched in
 - Fischler, M. A., & Bolles, R. C. 1981, Commun. ACM, 24, 381 (RANSAC).
 - Magnier, E. A., & Cuillandre, J.-C. 2004, PASP, 116, 449 (CFHT Elixir
   detrending and weight maps).
-- STScI `acstools.satdet` (HST/ACS satellite-trail tools; WeightMask's Hough
+- STScI `acstools.satdet` (HST/ACS satellite-trail tools; weightmask's Hough
   path is inspired by this style of detector, not a verbatim port).

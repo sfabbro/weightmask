@@ -1,58 +1,42 @@
-# WeightMask
+# weightmask
 
-WeightMask takes a detrended FITS or MEF science image and writes a coadd
-weight, quality mask, inverse-variance map, and sky. It is built for stacking.
+[![CI](https://github.com/astroai/weightmask/actions/workflows/ci.yml/badge.svg)](https://github.com/astroai/weightmask/actions/workflows/ci.yml)
+[![PyPI](https://img.shields.io/pypi/v/weightmask.svg)](https://pypi.org/project/weightmask/)
+[![Python](https://img.shields.io/pypi/pyversions/weightmask.svg)](https://pypi.org/project/weightmask/)
+[![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
+
+weightmask reads a detrended FITS or MEF science image and writes a per-pixel
+weight, quality mask, inverse-variance map, and sky.
+
+Those products are for any measurement that should ignore bad pixels and
+down-weight the rest: coaddition, shape measurement, forced photometry,
+profile fitting, and difference imaging.
 
 ## Install
 
-Pixi (recommended):
+```bash
+pip install weightmask
+```
+
+Python 3.10+. Copy [`weightmask.yml`](weightmask.yml) into the working directory;
+it is not bundled in the wheel.
+
+Pixi (development):
 
 ```bash
 git clone https://github.com/astroai/weightmask.git
 cd weightmask
 pixi install
-pixi run weightmask science.fits --config weightmask.yml --flat_image flat.fits \
-  -o out.weight.fits --output_mask out.mask.fits
 ```
 
-Or `pip install -e .` (Python 3.10+), then the same `weightmask ...` command
-without `pixi run`. Details: [docs/installation.md](docs/installation.md).
+Details: [docs/installation.md](docs/installation.md).
 
-## Command
+## Run
 
 ```bash
 weightmask science.fits --config weightmask.yml --flat_image flat.fits \
-  -o out.weight.fits --output_mask out.mask.fits
+  -o weight.fits --output_mask mask.fits
 ```
-
-A YAML config is required. Copy [`weightmask.yml`](weightmask.yml) into the
-working directory; it is not bundled in the wheel.
-
-## Products
-
-| Product | What |
-|---|---|
-| Weight | Masked inverse variance (primary map by default) |
-| Mask | Integer quality bits |
-| Inverse variance | Sanitized theoretical plane (not quality-masked) |
-| Sky | Background map, or a compact mesh rebuildable with `weightmask-reconstruct-sky` |
-
-Quality bits (`set_means_flagged`: a set bit means the condition is present):
-
-| Bit | Name | Zero weight? |
-|---|---|---|
-| 1 | `BAD` | yes |
-| 2 | `SAT` | yes |
-| 4 | `CR` | yes |
-| 8 | `DETECTED` | no (unless `mask_detected_in_weight`) |
-| 16 | `STREAK` | yes |
-| 32 | `INVALID_VARIANCE` | yes |
-
-The default theoretical plane is an Elixir-style F² coadd weight,
-`ivar = g² F² / (S g + RN²)`. At `F = 1` this is Poisson plus read noise; at
-`F ≠ 1` it is a sensitivity weight, not a flat-fielded Poisson identity.
-The canonical `weightmask.yml` also turns on `flat_rel_noise` and
-`rescale_variance` on top of that core formula.
 
 ## Docs
 

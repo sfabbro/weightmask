@@ -1,0 +1,6 @@
+include CHANGELOG.md
+include weightmask.yml
+prune tests
+prune examples
+prune benchmarks
+prune sandbox

@@ -1,9 +1,10 @@
 # Usage
 
-WeightMask reads a detrended science FITS (single extension or MEF) and writes
-weight, mask, inverse-variance, and sky products. Algorithms are in
-[algorithms.md](algorithms.md). The supported library surface is in
-[api.md](api.md).
+weightmask reads a detrended science FITS (single extension or MEF) and writes
+weight, mask, inverse-variance, and sky products. Use them for stacking,
+shape measurement, forced photometry, profile fitting, or difference imaging.
+Algorithms are in [algorithms.md](algorithms.md). The supported library
+surface is in [api.md](api.md).
 
 ## Config is required
 
@@ -114,10 +115,11 @@ Default `variance.method: theoretical`. The core plane is
 ivar = g² F² / (S g + RN²)
 ```
 
-Elixir-style F² coadd weight. Exact Poisson plus read noise at `F = 1`. At
-vignette (`F ≠ 1`) this is a sensitivity weight, not `g² F² / (S g F + RN²)`.
-Canonical `weightmask.yml` then adds `flat_rel_noise: 0.003` and
-`rescale_variance: true`. Omit those keys and you get the bare formula.
+Elixir-style F² sensitivity weight (same convention used in coadds). Exact
+Poisson plus read noise at `F = 1`. At vignette (`F ≠ 1`) this is a
+sensitivity weight, not `g² F² / (S g F + RN²)`. Canonical `weightmask.yml`
+then adds `flat_rel_noise: 0.003` and `rescale_variance: true`. Omit those
+keys and you get the bare formula.
 
 ### Python
 
