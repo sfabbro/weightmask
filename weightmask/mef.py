@@ -274,7 +274,9 @@ def _store_output_maps(
             hdu_name,
         )
     if paths["out_sky_path"]:
-        _assign_map_if_valid(output_data, i, "sky", sky_map, sky_header if sky_header is not None else hdu_header, hdu_name)
+        _assign_map_if_valid(
+            output_data, i, "sky", sky_map, sky_header if sky_header is not None else hdu_header, hdu_name
+        )
     if paths["out_weight_raw_path"] and weight_map is not None:
         if i not in output_data:
             output_data[i] = {}
@@ -333,7 +335,7 @@ def _rescale_confidence_to_global(paths, writers, conf_samples, conf_p99, config
     print(f"  Confidence renormalized to exposure-global p99 {global_p99:.3g}.")
 
 
-def _veto_dead_ccd_hdus(flat_bad_masks, flat_meds, flat_cfg):
+def _veto_dead_ccd_hdus(flat_bad_masks, flat_meds, flat_cfg, flat_shapes=None):
     """Zero-weight HDUs whose flat level is an outlier across the exposure.
 
     A whole CCD blanked by Elixir (or failed hardware) shows up as a flat
@@ -344,7 +346,7 @@ def _veto_dead_ccd_hdus(flat_bad_masks, flat_meds, flat_cfg):
     """
     if not flat_cfg.get("dead_ccd_enable", True):
         return
-    idxs = [i for i in flat_bad_masks if i in flat_meds]
+    idxs = [i for i in flat_meds if np.isfinite(float(flat_meds[i]))]
     if len(idxs) < int(flat_cfg.get("dead_ccd_min_hdus", 8)):
         return
     meds = np.array([float(flat_meds[i]) for i in idxs])
@@ -358,7 +360,12 @@ def _veto_dead_ccd_hdus(flat_bad_masks, flat_meds, flat_cfg):
     floor = float(flat_cfg.get("dead_ccd_min_rel_dev", 0.10)) * exp_med
     for i, m in zip(idxs, meds):
         if abs(m - exp_med) > max(sigma * mad, floor):
-            flat_bad_masks[i] = np.ones_like(flat_bad_masks[i], dtype=bool)
+            if i in flat_bad_masks:
+                flat_bad_masks[i] = np.ones_like(flat_bad_masks[i], dtype=bool)
+            elif flat_shapes is not None and i in flat_shapes:
+                flat_bad_masks[i] = np.ones(flat_shapes[i], dtype=bool)
+            else:
+                continue
             print(f"    HDU {i}: flat median {m:.3f} vs exposure {exp_med:.3f} -- flagging whole CCD BAD.")
 
 
@@ -507,8 +514,10 @@ def process_all_hdus(
         tile_size = int(tile_size)
     except (TypeError, ValueError):
         tile_size = 1024
+
     def _usable(p: Optional[str]) -> Optional[str]:
         return p if isinstance(p, str) and p and os.path.exists(p) else None
+
     in_path_u = _usable(_fits_path_of(hdul_input, input_path))
     fl_path_u = _usable(_fits_path_of(hdul_flat, flat_path)) if hdul_flat is not None else None
     bp_path_u = _usable(_fits_path_of(hdul_badpix, badpix_path)) if hdul_badpix is not None else None
@@ -520,22 +529,25 @@ def process_all_hdus(
         print(f"  Pre-computing flat bad masks for {len(hdus_to_process)} HDUs...")
         flat_cfg = config.get("flat_masking", {})
         flat_meds: dict = {}
+        flat_shapes: dict = {}
         for i in hdus_to_process:
             if i < len(hdul_flat):
                 try:
                     flat_data = np.ascontiguousarray(hdul_flat[i].read().astype(np.float32))
-                    print(f"    Pre-computing flat bad mask for HDU {i}...")
                     flat_meds[i] = _get_global_median(flat_data)
-                    eff_tile = _effective_tile_size(tile_size, flat_data.shape)
-                    flat_bad_masks[i] = compute_flat_bad_mask(flat_data, flat_cfg, eff_tile)
+                    flat_shapes[i] = flat_data.shape
                 except Exception as e:
-                    print(f"    WARNING: Failed to pre-compute flat bad mask for HDU {i}: {e}")
-        _veto_dead_ccd_hdus(flat_bad_masks, flat_meds, flat_cfg)
-        print(f"  Pre-computed {len(flat_bad_masks)} flat bad masks")
+                    print(f"    WARNING: Failed to read flat for HDU {i}: {e}")
+        # Tactic D: medians stay sequential (cheap reads for the dead-CCD
+        # veto); the 15x15 mask medians move into the ThreadPoolExecutor
+        # workers via the precomputed_bad_mask miss path in _compute_one.
+        _veto_dead_ccd_hdus(flat_bad_masks, flat_meds, flat_cfg, flat_shapes=flat_shapes)
+        print(f"  Flat medians ready for {len(flat_meds)} HDUs ({len(flat_bad_masks)} vetoed dead)")
     conf_scope = config.get("confidence_params", {}).get("normalize_scope", "per_hdu")
     conf_samples: dict = {}
     conf_p99: dict = {}
     dark_cfg_global = config.get("dark_masking")
+
     def _merge_dark(i, hdu_sci, pre):
         if dark_cfg_global is None:
             return pre
@@ -580,6 +592,7 @@ def process_all_hdus(
                     fd_local.close()
                 except Exception:
                     pass
+
     def _compute_one(i):
         pre = flat_bad_masks.get(i) if flat_bad_masks else None
 
@@ -618,6 +631,7 @@ def process_all_hdus(
             return (i, (None, None, None, None, None, None), None, f"HDU{i}")
         finally:
             close()
+
     results: dict = {}
     if len(hdus_to_process) <= 1 or eff_workers <= 1:
         for i in hdus_to_process:
@@ -632,6 +646,7 @@ def process_all_hdus(
                     _i, _res, _hdr, _nm = fut.result()
                 except Exception as e:
                     import traceback
+
                     _i = futs[fut]
                     print(f"FATAL ERROR processing HDU {_i}: {e}\n{traceback.format_exc()}")
                     results[_i] = ((None, None, None, None, None, None), None, f"HDU{_i}")
@@ -660,10 +675,30 @@ def process_all_hdus(
             sky_cards = (header_info or {}).get("sky_cards") or {}
             sky_header = {**(hdu_header or {}), **sky_cards} if sky_cards else hdu_header
             hdu_output: dict = {}
-            _store_output_maps(hdu_output, i, hdu_header, hdu_name, config, confidence_map, weight_map, mask_data, inv_var_data, sky_map, args, bad_mask, sat_mask, cr_mask, obj_mask, streak_mask, paths, sky_header=sky_header)
+            _store_output_maps(
+                hdu_output,
+                i,
+                hdu_header,
+                hdu_name,
+                config,
+                confidence_map,
+                weight_map,
+                mask_data,
+                inv_var_data,
+                sky_map,
+                args,
+                bad_mask,
+                sat_mask,
+                cr_mask,
+                obj_mask,
+                streak_mask,
+                paths,
+                sky_header=sky_header,
+            )
             _flush_hdu_output(writers, hdu_output, i)
         except Exception as e:
             import traceback
+
             print(f"FATAL ERROR processing HDU {i}: {e}\n{traceback.format_exc()}")
     if conf_scope == "per_exposure" and conf_samples:
         _rescale_confidence_to_global(paths, writers, conf_samples, conf_p99, config)
@@ -694,6 +729,7 @@ class _StreamingMapWriter:
         self._lock = threading.Lock()
         self.compress = bool(compress)
         self.dtype = np.dtype(dtype) if dtype is not None else None
+
     def _prep(self, data):
         if data is None or self.dtype is None:
             return data
@@ -701,6 +737,7 @@ class _StreamingMapWriter:
             return np.ascontiguousarray(data, dtype=self.dtype)
         except Exception:
             return np.asarray(data, dtype=self.dtype)
+
     def write(self, hdu_index: int, data, header, extname: str) -> None:
         data = self._prep(data)
         comp = "RICE_1" if self.compress else "NOT_SET"
@@ -778,7 +815,9 @@ def _make_output_writers(paths: dict, hdul_input, config: dict | None = None) ->
     for mask_type in ("bad", "sat", "cr", "obj", "streak"):
         out_path = (paths.get("individual_mask_paths") or {}).get(mask_type)
         if out_path:
-            writers[f"ind_{mask_type}"] = _StreamingMapWriter(out_path, hdul_input, primary_header, compress=compress, dtype=np.uint8)
+            writers[f"ind_{mask_type}"] = _StreamingMapWriter(
+                out_path, hdul_input, primary_header, compress=compress, dtype=np.uint8
+            )
     return writers
 
 
@@ -796,5 +835,3 @@ def _flush_hdu_output(writers: dict, hdu_output: dict, hdu_index: int) -> None:
         writer_key = f"ind_{mask_type}"
         if entry is not None and writer_key in writers:
             writers[writer_key].write(hdu_index, entry["data"], entry["header"], entry["name"])
-
-

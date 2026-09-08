@@ -1,7 +1,7 @@
 """Regression tests for the weightmask defect-review fix list (2026-09-05).
 
 Each test pins one fix behaviorally (observable result, not source text):
-- process_all_hdus pre-computes each flat HDU mask exactly once (dedup; no disk cache)
+- process_all_hdus computes each flat HDU mask exactly once, in its worker (dedup; no disk cache)
 - unknown streak mode raises instead of silently returning zeros
 - non-finite inverse variance sets INVALID_VARIANCE and zeroes weight end to end
 - CR niter config is forwarded to astroscrappy (yml pins niter: 2)
@@ -47,38 +47,26 @@ class TestSingleFlatPrecompute(unittest.TestCase):
         hdul_input.__getitem__.side_effect = lambda i: hdu
         args = Namespace(tile_size=1024)
 
-        mask = np.zeros((32, 32), dtype=bool)
-        result = (
-            np.zeros((32, 32), dtype=np.uint32),
-            np.ones((32, 32), dtype=np.float32),
-            np.ones((32, 32), dtype=np.float32),
-            np.ones((32, 32), dtype=np.float32),
-            np.ones((32, 32), dtype=np.float32),
-            {"individual_masks": {}},
-        )
         calls = []
 
         def counting_compute(data, cfg, tile):
             calls.append(tile)
-            return mask.copy()
+            return np.zeros((32, 32), dtype=bool)
 
+        # Tactic D: the sequential pre-loop reads medians only; the worker
+        # computes each HDU's mask exactly once via the miss path, so run
+        # the real process_hdu and count real compute calls end to end.
         with (
             patch.object(cli_mod, "compute_flat_bad_mask", side_effect=counting_compute),
-            patch.object(cli_mod, "process_hdu", return_value=result),
             patch.object(cli_mod, "_make_output_writers", return_value={}),
             patch.object(cli_mod, "_store_output_maps"),
             patch.object(cli_mod, "_flush_hdu_output"),
-            patch.object(
-                cli_mod,
-                "extract_individual_masks",
-                return_value=(mask, mask, mask, mask, mask),
-            ),
         ):
             n = process_all_hdus([1], hdul_input, hdul_flat, config, {}, args, flat_path="flat.fits")
 
         self.assertEqual(n, 1)
-        self.assertEqual(len(calls), 1)  # regression: duplicated block computed twice
-        # MEF precompute uses _effective_tile_size (32x32 → 16), matching process_image.
+        self.assertEqual(len(calls), 1)  # one HDU -> exactly one mask compute, in its worker
+        # Worker miss path uses _effective_tile_size (32x32 → 16), matching process_image.
         self.assertEqual(calls[0], 16)
 
 
@@ -224,7 +212,6 @@ class TestDeadCcdVeto(unittest.TestCase):
 
 class TestConfidenceGlobalHookup(unittest.TestCase):
     def test_confidence_mode_uses_global_p99(self):
-
         from argparse import Namespace
 
         import fitsio
@@ -267,7 +254,6 @@ class TestConfidenceGlobalHookup(unittest.TestCase):
 
 class TestDarkLeg(unittest.TestCase):
     def test_dark_hot_pixels_join_bad(self):
-
         from argparse import Namespace
 
         import fitsio
@@ -307,7 +293,6 @@ class TestDarkLeg(unittest.TestCase):
 
 class TestGlobalConfidenceRescale(unittest.TestCase):
     def test_rescale_matches_global_p99(self):
-
         from weightmask.mef import _rescale_confidence_to_global, _StreamingMapWriter
 
         with tempfile.TemporaryDirectory() as tmp:
