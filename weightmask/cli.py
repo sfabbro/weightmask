@@ -78,7 +78,7 @@ def parse_arguments(argv=None) -> argparse.Namespace:
         "--badpix_mask",
         type=str,
         default=None,
-        help="External Elixir keep-map MEF (0 = bad, 1 = good). Zeros are OR'd into BAD.",
+        help="External keep-map MEF (0 = bad, 1 = good). Zeros are OR'd into BAD.",
     )
     outputs.add_argument(
         "--output_map",

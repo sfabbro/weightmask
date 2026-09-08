@@ -30,7 +30,7 @@ These extra `BAD` sources run in the CLI/MEF path only, not in
   is flagged entirely.
 - `--dark_image`: same local/column logic on a dark, OR'd into `BAD` if
   `dark_masking` is in the config (canonical YAML includes it).
-- `--badpix_mask`: Elixir keep-map (`0` = bad, `1` = good).
+- `--badpix_mask`: keep-map (`0` = bad, `1` = good).
 
 **Config.** `flat_masking`, `dark_masking`.
 
@@ -131,8 +131,8 @@ ivar = g² F² / (S g + r²)
 ```
 
 `S` is sky in ADU, `F` the flat, `g` gain in e⁻/ADU, `r` read noise in e⁻.
-At `F = 1` this is Poisson plus read noise. At `F ≠ 1` it is an Elixir-style
-F² sensitivity weight, not the flat-fielded identity `g² F² / (S g F + r²)`.
+At `F = 1` this is Poisson plus read noise. At `F ≠ 1` it is an F²
+sensitivity weight, not the flat-fielded identity `g² F² / (S g F + r²)`.
 That expression is the core plane. Canonical `weightmask.yml` then adds
 `flat_rel_noise` (`(S g · rel)²` in the electron denominator, with `rel`
 increased where the flat is below its median) and `rescale_variance` (scale
@@ -173,7 +173,5 @@ probabilistic products is sketched in
 - Galambos, C., Kittler, J., & Matas, J. 1999, CAIP (probabilistic Hough;
   scikit-image `probabilistic_hough_line`).
 - Fischler, M. A., & Bolles, R. C. 1981, Commun. ACM, 24, 381 (RANSAC).
-- Magnier, E. A., & Cuillandre, J.-C. 2004, PASP, 116, 449 (CFHT Elixir
-  detrending and weight maps).
 - STScI `acstools.satdet` (HST/ACS satellite-trail tools; weightmask's Hough
   path is inspired by this style of detector, not a verbatim port).

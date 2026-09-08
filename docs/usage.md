@@ -51,7 +51,7 @@ weightmask science.fits --config weightmask.yml \
   -o out.weight.fits --output_mask out.mask.fits
 ```
 
-`--badpix_mask` is an Elixir keep-map: `0` = bad, `1` = good. Those zeros are
+`--badpix_mask` is a keep-map: `0` = bad, `1` = good. Those zeros are
 OR'd into `BAD`. `--dark_image` ORs hot pixels into `BAD` only if the config
 has a `dark_masking` section (the canonical YAML does). Both, and the MEF
 `dead_ccd_*` veto, are CLI/MEF orchestration: `WeightMapGenerator.process`
@@ -115,10 +115,10 @@ Default `variance.method: theoretical`. The core plane is
 ivar = g² F² / (S g + RN²)
 ```
 
-Elixir-style F² sensitivity weight (same convention used in coadds). Exact
-Poisson plus read noise at `F = 1`. At vignette (`F ≠ 1`) this is a
-sensitivity weight, not `g² F² / (S g F + RN²)`. Canonical `weightmask.yml`
-then adds `flat_rel_noise: 0.003` and `rescale_variance: true`. Omit those
+F² sensitivity weight (same convention used in coadds). Exact Poisson plus
+read noise at `F = 1`. At vignette (`F ≠ 1`) this is a sensitivity weight, not
+`g² F² / (S g F + RN²)`. Canonical `weightmask.yml` then adds
+`flat_rel_noise: 0.003` and `rescale_variance: true`. Omit those
 keys and you get the bare formula.
 
 ### Python

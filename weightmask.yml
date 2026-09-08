@@ -177,7 +177,7 @@ streak_masking:
 
 variance:
   method: "theoretical"          # "theoretical" (default), "rms_map", or "empirical_fit"
-  # Frozen 0.1: ivar = g^2 F^2 / (S*g + RN^2). Poisson+RN at F=1; Elixir-style F^2 weight otherwise.
+  # Frozen 0.1: ivar = g^2 F^2 / (S*g + RN^2). Poisson+RN at F=1; F^2 sensitivity weight otherwise.
   gain_keyword: ["GAIN", "GAINA", "GAINB", "CCDGAIN"]  # e-/ADU; first present header wins
   rdnoise_keyword: ["RDNOISE", "RDNOIS", "RON"]        # e-; first present header wins
   default_gain: 1.5              # e-/ADU; used only if no gain keyword is present

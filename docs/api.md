@@ -75,7 +75,8 @@ returns a `WeightMaskProduct` with quality flags, non-negative inverse variance
 and weight. Confidence from this function is always in `[0, 1]`; the CLI
 product may then multiply by 100 if `confidence_params.scale_to_100` is true.
 Non-finite or non-positive inverse variance is marked `INVALID_VARIANCE` and
-zeroed. Inverse-variance semantics are `elixir_style_flat2_coadd_weight`.
+zeroed. Inverse-variance semantics are an F² sensitivity weight
+(`INVERSE_VARIANCE_SEMANTICS`).
 `CONTRACT_VERSION` (`"1.0"`) is the array-schema version; the package version
 is `weightmask.__version__` (`0.1.0`).
 
