@@ -650,8 +650,8 @@ def main(argv=None) -> int:
     ap.add_argument("--flat", type=str, default=None, help="Flat-field MEF for the with-flats variant.")
     ap.add_argument("--tag", type=str, default="", help="Report/output tag (e.g. 'flat'); default untagged.")
     ap.add_argument("--masks", action="store_true", help="Also write integer mask maps.")
+    ap.add_argument("--resume", action="store_true", help="Skip exposures already in checkpoint_<tag>.json.")
     args = ap.parse_args(argv)
-
     records = resolve_exposures(force=args.force_resolve)
     if args.resolve_only:
         if len(records) != 10:
@@ -666,10 +666,10 @@ def main(argv=None) -> int:
     cprofile_txt = OUT_DIR / f"cprofile_hdu{suffix}.txt"
 
     _flat_arg = Path(args.flat) if args.flat else None
-    flat = str(_flat_arg if (_flat_arg is None or _flat_arg.is_absolute()) else (ROOT / _flat_arg))
-    if flat and not Path(flat).exists():
-        raise SystemExit(f"--flat file not found: {flat}")
+    flat = None if _flat_arg is None else str(_flat_arg if _flat_arg.is_absolute() else (ROOT / _flat_arg))
     if flat:
+        if not Path(flat).exists():
+            raise SystemExit(f"--flat file not found: {flat}")
         from tests.benchmarks.download_data import validate_case_file
         valid, reason = validate_case_file(
             {"expected_instrument": "MegaPrime", "expected_detector": "MegaCam"}, flat
@@ -682,11 +682,26 @@ def main(argv=None) -> int:
     # (a) sequential pass over all 10 x all HDUs.
     variant = f"with-flats ({flat})" if flat else "no-flat"
     print(f"Running sequential {variant} pass (workers=1) over 10 exposures x all HDUs...")
+    checkpoint = OUT_DIR / f"checkpoint{suffix}.json"
+    done: dict[str, dict] = {}
+    if args.resume and checkpoint.exists():
+        try:
+            for e in json.loads(checkpoint.read_text()):
+                if isinstance(e, dict) and e.get("safe_id"):
+                    done[e["safe_id"]] = e
+            print(f"Resuming: {len(done)} exposures already checkpointed.")
+        except Exception as exc:
+            print(f"WARNING: ignoring unreadable checkpoint {checkpoint}: {exc}")
     per_exp: list[dict] = []
     t_all = time.perf_counter()
     for rec in records:
+        if rec["safe_id"] in done:
+            print(f"--- exposure {rec['safe_id']} (checkpointed, skipping) ---")
+            per_exp.append(done[rec["safe_id"]])
+            continue
         print(f"--- exposure {rec['safe_id']} ---")
         per_exp.append(_process_one_exposure(rec, 1, flat=flat, write_mask=args.masks))
+        checkpoint.write_text(json.dumps(per_exp, indent=2) + "\n")
     total_wall = time.perf_counter() - t_all
 
     # Sanity: every exposure processed all its 2-D HDUs.
