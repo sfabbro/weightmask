@@ -15,6 +15,10 @@ gen = WeightMapGenerator(config)          # raises ValueError if config is inval
 out = gen.process(data, header=None, flat_data=None, tile_size=1024)
 ```
 
+Single-array entry: no dark, keep-map, or MEF dead-CCD veto. Pass a real flat
+or flat-based `BAD` is skipped (`F = 1`). Use the CLI for those extra `BAD`
+sources.
+
 `process()` returns a dict:
 
 | Key | Contents |
@@ -22,7 +26,7 @@ out = gen.process(data, header=None, flat_data=None, tile_size=1024)
 | `weight_map` | Masked inverse variance |
 | `flag_map` | Integer quality mask |
 | `inv_variance_map` | Inverse-variance plane |
-| `confidence_map` | Percentile-normalized weight in `[0, 1]` |
+| `confidence_map` | Percentile-normalized weight in `[0, 1]` (×100 if `scale_to_100`) |
 | `sky_map` | Background map |
 | `individual_masks` | Component boolean maps (`bad`, `sat`, `cr`, `obj`, `streak`) |
 | `contract_product` | `WeightMaskProduct` (when the contract path ran) |
@@ -68,9 +72,12 @@ from weightmask.contract import (
 
 `build_weight_product(inverse_variance, quality_mask=None, *, exclude_detected=False, confidence_percentile=99.0, producer=None, provenance=None)`
 returns a `WeightMaskProduct` with quality flags, non-negative inverse variance
-and weight, and confidence in `[0, 1]`. Non-finite or non-positive inverse
-variance is marked `INVALID_VARIANCE` and zeroed. Inverse-variance semantics
-are `elixir_style_flat2_coadd_weight`.
+and weight. Confidence from this function is always in `[0, 1]`; the CLI
+product may then multiply by 100 if `confidence_params.scale_to_100` is true.
+Non-finite or non-positive inverse variance is marked `INVALID_VARIANCE` and
+zeroed. Inverse-variance semantics are `elixir_style_flat2_coadd_weight`.
+`CONTRACT_VERSION` (`"1.0"`) is the array-schema version; the package version
+is `weightmask.__version__` (`0.1.0`).
 
 `ArrayHeaderIO` is an optional read/write protocol. `TorchfitsArrayHeaderIO`
 implements it when torchfits is installed; torchfits is not a required

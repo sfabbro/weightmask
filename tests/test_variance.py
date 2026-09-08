@@ -92,6 +92,38 @@ class TestVariance(unittest.TestCase):
         np.testing.assert_allclose(inv_var[0, 0], elixir, rtol=1e-5)
         self.assertGreater(abs(float(inv_var[0, 0]) - poisson_flat) / poisson_flat, 0.4)
 
+    def test_epsilon_is_not_added_to_denominator(self):
+        sky = np.array([[0.0]], dtype=np.float32)
+        flat = np.array([[1.0]], dtype=np.float32)
+        inv_var = _calculate_inverse_variance_theoretical(sky, flat, gain=2.0, read_noise_e=0.0, epsilon=1e-3)
+        self.assertEqual(float(inv_var[0, 0]), 0.0)
+
+    def test_flat_rel_noise_vignette_boost(self):
+        sky_adu, gain, read_noise_e, rel0 = 8000.0, 1.5, 5.0, 0.003
+        sky = np.array([[sky_adu, sky_adu]], dtype=np.float32)
+        flat = np.array([[1.0, 0.25]], dtype=np.float32)
+        got = _calculate_inverse_variance_theoretical(
+            sky, flat, gain, read_noise_e, epsilon=1e-9, flat_rel_noise=rel0
+        )
+        med_flat = 0.625
+        for i, flat_val in enumerate((1.0, 0.25)):
+            rel = rel0 / np.sqrt(max(flat_val / med_flat, 0.1))
+            sky_e = sky_adu * gain
+            denom = sky_e + read_noise_e**2 + (sky_e * rel) ** 2
+            want = (gain**2 * flat_val**2) / denom
+            np.testing.assert_allclose(got[0, i], want, rtol=1e-5)
+
+    def test_canonical_yaml_rel_term_is_not_the_bare_kernel(self):
+        import yaml
+
+        rel = float(yaml.safe_load(open("weightmask.yml"))["variance"]["flat_rel_noise"])
+        self.assertGreater(rel, 0.0)
+        sky = np.full((8, 8), 1000.0, dtype=np.float32)
+        flat = np.ones((8, 8), dtype=np.float32)
+        bare = _calculate_inverse_variance_theoretical(sky, flat, 1.5, 5.0, 1e-9, 0.0)
+        shipped = _calculate_inverse_variance_theoretical(sky, flat, 1.5, 5.0, 1e-9, rel)
+        self.assertGreater(float(np.median(np.abs(shipped - bare) / np.maximum(bare, 1e-12))), 1e-4)
+
     def test__calculate_inverse_variance_theoretical_edge_cases(self):
         """Test internal theoretical inverse variance logic with edge cases like negative sky and zero flat."""
         sky_map = np.array([[100.0, -50.0], [100.0, 100.0]], dtype=np.float32)  # Negative sky
@@ -234,10 +266,8 @@ class TestVariance(unittest.TestCase):
         # Check that we got a result
         self.assertIsNotNone(inv_variance)
 
-        # Expected theoretical calculation:
-        # variance_e = (sky / flat) * gain + read_noise_e**2
-        # variance_e = (100.0 / 1.0) * 1.5 + 5.0**2 = 150 + 25 = 175
-        # inv_variance = gain**2 / variance_e = 1.5**2 / 175 = 2.25 / 175
+        # Expected theoretical calculation (F=1):
+        # inv_var = g² / (S g + RN²) = 1.5² / (100*1.5 + 25)
         expected_val = (gain**2) / ((100.0 / 1.0) * gain + read_noise_e**2)
 
         np.testing.assert_allclose(inv_variance, expected_val, rtol=1e-5)

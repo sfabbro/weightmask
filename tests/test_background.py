@@ -37,6 +37,18 @@ class TestBackground(unittest.TestCase):
         # Check that RMS values are positive
         self.assertTrue(np.all(bkg_rms_map > 0))
 
+    def test_mask_threshold_is_crowding_fraction_not_object_cut(self):
+        sci_data = np.full((64, 64), 100.0, dtype=np.float32)
+        mask = np.ones((64, 64), dtype=bool)
+        mask[:4] = False
+        diagnostics = {}
+        estimate_background(
+            sci_data,
+            mask,
+            {"method": "sep", "mask_threshold": 0.8, "_diagnostics": diagnostics},
+        )
+        self.assertEqual(diagnostics.get("fallback"), "global_sep")
+
     def test_estimate_background_no_mask(self):
         """Test background estimation with no masked pixels."""
         # Create test science data

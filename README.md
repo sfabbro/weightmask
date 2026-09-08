@@ -34,7 +34,7 @@ working directory; it is not bundled in the wheel.
 |---|---|
 | Weight | Masked inverse variance (primary map by default) |
 | Mask | Integer quality bits |
-| Inverse variance | Same plane after sanitizing non-finite / non-positive values |
+| Inverse variance | Sanitized theoretical plane (not quality-masked) |
 | Sky | Background map, or a compact mesh rebuildable with `weightmask-reconstruct-sky` |
 
 Quality bits (`set_means_flagged`: a set bit means the condition is present):
@@ -51,6 +51,8 @@ Quality bits (`set_means_flagged`: a set bit means the condition is present):
 The default theoretical plane is an Elixir-style F² coadd weight,
 `ivar = g² F² / (S g + RN²)`. At `F = 1` this is Poisson plus read noise; at
 `F ≠ 1` it is a sensitivity weight, not a flat-fielded Poisson identity.
+The canonical `weightmask.yml` also turns on `flat_rel_noise` and
+`rescale_variance` on top of that core formula.
 
 ## Docs
 

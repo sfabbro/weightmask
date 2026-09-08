@@ -1,6 +1,7 @@
 # Examples
 
-Synthetic end-to-end run of the WeightMask pipeline.
+Synthetic detection demo (mask bits vs injected truth), not a full
+weight/invvar/sky product run.
 
 ## Run
 
@@ -12,12 +13,12 @@ pixi run example-complex
 
 That executes `complex_simulation_example.py`: a Poisson-plus-read-noise image
 with a spatially varying sky, a variable PSF, and dashed satellite tracks.
-It writes FITS products under `test_outputs/` (gitignored) and prints
+It writes mask FITS under `test_outputs/` (gitignored) and prints
 precision/recall against the injected truth.
 
 `cfht_megaprime_example.py` is a thinner MegaPrime-like walkthrough.
-`real_world_robustness.py` and `test_real_mef.py` are extra scripts, not the
-default pixi task.
+`real_world_robustness.py` is the same staged detector test on a denser field.
+`test_real_mef.py` needs external MegaCam files under `benchmark_data/`.
 
 ## Quality bits
 

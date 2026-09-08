@@ -15,14 +15,20 @@ default and does not zero weight. `BAD`, `SAT`, `CR`, `STREAK`, and
 **What.** Dead or hot pixels, dead columns, and blanked CCDs. They have no
 usable response and receive zero weight.
 
-**Method.** On the flat (or a unit flat if none is given), a local median
-filter estimates the illumination. Pixels whose ratio to that surface is
-outside `[local_low_thresh, local_high_thresh]` are flagged. Optional column
-detection marks low-response columns from the derivative of the column
-median. In a MEF, a CCD whose flat median is a MAD outlier relative to its
-siblings is flagged entirely (`dead_ccd_*`). `--dark_image` runs the same
-local/column logic on a dark and ORs the result into `BAD`. `--badpix_mask`
-is an Elixir keep-map: `0` = bad, `1` = good.
+**Method.** On a real flat, a local median filter estimates the illumination.
+Pixels whose ratio to that surface is outside `[local_low_thresh,
+local_high_thresh]` are flagged. Optional column detection marks low-response
+columns from the derivative of the column median. With no flat, the pipeline
+uses `F = 1` and skips this flat-based `BAD` step.
+
+These extra `BAD` sources run in the CLI/MEF path only, not in
+`WeightMapGenerator.process`:
+
+- `dead_ccd_*`: a CCD whose flat median is a MAD outlier versus its siblings
+  is flagged entirely.
+- `--dark_image`: same local/column logic on a dark, OR'd into `BAD` if
+  `dark_masking` is in the config (canonical YAML includes it).
+- `--badpix_mask`: Elixir keep-map (`0` = bad, `1` = good).
 
 **Config.** `flat_masking`, `dark_masking`.
 
@@ -49,11 +55,15 @@ archive storage.
 
 **Method.** Default is SEP's SExtractor-style mesh background
 (`sep.Background`) with iterative object masking (`sep_background.iterations`).
-Fallbacks: median filter, then a robust global median. Negative interpolation
-overshoots next to bright masks can be filled from neighbors when the science
-pixels agree with the fill (`dip_repair_*`).
+Fallbacks when SEP cannot run: crowded frames (`mask_threshold` is a masked
+*fraction*, not an object cut) switch to global SEP; failed mesh retries go
+to `robust_median_fallback`, then optional `smooth_surface`. `median_filter`
+is an explicit method, not a fallback rung. Negative interpolation overshoots
+next to bright masks can be filled from neighbors when the science pixels
+agree with the fill (`dip_repair_*`).
 
-Mesh codec: `n = (size - 1) // box + 1` nodes at clipped `(k + 0.5) * box`.
+Mesh codec: `n = (size - 1) // box + 1` nodes at
+`clip(rint((k + 0.5) * box))`.
 Rebuild with natural cubic splines (`weightmask-reconstruct-sky`). This
 matches SEP's node phase, not SEP's C bicubic interpolant.
 
@@ -88,18 +98,18 @@ the streak stage.
 
 **What.** Linear trails (satellites, aircraft, meteors). Zero weight.
 
-**Method.** Production mode is `auto_ground` only. Candidates come from
-three cheap extractors, then a trail-aligned strip is refined on the
-full-resolution image:
+**Method.** Production mode is `auto_ground` only. Candidates are the union of
+three extractors (order does not matter; they OR together), then a
+trail-aligned strip is refined on the full-resolution image:
 
-1. Multi-scale Canny edges and a probabilistic Hough transform (ACS
-   SATDET-inspired; not a bit-identical port).
-2. Binned Hough-peak search.
-3. Elongated contour morphology.
-4. Strip profile growth and geometric gates (`mask_params`).
-5. If primary confidence is low, a Radon-transform peak search (MRT-like
-   rescue).
-6. Optional sparse RANSAC on residual bright pixels for dashed trails.
+- Binned Hough-peak search.
+- Elongated contour morphology.
+- Multi-scale Canny edges and a probabilistic Hough transform (ACS
+  SATDET-inspired; not a bit-identical port).
+- Strip profile growth and geometric gates (`mask_params`).
+- If primary confidence is low, a Radon-transform peak search (MRT-like
+  rescue).
+- Optional sparse RANSAC on residual bright pixels for dashed trails.
 
 Frangi-ridge comparison code is not in the package; it lives in
 `benchmarks/frangi_legacy.py`.
@@ -121,14 +131,19 @@ ivar = g² F² / (S g + r²)
 `S` is sky in ADU, `F` the flat, `g` gain in e⁻/ADU, `r` read noise in e⁻.
 At `F = 1` this is Poisson plus read noise. At `F ≠ 1` it is an Elixir-style
 F² sensitivity weight, not the flat-fielded identity `g² F² / (S g F + r²)`.
-Optional `flat_rel_noise` adds `(S g · rel)²` to the electron denominator,
-with `rel` increased where the flat is below its median. `rescale_variance`
-scales the plane so background SNR has robust standard deviation 1.
+That expression is the core plane. Canonical `weightmask.yml` then adds
+`flat_rel_noise` (`(S g · rel)²` in the electron denominator, with `rel`
+increased where the flat is below its median) and `rescale_variance` (scale
+so background SNR has robust standard deviation 1). Omit those keys and the
+in-code fallbacks leave both off.
 
 Weight is masked inverse variance. Confidence is that weight divided by its
-configured percentile (default 99th), clipped to `[0, 1]`.
-`confidence_params.normalize_scope: per_exposure` makes confidence comparable
-across CCDs in a MEF.
+configured percentile (default 99th), clipped to `[0, 1]` unless
+`confidence_params.scale_to_100` is true. `normalize_scope: per_exposure` is
+applied by the MEF CLI only when the primary map is confidence
+(`output_map_format: confidence`); the canonical YAML writes weight, so that
+rescale is a no-op. `WeightMapGenerator` does not apply it. The in-code
+fallback is `per_hdu`.
 
 Gain and read noise are one scalar per HDU (first present header keyword).
 Dual-amp `GAINA`/`GAINB` are not split.

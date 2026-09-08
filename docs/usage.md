@@ -12,8 +12,11 @@ if `--config` is omitted: `weightmask.yml`, `config.yml`, `.weightmask.yml`.
 The wheel does not bundle a config.
 
 The only key list is the repo-root [`weightmask.yml`](../weightmask.yml). Extra
-top-level keys fail validation. Missing known sections warn and fall back to
-code defaults. `WeightMapGenerator` raises `ValueError` on invalid config.
+top-level keys fail validation. Those YAML values are the 0.1 product
+defaults. Missing keys warn and fall back to in-code defaults, which are not
+the same file: in particular `streak_masking.enable` is false, `rescale_variance`
+is false, `default_gain` is 1.0 e⁻/ADU, and `default_rdnoise` is 0 e⁻. Copy
+the YAML. `WeightMapGenerator` raises `ValueError` on invalid config.
 
 Each HDU uses one gain and one read-noise value (first present header keyword
 in the configured lists). Dual-amp `GAINA`/`GAINB` are not split.
@@ -48,8 +51,11 @@ weightmask science.fits --config weightmask.yml \
 ```
 
 `--badpix_mask` is an Elixir keep-map: `0` = bad, `1` = good. Those zeros are
-OR'd into `BAD`. `--dark_image` hot pixels also OR into `BAD`. Without a flat,
-a unit flat is used and local dead-pixel detection is weaker.
+OR'd into `BAD`. `--dark_image` ORs hot pixels into `BAD` only if the config
+has a `dark_masking` section (the canonical YAML does). Both, and the MEF
+`dead_ccd_*` veto, are CLI/MEF orchestration: `WeightMapGenerator.process`
+does not take a dark or keep-map. Without a flat, `F = 1` and flat-based `BAD`
+detection is skipped.
 
 ### Outputs
 
@@ -71,7 +77,8 @@ weightmask science.fits --config weightmask.yml \
   differ from the primary map.
 - `--individual_masks`: one FITS file per component (bad, sat, cr, obj, streak).
 
-Default primary path is `<input_base>.weight.fits` if `-o` is omitted.
+Default primary path is `<input_base>.weight.fits` if `-o` is omitted, or
+`.weight.fits.fz` when `output_params.compress` is true.
 
 ### Quality bits
 
@@ -101,7 +108,7 @@ Compatibility dispatch: `weightmask reconstruct-sky sky_mesh.fits -o sky_full.fi
 
 ### Weight plane
 
-Default `variance.method: theoretical`:
+Default `variance.method: theoretical`. The core plane is
 
 ```
 ivar = g² F² / (S g + RN²)
@@ -109,6 +116,8 @@ ivar = g² F² / (S g + RN²)
 
 Elixir-style F² coadd weight. Exact Poisson plus read noise at `F = 1`. At
 vignette (`F ≠ 1`) this is a sensitivity weight, not `g² F² / (S g F + RN²)`.
+Canonical `weightmask.yml` then adds `flat_rel_noise: 0.003` and
+`rescale_variance: true`. Omit those keys and you get the bare formula.
 
 ### Python
 
@@ -127,3 +136,7 @@ flat = fits.getdata("flat.fits", ext=1)
 out = WeightMapGenerator(config).process(sci, header=hdr, flat_data=flat)
 weight, mask = out["weight_map"], out["flag_map"]
 ```
+
+That call is one array. Dark frames, keep-maps, and dead-CCD veto live on the
+CLI/MEF path. Exposure-global confidence rescale also does, and only when the
+primary map is confidence.

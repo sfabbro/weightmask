@@ -235,7 +235,9 @@ def detect_saturated_pixels(sci_data, sci_hdr, config):
     Returns:
         tuple: (saturation_level, sat_method_used, sat_mask_bool)
                saturation_level (float): The determined saturation level in ADU.
-               sat_method_used (str): Method used ('histogram', 'header', 'default').
+               sat_method_used (str): Label from the guarded cascade
+               ('histogram (guarded)', 'plateau-tail fallback',
+               'header advisory fallback', or 'default guarded fallback').
                sat_mask_bool (ndarray): Boolean mask where True indicates saturated pixels.
     """
     saturation_level = None

@@ -15,6 +15,7 @@ flat_masking:
   dead_ccd_badpix_fraction: 0.9  # if already this fraction BAD, treat the CCD as dead
 
 dark_masking:
+  # Required for --dark_image; without this section the dark is ignored.
   local_filter_size: 15          # pixels; same local-median test as the flat, on --dark_image
   local_low_thresh: 0.5          # low-ratio cut (rarely fires on a dark)
   local_high_thresh: 2.0         # hot pixels: dark / local-median above this
@@ -49,7 +50,7 @@ sep_background:
   auto_box_scaling: true         # grow the box on large CCDs, capped by max_box_size
   filter_size: 3                 # SEP mesh-filter width (fw/fh)
   iterations: 2                  # object-mask / background refinement loops
-  mask_threshold: 0.8            # pixels this far above the mesh are treated as objects
+  mask_threshold: 0.8            # masked-fraction cut; above this, skip the mesh and use global SEP
   max_box_size: 1024             # pixels; cap for auto_box_scaling
   median_kernel_size: 31         # pixels; kernel if method is median_filter
   smooth_surface_fallback: true  # if SEP fails, fall back rather than crash
@@ -181,7 +182,7 @@ variance:
   rdnoise_keyword: ["RDNOISE", "RDNOIS", "RON"]        # e-; first present header wins
   default_gain: 1.5              # e-/ADU; used only if no gain keyword is present
   default_rdnoise: 5.0           # e-; used only if no read-noise keyword is present
-  epsilon: 1.0e-9                # floor added to the variance denominator
+  epsilon: 1.0e-9                # validity cut / safe-flat substitute; not added to the denominator
   flat_rel_noise: 0.003          # fractional flat uncertainty; adds a vignette-scaled term
   rescale_variance: true         # scale so background SNR has robust scatter 1
   unbias_variance: false         # optional extra unbias (off; rescale is the 0.1 path)
@@ -189,7 +190,7 @@ variance:
 confidence_params:
   dtype: "float32"               # confidence array dtype
   normalize_percentile: 99.0     # divide weight by this percentile, then clip to [0, 1]
-  normalize_scope: per_exposure  # per_exposure = one scale for the whole MEF; per_hdu = per CCD
+  normalize_scope: per_exposure  # MEF CLI only, and only if output_map_format is confidence; else ignored
   scale_to_100: false            # if true, write confidence as 0–100 instead of 0–1
 
 output_params:
@@ -197,5 +198,5 @@ output_params:
   mask_detected_in_weight: false # if true, DETECTED pixels also get zero weight
   mask_bitpix: 16                # FITS BITPIX for the mask (uint16; values 0–63 fit)
   ivar_bitpix: 32                # FITS BITPIX for ivar/weight/confidence/sky (float32)
-  compress: false                # Rice (.fits.fz) compression
+  compress: false                # Rice (.fits.fz); if true and -o omitted, default suffix is .weight.fits.fz
   sky_format: full               # "full" map, or "mesh" for SKYMESH + weightmask-reconstruct-sky

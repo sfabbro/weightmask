@@ -25,8 +25,11 @@ def demonstrate_robustness():
     metrics = run_masking_test(config_path, Args, save_fits=True)
 
     print("\nRobustness Metrics Summary:")
-    for name, (p, r) in metrics.items():
-        # Heuristic assessment
+    for name, val in metrics.items():
+        if not isinstance(val, (tuple, list)) or len(val) < 2:
+            print(f"  {name:12} | {val}")
+            continue
+        p, r = val
         status = "PASSED" if r > 0.4 else "DIAGNOSTIC"
         if name == "Saturation" or name == "Cosmics":
             status = "PASSED" if r > 0.9 else "WARNING"

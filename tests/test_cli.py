@@ -340,6 +340,8 @@ class TestCliHelp(unittest.TestCase):
         self.assertIn("--config", text)
         self.assertIn("Inputs", text)
         self.assertIn("Outputs", text)
+        self.assertIn("Run", text)
+        self.assertIn("--version", text)
 
     def test_reconstruct_sky_help_mentions_output(self):
         from io import StringIO
