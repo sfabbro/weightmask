@@ -44,8 +44,9 @@ export PIXI_CACHE_DIR
 
 MANIFEST="$BOOTSTRAP/benchmarks/canfar_experiments/manifest.json"
 GROUP_JSON="$JOB_DIR/group.json"
-pixi_cmd() { if [ -x /opt/conda/bin/pixi ]; then echo /opt/conda/bin/pixi; else echo pixi; fi }
-PIXI="$(pixi_cmd)"
+# In-image pixi is too old for `[workspace]` (E0 probe 2026-09-09); install a
+# job-local pixi (fast, ~10 MB) and use it. Falls back to system pixi.
+PIXI="$JOB_DIR/pixi-home/bin/pixi"
 
 python3 - "$MANIFEST" "$EXP_ID" "$JOB_TAG" "$GROUP_JSON" <<'EOF'
 import json, sys
@@ -61,6 +62,15 @@ git clone "$REPO_URL" "$REPO_DIR"
 git -C "$REPO_DIR" checkout "$CHECKOUT_REF"
 git -C "$REPO_DIR" rev-parse HEAD
 cd "$REPO_DIR"
+if [ ! -x "$PIXI" ]; then
+    export PIXI_HOME="$JOB_DIR/pixi-home"
+    curl -fsSL https://pixi.sh/install.sh -o "$JOB_DIR/pixi-install.sh"
+    bash "$JOB_DIR/pixi-install.sh"
+fi
+if [ ! -x "$PIXI" ]; then
+    PIXI="$(command -v pixi || echo /opt/conda/bin/pixi)"
+fi
+"$PIXI" --version
 "$PIXI" install
 
 python3 - "$GROUP_JSON" "$JOB_DIR" <<'EOF'
