@@ -40,7 +40,7 @@ echo "== run_one $EXP_ID/$JOB_TAG =="
 echo "bootstrap=$BOOTSTRAP sha=$MANIFEST_SHA checkout=$CHECKOUT_REF scratch=$SCR_BASE keep_all=$KEEP_ALL"
 mkdir -p "$JOB_DIR" "$RESULTS_DIR" "$PIXI_CACHE_DIR"
 export PIXI_CACHE_DIR
-
+export PYTHONUNBUFFERED=1
 MANIFEST="$BOOTSTRAP/benchmarks/canfar_experiments/manifest.json"
 GROUP_JSON="$JOB_DIR/group.json"
 # In-image pixi is too old for `[workspace]` (E0 probe 2026-09-09); install a
