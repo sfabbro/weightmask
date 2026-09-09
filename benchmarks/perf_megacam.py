@@ -45,9 +45,7 @@ FLAT_FILE = PERF_DATA_DIR / "flat_08Bm01_r.fits.fz"
 FLATS_JSON = OUT_DIR / "flats.json"
 
 BASE_WHERE = (
-    "Observation.collection = 'CFHT' AND "
-    "Observation.instrument_name = 'MegaPrime' AND "
-    "Observation.type = 'OBJECT'"
+    "Observation.collection = 'CFHT' AND Observation.instrument_name = 'MegaPrime' AND Observation.type = 'OBJECT'"
 )
 BASE_SELECT = (
     "SELECT TOP {top} Plane.publisherID FROM caom2.Plane AS Plane "
@@ -101,6 +99,7 @@ def _download_http(url: str, out_path: Path) -> bool:
     try:
         import ssl
         from urllib.request import urlopen
+
         out_path.parent.mkdir(parents=True, exist_ok=True)
         ctx = ssl._create_unverified_context()
         with urlopen(url, context=ctx) as resp, open(out_path, "wb") as fh:
@@ -121,6 +120,7 @@ def _validate_megacam(path: Path) -> tuple[bool, str | None]:
     """Reuse the manifest INSTRUME/DETECTOR check via validate_case_file."""
     try:
         from tests.benchmarks.download_data import validate_case_file
+
         case = {"expected_instrument": "MegaPrime", "expected_detector": "MegaCam"}
         return validate_case_file(case, str(path))
     except ImportError:
@@ -129,6 +129,7 @@ def _validate_megacam(path: Path) -> tuple[bool, str | None]:
         return False, str(e)
     try:
         import fitsio
+
         found_inst = found_det = False
         with fitsio.FITS(str(path)) as hdul:
             for hdu in hdul:
@@ -212,13 +213,18 @@ def _resolve_with_server_prefilter(top: int):
 
 
 def resolve_exposures(force: bool = False) -> list[dict]:
-    """Pin 10 long exposures; write and return the exposures.json records."""
+    """Pin 10 long exposures; write and return the exposures.json records.
+
+    CANFAR jobs pre-stage a job-local exposures.json (1-3 manifest records);
+    any non-empty reuse with all files present is honored, not just the
+    10-exposure baseline.
+    """
     OUT_DIR.mkdir(parents=True, exist_ok=True)
     PERF_DATA_DIR.mkdir(parents=True, exist_ok=True)
     if EXPOSURES_JSON.exists() and not force:
         try:
             records = json.loads(EXPOSURES_JSON.read_text())
-            if isinstance(records, list) and len(records) == 10:
+            if isinstance(records, list) and len(records) >= 1:
                 ok = True
                 for rec in records:
                     fp = ROOT / rec.get("file", "")
@@ -296,6 +302,7 @@ def resolve_exposures(force: bool = False) -> list[dict]:
                     # Single-row fallback: query this publisherID for its URL.
                     try:
                         from astroquery.cadc import Cadc as _Cadc
+
                         c2 = _Cadc()
                         q1 = (
                             "SELECT TOP 1 Plane.publisherID FROM caom2.Plane AS Plane "
@@ -424,7 +431,59 @@ def _uninstall_timing_collector(orig, proc_mod, mef_mod):
     mef_mod.process_image = orig
 
 
-def _process_one_exposure(rec, workers: int, out_suffix: str = "", *, flat: str | None = None, write_mask: bool = False, file_tag: str = "") -> dict:
+def _set_dotted(container: dict, dotted: str, value) -> None:
+    """Set ``a.b.c=value`` creating intermediate dicts (CANFAR --config-set)."""
+    node = container
+    *parts, leaf = dotted.split(".")
+    for part in parts:
+        child = node.get(part)
+        if not isinstance(child, dict):
+            child = {}
+            node[part] = child
+        node = child
+    node[leaf] = value
+
+
+def _parse_config_sets(pairs: list[str] | None) -> dict:
+    """Parse repeatable ``dotted.key=value`` (values YAML-parsed, deep via _set_dotted)."""
+    import yaml as _yaml
+
+    overrides: dict = {}
+    for pair in pairs or []:
+        if "=" not in pair:
+            raise SystemExit(f"--config-set needs dotted.key=value, got {pair!r}")
+        dotted, raw = pair.split("=", 1)
+        dotted = dotted.strip()
+        if not dotted:
+            raise SystemExit(f"--config-set needs dotted.key=value, got {pair!r}")
+        try:
+            value = _yaml.safe_load(raw)
+        except Exception:
+            value = raw
+        _set_dotted(overrides, dotted, value)
+    return overrides
+
+
+def _deep_merge(base: dict, over: dict) -> dict:
+    """Deep-merge ``over`` into ``base`` (dicts recurse; scalars/lists replace)."""
+    for key, val in over.items():
+        if isinstance(val, dict) and isinstance(base.get(key), dict):
+            _deep_merge(base[key], val)
+        else:
+            base[key] = val
+    return base
+
+
+def _process_one_exposure(
+    rec,
+    workers: int,
+    out_suffix: str = "",
+    *,
+    flat: str | None = None,
+    write_mask: bool = False,
+    file_tag: str = "",
+    config_overrides: dict | None = None,
+) -> dict:
     import argparse as _ap
 
     import fitsio
@@ -436,6 +495,8 @@ def _process_one_exposure(rec, workers: int, out_suffix: str = "", *, flat: str 
     safe = rec["safe_id"]
     with open(CONFIG_PATH) as fh:
         config = yaml.safe_load(fh)
+    if config_overrides:
+        config = _deep_merge(config, config_overrides)
     hdul_input = fitsio.FITS(str(in_path), "r")
     try:
         hdus = cli.get_hdus_to_process(hdul_input, None)
@@ -584,8 +645,7 @@ def _write_markdown(report: dict, sweep: dict, cprofile_note: str, *, out_md=Non
     lines = [
         "# MegaCam per-stage profile",
         "",
-        f"arch={hdr.get('arch')} cpu={hdr.get('cpu_count')} "
-        f"platform={hdr.get('platform')} config={hdr.get('config')}",
+        f"arch={hdr.get('arch')} cpu={hdr.get('cpu_count')} platform={hdr.get('platform')} config={hdr.get('config')}",
         f"exposures={hdr.get('n_exposures')} hdus={hdr.get('n_hdus')} "
         f"total_wall={report['total_wall_s']:.1f}s hdu_wall={report['hdu_wall_s']:.1f}s "
         f"mpix={report['mpix_total']:.1f} mpix/s={report['mpix_per_s']:.3f}",
@@ -602,7 +662,9 @@ def _write_markdown(report: dict, sweep: dict, cprofile_note: str, *, out_md=Non
         lines.append(f"| {k} | {s['total_s']:.2f} | {s['mean_per_hdu_s']:.3f} | {s['share']:.3f} |")
     lines += ["", "## Per-exposure wall", "", "| exposure | hdus | wall_s | mpix |", "| --- | --- | --- | --- |"]
     for e in report["per_exposure"]:
-        lines.append(f"| {e['safe_id']} | {e['nhdus_processed']}/{e['nhdus_expected']} | {e['wall_s']:.1f} | {e['mpix']:.1f} |")
+        lines.append(
+            f"| {e['safe_id']} | {e['nhdus_processed']}/{e['nhdus_expected']} | {e['wall_s']:.1f} | {e['mpix']:.1f} |"
+        )
     lines += ["", "## Scaling sweep (first exposure only)", ""]
     if sweep:
         lines.append("| workers | wall_s |")
@@ -615,7 +677,9 @@ def _write_markdown(report: dict, sweep: dict, cprofile_note: str, *, out_md=Non
     (out_md or PERF_MD).write_text("\n".join(lines) + "\n")
 
 
-def _run_cprofile_first_hdu(first_rec: dict, *, flat: str | None = None, out_txt=None) -> str:
+def _run_cprofile_first_hdu(
+    first_rec: dict, *, flat: str | None = None, out_txt=None, config_overrides: dict | None = None
+) -> str:
     import fitsio
     import yaml
 
@@ -625,6 +689,8 @@ def _run_cprofile_first_hdu(first_rec: dict, *, flat: str | None = None, out_txt
     in_path = ROOT / first_rec["file"]
     with open(CONFIG_PATH) as fh:
         config = yaml.safe_load(fh)
+    if config_overrides:
+        config = _deep_merge(config, config_overrides)
     hdul = fitsio.FITS(str(in_path), "r")
     hdul_flat = fitsio.FITS(str(flat), "r") if flat else None
     try:
@@ -648,7 +714,11 @@ def _run_cprofile_first_hdu(first_rec: dict, *, flat: str | None = None, out_txt
     ps.print_stats(40)
     out_txt = out_txt or CPROFILE_TXT
     out_txt.write_text(buf.getvalue())
-    return f"single HDU (exposure {first_rec['safe_id']} hdu {mid} flat={bool(flat)}) top-40 cumulative -> {out_txt.name}"
+    return (
+        f"single HDU (exposure {first_rec['safe_id']} hdu {mid} flat={bool(flat)}) top-40 cumulative -> {out_txt.name}"
+    )
+
+
 def main(argv=None) -> int:
     ap = argparse.ArgumentParser(description="MegaCam 10-exposure perf harness.")
     ap.add_argument("--resolve-only", action="store_true")
@@ -659,11 +729,37 @@ def main(argv=None) -> int:
     ap.add_argument("--tag", type=str, default="", help="Report/output tag (e.g. 'flat'); default untagged.")
     ap.add_argument("--masks", action="store_true", help="Also write integer mask maps.")
     ap.add_argument("--resume", action="store_true", help="Skip exposures already in checkpoint_<tag>.json.")
+    ap.add_argument(
+        "--exposure-ids",
+        type=str,
+        default="",
+        help="Comma-separated safe_id allowlist applied after resolve; empty means all resolved.",
+    )
+    ap.add_argument(
+        "--config-set",
+        action="append",
+        default=[],
+        metavar="dotted.key=value",
+        help="Repeatable config override (values YAML-parsed, deep-merged over weightmask.yml).",
+    )
     args = ap.parse_args(argv)
     records = resolve_exposures(force=args.force_resolve)
+    config_overrides = _parse_config_sets(args.config_set)
+    if config_overrides:
+        print(f"Config overrides: {json.dumps(config_overrides, sort_keys=True)}")
+    if args.exposure_ids.strip():
+        allow = {s.strip() for s in args.exposure_ids.split(",") if s.strip()}
+        before = [rec["safe_id"] for rec in records]
+        records = [rec for rec in records if rec["safe_id"] in allow]
+        missing = sorted(allow - set(before))
+        if missing:
+            raise SystemExit(f"--exposure-ids has no resolved record for: {', '.join(missing)}")
+        if not records:
+            raise SystemExit("--exposure-ids filtered out every exposure; aborting.")
+        print(f"Exposure allowlist: {sorted(allow)} -> {len(records)} exposure(s).")
     if args.resolve_only:
-        if len(records) != 10:
-            print(f"ERROR: expected 10 exposures, have {len(records)}")
+        if not records:
+            print("ERROR: no exposures resolved.")
             return 1
         return 0
 
@@ -679,17 +775,16 @@ def main(argv=None) -> int:
         if not Path(flat).exists():
             raise SystemExit(f"--flat file not found: {flat}")
         from tests.benchmarks.download_data import validate_case_file
-        valid, reason = validate_case_file(
-            {"expected_instrument": "MegaPrime", "expected_detector": "MegaCam"}, flat
-        )
+
+        valid, reason = validate_case_file({"expected_instrument": "MegaPrime", "expected_detector": "MegaCam"}, flat)
         if not valid:
             raise SystemExit(f"--flat validation failed: {reason}")
-        FLATS_JSON.write_text(json.dumps({"flat_publisherID": FLAT_PID, "file": str(Path(flat).relative_to(ROOT))}, indent=2) + "\n")
-        print(f"Pinned flat {flat} -> {FLATS_JSON}")
-
-    # (a) sequential pass over all 10 x all HDUs.
+        FLATS_JSON.write_text(
+            json.dumps({"flat_publisherID": FLAT_PID, "file": str(Path(flat).relative_to(ROOT))}, indent=2) + "\n"
+        )
+    # (a) sequential pass over all resolved exposures x all HDUs.
     variant = f"with-flats ({flat})" if flat else "no-flat"
-    print(f"Running sequential {variant} pass (workers=1) over 10 exposures x all HDUs...")
+    print(f"Running sequential {variant} pass (workers=1) over {len(records)} exposures x all HDUs...")
     checkpoint = OUT_DIR / f"checkpoint{suffix}.json"
     done: dict[str, dict] = {}
     if args.resume and checkpoint.exists():
@@ -708,7 +803,16 @@ def main(argv=None) -> int:
             per_exp.append(done[rec["safe_id"]])
             continue
         print(f"--- exposure {rec['safe_id']} ---")
-        per_exp.append(_process_one_exposure(rec, 1, flat=flat, write_mask=args.masks, file_tag=(f".{args.tag}" if args.tag else "")))
+        per_exp.append(
+            _process_one_exposure(
+                rec,
+                1,
+                flat=flat,
+                write_mask=args.masks,
+                file_tag=(f".{args.tag}" if args.tag else ""),
+                config_overrides=config_overrides,
+            )
+        )
         checkpoint.write_text(json.dumps(per_exp, indent=2) + "\n")
     total_wall = time.perf_counter() - t_all
 
@@ -730,13 +834,13 @@ def main(argv=None) -> int:
             if w == 1:
                 sweep["1"] = float(per_exp[0]["wall_s"])
                 continue
-            r = _process_one_exposure(first, eff, out_suffix=f".sweep{w}")
+            r = _process_one_exposure(first, eff, out_suffix=f".sweep{w}", config_overrides=config_overrides)
             sweep[str(w)] = float(r["wall_s"])
     else:
         sweep["1"] = float(per_exp[0]["wall_s"])
 
     # (c) single-HDU cProfile.
-    note = _run_cprofile_first_hdu(first, flat=flat, out_txt=cprofile_txt)
+    note = _run_cprofile_first_hdu(first, flat=flat, out_txt=cprofile_txt, config_overrides=config_overrides)
 
     extra = {"variant": ("with-flats" if flat else "no-flat"), "tag": args.tag or "baseline"}
     if flat:
@@ -753,7 +857,15 @@ def main(argv=None) -> int:
         print(f"Running extra full pass at workers={args.workers}...")
         t1 = time.perf_counter()
         for rec in records:
-            _process_one_exposure(rec, int(args.workers), out_suffix=f".w{args.workers}", flat=flat, write_mask=args.masks, file_tag=(f".{args.tag}" if args.tag else ""))
+            _process_one_exposure(
+                rec,
+                int(args.workers),
+                out_suffix=f".w{args.workers}",
+                flat=flat,
+                write_mask=args.masks,
+                file_tag=(f".{args.tag}" if args.tag else ""),
+                config_overrides=config_overrides,
+            )
         print(f"Extra pass wall: {time.perf_counter() - t1:.1f}s")
     return 0
 
