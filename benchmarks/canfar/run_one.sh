@@ -157,6 +157,7 @@ if flat0:
         except OSError:
             import shutil
             shutil.copy(flat0, flat_abs)
+os.makedirs("test_outputs/perf", exist_ok=True)
 json.dump(out, open("test_outputs/perf/exposures.json", "w"), indent=2)
 json.dump({"flat_rel": flat_rel}, open(os.path.join(job_dir, "flat.json"), "w"))
 print("staged exposures:", [r["safe_id"] for r in out], "flat:", flat_rel)
