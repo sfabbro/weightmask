@@ -52,21 +52,11 @@ def stage_mean(metrics, stage):
 
 def main(argv=None):
     argv = list(argv or sys.argv[1:])
-    manifest_path = None
-    if "--manifest" in argv:
-        i = argv.index("--manifest")
-        manifest_path = argv.pop(i + 1)
-        argv.pop(i)
     root = argv[0] if argv else os.path.join(
         os.environ.get("PROJECT_MOUNT", "/arc/projects/mlao/cfhtcast"),
         "weightmask-perf",
         "results",
     )
-    if manifest_path is None:
-        here = os.path.dirname(os.path.abspath(__file__))
-        manifest_path = os.path.join(here, "..", "canfar_experiments", "manifest.json")
-    manifest = json.load(open(manifest_path)) if os.path.exists(manifest_path) else {"groups": []}
-    groups = {g["exp_id"]: g for g in manifest.get("groups", [])}
 
     metrics = load_metrics(root)
     e0 = metrics.get("E0-w8", {})
