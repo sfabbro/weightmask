@@ -12,7 +12,8 @@
   },
   "code": {
     "branch": "wip/megacam-perf-profile",
-    "pinned_sha": "d763d3d498bd62c1c72b748b1f7c0053ed8a2b5d"
+    "pinned_sha": "132a8088cb90d6c4fd68008ddccf3ba4d216826e",
+    "pin_policy": "pinned_sha tracks the newest commit affecting job runtime (run_one.sh, harness, groups); Mac-side-only changes do not force a repin"
   },
   "defaults": {
     "cpu": 8,
