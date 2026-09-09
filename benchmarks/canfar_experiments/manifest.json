@@ -12,7 +12,7 @@
   },
   "code": {
     "branch": "wip/megacam-perf-profile",
-    "pinned_sha": "132a8088cb90d6c4fd68008ddccf3ba4d216826e"
+    "pinned_sha": "d763d3d498bd62c1c72b748b1f7c0053ed8a2b5d"
   },
   "defaults": {
     "cpu": 8,
@@ -135,7 +135,7 @@
       "safe_ids": [
         "1013965p"
       ],
-      "checkout": "d2cec774c75f93fc9deb65fd0cd7a06ab23fab6d"
+      "checkout": "a71676e9581d3cd3001fbbcd7955771f4dd95582"
     },
     {
       "config_set": {
