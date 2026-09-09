@@ -1,175 +1,330 @@
 {
-    "branch": {"E2": "wip/exp-E2 (SHA in E2.checkout)", "E3": "none \u2014 pure config-set, verified S4"},
-    "campaign": "weightmask CANFAR headless speed experiments",
-    "campaign_paths": {
-        "data": "/arc/projects/mlao/cfhtcast/cfhtcast-data/",
-        "project_mount": "/arc/projects/mlao/cfhtcast/",
-        "results": "<project>/weightmask-perf/results/<exp-id>/",
-        "work": "<project>/weightmask-perf/"
-    },
-    "code": {"branch": "wip/megacam-perf-profile", "pinned_sha": "6c681bb3cd8cbdfd58c96c85e4c7e98c5477ad44"},
-    "defaults": {
-        "cpu": 8,
-        "image": "skaha/base-notebook:latest",
-        "image_id": "c7e8dbec40d1",
-        "memory_gb": 32,
-        "pixi": "/opt/conda/bin/pixi (in-image, verified 2026-09-09)"
-    },
-    "exposure_selection": {
-        "baseline_excluded_obs": [
-            "1013719",
-            "1013720",
-            "1013721",
-            "1013942",
-            "1013943",
-            "1013944",
-            "1013948",
-            "1013949",
-            "1013950",
-            "1013951"
-        ],
-        "diversity_swap": "1030215p (4th i-band, stride pick) replaced by 1022175p (first g.MP9401 p-product in publisherID order) so E6 exercises a non-r flat; stride order otherwise kept verbatim",
-        "method": "CAOM2 TOP 200 MegaPrime OBJECT, Plane.time_exposure > 500, ORDER BY publisherID; p-products only; deterministic stride start=7 stride=11 over 90 non-baseline p-candidates",
-        "query_time": "2026-09-09"
-    },
-    "flat_convention": {
-        "fallback": "try .36.02, then .36.01 (g .36.01 verified 389 MB MEF 2026-09-09), then .36.00",
-        "url_pattern": "https://www.cadc-ccda.hia-iha.nrc-cnrc.gc.ca/data/pub/CFHT/<flat_safe_id>.fits.fz (verified pattern for science + g flat)",
-        "variant_note": ".36.02 is the full-mosaic MEF (37 HDUs, matches local flat_08Bm01_r.fits.fz tied to FLAT_PID ...36.02)"
-    },
-    "groups": [
+  "branch": {
+    "E2": "wip/exp-E2 (SHA in E2.checkout)",
+    "E3": "none \u2014 pure config-set, verified S4"
+  },
+  "campaign": "weightmask CANFAR headless speed experiments",
+  "campaign_paths": {
+    "data": "/arc/projects/mlao/cfhtcast/cfhtcast-data/",
+    "project_mount": "/arc/projects/mlao/cfhtcast/",
+    "results": "<project>/weightmask-perf/results/<exp-id>/",
+    "work": "<project>/weightmask-perf/"
+  },
+  "code": {
+    "branch": "wip/megacam-perf-profile",
+    "pinned_sha": "e6956908cb05232ba0f1417838f549c516484dc1"
+  },
+  "defaults": {
+    "cpu": 8,
+    "image": "skaha/base-notebook:latest",
+    "image_id": "c7e8dbec40d1",
+    "memory_gb": 32,
+    "pixi": "/opt/conda/bin/pixi (in-image, verified 2026-09-09)"
+  },
+  "exposure_selection": {
+    "baseline_excluded_obs": [
+      "1013719",
+      "1013720",
+      "1013721",
+      "1013942",
+      "1013943",
+      "1013944",
+      "1013948",
+      "1013949",
+      "1013950",
+      "1013951"
+    ],
+    "diversity_swap": "1030215p (4th i-band, stride pick) replaced by 1022175p (first g.MP9401 p-product in publisherID order) so E6 exercises a non-r flat; stride order otherwise kept verbatim",
+    "method": "CAOM2 TOP 200 MegaPrime OBJECT, Plane.time_exposure > 500, ORDER BY publisherID; p-products only; deterministic stride start=7 stride=11 over 90 non-baseline p-candidates",
+    "query_time": "2026-09-09"
+  },
+  "flat_convention": {
+    "fallback": "try .36.02, then .36.01 (g .36.01 verified 389 MB MEF 2026-09-09), then .36.00",
+    "url_pattern": "https://www.cadc-ccda.hia-iha.nrc-cnrc.gc.ca/data/pub/CFHT/<flat_safe_id>.fits.fz (verified pattern for science + g flat)",
+    "variant_note": ".36.02 is the full-mosaic MEF (37 HDUs, matches local flat_08Bm01_r.fits.fz tied to FLAT_PID ...36.02)"
+  },
+  "groups": [
+    {
+      "config_set": {},
+      "env": {},
+      "exp_id": "E0",
+      "flat_paths": [
+        "benchmark_data/megacam/perf/flat_08Bm01_r.fits.fz"
+      ],
+      "flat_publisherIDs": [
+        "ivo://cadc.nrc.ca/CFHT?08Bm01.flat.r.36.02/08Bm01.flat.r.36.02"
+      ],
+      "flat_safe_ids": [
+        "08Bm01.flat.r.36.02"
+      ],
+      "jobs": [
         {
-            "config_set": {},
-            "env": {},
-            "exp_id": "E0",
-            "flat_paths": ["benchmark_data/megacam/perf/flat_08Bm01_r.fits.fz"],
-            "flat_publisherIDs": ["ivo://cadc.nrc.ca/CFHT?08Bm01.flat.r.36.02/08Bm01.flat.r.36.02"],
-            "flat_safe_ids": ["08Bm01.flat.r.36.02"],
-            "jobs": [{"tag": "w8", "workers": 8}, {"tag": "w1", "workers": 1}],
-            "publisherIDs": ["ivo://cadc.nrc.ca/CFHT?1013719/1013719p"],
-            "purpose": "calibration: current tree, workers 8 + workers 1 twin for the single efficiency pair; control masks all other groups diff against",
-            "safe_ids": ["1013719p"],
-            "checkout": null
+          "tag": "w8",
+          "workers": 8
         },
         {
-            "config_set": {"streak_masking.enable": false},
-            "env": {},
-            "exp_id": "E1",
-            "flat_paths": ["08Bm02.flat.r.36.02.fits.fz"],
-            "flat_publisherIDs": ["ivo://cadc.nrc.ca/CFHT?08Bm02.flat.r.36.02/08Bm02.flat.r.36.02"],
-            "flat_safe_ids": ["08Bm02.flat.r.36.02"],
-            "jobs": [{"tag": "w8", "workers": 8}],
-            "publisherIDs": ["ivo://cadc.nrc.ca/CFHT?1022107/1022107p"],
-            "purpose": "no-streaks: isolates non-streak cost, bounds maximum streak prize",
-            "safe_ids": ["1022107p"],
-            "checkout": null
-        },
-        {
-            "config_set": {"streak_masking.satdet_params.presmooth_median_size": 7},
-            "env": {},
-            "exp_id": "E2",
-            "flat_paths": ["08Bm01.flat.i2.36.02.fits.fz"],
-            "flat_publisherIDs": ["ivo://cadc.nrc.ca/CFHT?08Bm01.flat.i2.36.02/08Bm01.flat.i2.36.02"],
-            "flat_safe_ids": ["08Bm01.flat.i2.36.02"],
-            "jobs": [{"tag": "w8", "workers": 8}],
-            "note": "branch: presmooth_median_size knob (default 15) + lazy corridor prepare; floor -8 s/HDU",
-            "publisherIDs": ["ivo://cadc.nrc.ca/CFHT?1013965/1013965p"],
-            "purpose": "presmooth variants (branch: smaller window or hoisted single call)",
-            "safe_ids": ["1013965p"],
-            "checkout": "TBD wip/exp-E2 SHA (S4)"
-        },
-        {
-            "config_set": {
-                "streak_masking.satdet_params.max_candidates": 4,
-                "streak_masking.houghpeak_params.max_candidates": 3,
-                "streak_masking.mrt_rescue_params.max_candidates": 2
-            },
-            "env": {},
-            "exp_id": "E3",
-            "flat_paths": ["08Bm02.flat.r.36.02.fits.fz"],
-            "flat_publisherIDs": ["ivo://cadc.nrc.ca/CFHT?08Bm02.flat.r.36.02/08Bm02.flat.r.36.02"],
-            "flat_safe_ids": ["08Bm02.flat.r.36.02"],
-            "jobs": [{"tag": "w8", "workers": 8}],
-            "note": "halved caps via config-set (corridor_work_cap derives 10x, streaks.py:378); floor -8 s/HDU",
-            "publisherIDs": ["ivo://cadc.nrc.ca/CFHT?1022185/1022185p"],
-            "purpose": "corridors: halved corridor_work_cap/max_candidates",
-            "safe_ids": ["1022185p"],
-            "checkout": null
-        },
-        {
-            "config_set": {"cosmic_ray.faint_cr.enable": false, "cosmic_ray.niter": 1},
-            "env": {},
-            "exp_id": "E4",
-            "flat_paths": ["08Bm02.flat.u.36.02.fits.fz"],
-            "flat_publisherIDs": ["ivo://cadc.nrc.ca/CFHT?08Bm02.flat.u.36.02/08Bm02.flat.u.36.02"],
-            "flat_safe_ids": ["08Bm02.flat.u.36.02"],
-            "jobs": [{"tag": "w8", "workers": 8}],
-            "note": "floor: halve cosmics (~-4.5 s/HDU)",
-            "publisherIDs": ["ivo://cadc.nrc.ca/CFHT?1022469/1022469p"],
-            "purpose": "cosmics: niter=1 + faint pass off (u-band)",
-            "safe_ids": ["1022469p"],
-            "checkout": null
-        },
-        {
-            "config_set": {},
-            "env": {"MKL_NUM_THREADS": "1", "OMP_NUM_THREADS": "1"},
-            "exp_id": "E5",
-            "flat_paths": ["08Bm02.flat.r.36.02.fits.fz"],
-            "flat_publisherIDs": ["ivo://cadc.nrc.ca/CFHT?08Bm02.flat.r.36.02/08Bm02.flat.r.36.02"],
-            "flat_safe_ids": ["08Bm02.flat.r.36.02"],
-            "jobs": [{"tag": "w8-pinned", "workers": 8}, {"tag": "w8-unset", "workers": 8}],
-            "note": "identical masks required between twins",
-            "publisherIDs": ["ivo://cadc.nrc.ca/CFHT?1021824/1021824p"],
-            "purpose": "threads: OMP/MKL=1 vs unset twin; picks parallel-efficiency setting",
-            "safe_ids": ["1021824p"],
-            "checkout": null
-        },
-        {
-            "config_set": {},
-            "env": {},
-            "exp_id": "E6",
-            "flat_paths": ["08Bm02.flat.g.36.02.fits.fz"],
-            "flat_publisherIDs": ["ivo://cadc.nrc.ca/CFHT?08Bm02.flat.g.36.02/08Bm02.flat.g.36.02"],
-            "flat_safe_ids": ["08Bm02.flat.g.36.02"],
-            "jobs": [{"tag": "w8", "workers": 8}],
-            "note": "g-band exercises non-r flat path + tactic-D parallel behavior at 8 workers",
-            "publisherIDs": ["ivo://cadc.nrc.ca/CFHT?1022175/1022175p"],
-            "purpose": "flats: g-band exposure x flat variant, flat-mask cost",
-            "safe_ids": ["1022175p"],
-            "checkout": null
-        },
-        {
-            "config_set": {},
-            "env": {},
-            "exp_id": "E7",
-            "flat_paths": ["08Bm01.flat.i2.36.02.fits.fz", "08Bm02.flat.i2.36.02.fits.fz"],
-            "flat_publisherIDs": [
-                "ivo://cadc.nrc.ca/CFHT?08Bm01.flat.i2.36.02/08Bm01.flat.i2.36.02",
-                "ivo://cadc.nrc.ca/CFHT?08Bm02.flat.i2.36.02/08Bm02.flat.i2.36.02"
-            ],
-            "flat_safe_ids": ["08Bm01.flat.i2.36.02", "08Bm02.flat.i2.36.02"],
-            "jobs": [{"tag": "w8", "workers": 8}],
-            "note": "same filter, crowding contrast aims later replacements",
-            "publisherIDs": ["ivo://cadc.nrc.ca/CFHT?1014060/1014060p", "ivo://cadc.nrc.ca/CFHT?1030179/1030179p"],
-            "purpose": "fields: crowded Serpens South + sparse SCL-2241_P2, no code change",
-            "safe_ids": ["1014060p", "1030179p"],
-            "checkout": null
-        },
-        {
-            "config_set": {},
-            "env": {},
-            "exp_id": "E8",
-            "flat_paths": ["TBD from promoted winners (subset of E2/E4/E6 flats)"],
-            "flat_publisherIDs": [],
-            "flat_safe_ids": [],
-            "jobs": [{"tag": "w8", "workers": 8}],
-            "note": "runs last; promotes to main line on green gates",
-            "publisherIDs": [
-                "TBD (up to 3: prefer E2 1013965p + E4 1022469p + E6 1022175p for max filter/crowding spread)"
-            ],
-            "purpose": "winners: combined promoted replacements from E2-E4, confirmation run",
-            "safe_ids": ["TBD"],
-            "checkout": null
+          "tag": "w1",
+          "workers": 1
         }
-    ]
+      ],
+      "publisherIDs": [
+        "ivo://cadc.nrc.ca/CFHT?1013719/1013719p"
+      ],
+      "purpose": "calibration: current tree, workers 8 + workers 1 twin for the single efficiency pair; control masks all other groups diff against",
+      "safe_ids": [
+        "1013719p"
+      ],
+      "checkout": null
+    },
+    {
+      "config_set": {
+        "streak_masking.enable": false
+      },
+      "env": {},
+      "exp_id": "E1",
+      "flat_paths": [
+        "08Bm02.flat.r.36.02.fits.fz"
+      ],
+      "flat_publisherIDs": [
+        "ivo://cadc.nrc.ca/CFHT?08Bm02.flat.r.36.02/08Bm02.flat.r.36.02"
+      ],
+      "flat_safe_ids": [
+        "08Bm02.flat.r.36.02"
+      ],
+      "jobs": [
+        {
+          "tag": "w8",
+          "workers": 8
+        }
+      ],
+      "publisherIDs": [
+        "ivo://cadc.nrc.ca/CFHT?1022107/1022107p"
+      ],
+      "purpose": "no-streaks: isolates non-streak cost, bounds maximum streak prize",
+      "safe_ids": [
+        "1022107p"
+      ],
+      "checkout": null
+    },
+    {
+      "config_set": {
+        "streak_masking.satdet_params.presmooth_median_size": 7
+      },
+      "env": {},
+      "exp_id": "E2",
+      "flat_paths": [
+        "08Bm01.flat.i2.36.02.fits.fz"
+      ],
+      "flat_publisherIDs": [
+        "ivo://cadc.nrc.ca/CFHT?08Bm01.flat.i2.36.02/08Bm01.flat.i2.36.02"
+      ],
+      "flat_safe_ids": [
+        "08Bm01.flat.i2.36.02"
+      ],
+      "jobs": [
+        {
+          "tag": "w8",
+          "workers": 8
+        }
+      ],
+      "note": "branch: presmooth_median_size knob (default 15) + lazy corridor prepare; floor -8 s/HDU",
+      "publisherIDs": [
+        "ivo://cadc.nrc.ca/CFHT?1013965/1013965p"
+      ],
+      "purpose": "presmooth variants (branch: smaller window or hoisted single call)",
+      "safe_ids": [
+        "1013965p"
+      ],
+      "checkout": "d2cec774c75f93fc9deb65fd0cd7a06ab23fab6d"
+    },
+    {
+      "config_set": {
+        "streak_masking.satdet_params.max_candidates": 4,
+        "streak_masking.houghpeak_params.max_candidates": 3,
+        "streak_masking.mrt_rescue_params.max_candidates": 2
+      },
+      "env": {},
+      "exp_id": "E3",
+      "flat_paths": [
+        "08Bm02.flat.r.36.02.fits.fz"
+      ],
+      "flat_publisherIDs": [
+        "ivo://cadc.nrc.ca/CFHT?08Bm02.flat.r.36.02/08Bm02.flat.r.36.02"
+      ],
+      "flat_safe_ids": [
+        "08Bm02.flat.r.36.02"
+      ],
+      "jobs": [
+        {
+          "tag": "w8",
+          "workers": 8
+        }
+      ],
+      "note": "halved caps via config-set (corridor_work_cap derives 10x, streaks.py:378); floor -8 s/HDU",
+      "publisherIDs": [
+        "ivo://cadc.nrc.ca/CFHT?1022185/1022185p"
+      ],
+      "purpose": "corridors: halved corridor_work_cap/max_candidates",
+      "safe_ids": [
+        "1022185p"
+      ],
+      "checkout": null
+    },
+    {
+      "config_set": {
+        "cosmic_ray.faint_cr.enable": false,
+        "cosmic_ray.niter": 1
+      },
+      "env": {},
+      "exp_id": "E4",
+      "flat_paths": [
+        "08Bm02.flat.u.36.02.fits.fz"
+      ],
+      "flat_publisherIDs": [
+        "ivo://cadc.nrc.ca/CFHT?08Bm02.flat.u.36.02/08Bm02.flat.u.36.02"
+      ],
+      "flat_safe_ids": [
+        "08Bm02.flat.u.36.02"
+      ],
+      "jobs": [
+        {
+          "tag": "w8",
+          "workers": 8
+        }
+      ],
+      "note": "floor: halve cosmics (~-4.5 s/HDU)",
+      "publisherIDs": [
+        "ivo://cadc.nrc.ca/CFHT?1022469/1022469p"
+      ],
+      "purpose": "cosmics: niter=1 + faint pass off (u-band)",
+      "safe_ids": [
+        "1022469p"
+      ],
+      "checkout": null
+    },
+    {
+      "config_set": {},
+      "env": {
+        "MKL_NUM_THREADS": "1",
+        "OMP_NUM_THREADS": "1"
+      },
+      "exp_id": "E5",
+      "flat_paths": [
+        "08Bm02.flat.r.36.02.fits.fz"
+      ],
+      "flat_publisherIDs": [
+        "ivo://cadc.nrc.ca/CFHT?08Bm02.flat.r.36.02/08Bm02.flat.r.36.02"
+      ],
+      "flat_safe_ids": [
+        "08Bm02.flat.r.36.02"
+      ],
+      "jobs": [
+        {
+          "tag": "w8-pinned",
+          "workers": 8
+        },
+        {
+          "tag": "w8-unset",
+          "workers": 8
+        }
+      ],
+      "note": "identical masks required between twins",
+      "publisherIDs": [
+        "ivo://cadc.nrc.ca/CFHT?1021824/1021824p"
+      ],
+      "purpose": "threads: OMP/MKL=1 vs unset twin; picks parallel-efficiency setting",
+      "safe_ids": [
+        "1021824p"
+      ],
+      "checkout": null
+    },
+    {
+      "config_set": {},
+      "env": {},
+      "exp_id": "E6",
+      "flat_paths": [
+        "08Bm02.flat.g.36.02.fits.fz"
+      ],
+      "flat_publisherIDs": [
+        "ivo://cadc.nrc.ca/CFHT?08Bm02.flat.g.36.02/08Bm02.flat.g.36.02"
+      ],
+      "flat_safe_ids": [
+        "08Bm02.flat.g.36.02"
+      ],
+      "jobs": [
+        {
+          "tag": "w8",
+          "workers": 8
+        }
+      ],
+      "note": "g-band exercises non-r flat path + tactic-D parallel behavior at 8 workers",
+      "publisherIDs": [
+        "ivo://cadc.nrc.ca/CFHT?1022175/1022175p"
+      ],
+      "purpose": "flats: g-band exposure x flat variant, flat-mask cost",
+      "safe_ids": [
+        "1022175p"
+      ],
+      "checkout": null
+    },
+    {
+      "config_set": {},
+      "env": {},
+      "exp_id": "E7",
+      "flat_paths": [
+        "08Bm01.flat.i2.36.02.fits.fz",
+        "08Bm02.flat.i2.36.02.fits.fz"
+      ],
+      "flat_publisherIDs": [
+        "ivo://cadc.nrc.ca/CFHT?08Bm01.flat.i2.36.02/08Bm01.flat.i2.36.02",
+        "ivo://cadc.nrc.ca/CFHT?08Bm02.flat.i2.36.02/08Bm02.flat.i2.36.02"
+      ],
+      "flat_safe_ids": [
+        "08Bm01.flat.i2.36.02",
+        "08Bm02.flat.i2.36.02"
+      ],
+      "jobs": [
+        {
+          "tag": "w8",
+          "workers": 8
+        }
+      ],
+      "note": "same filter, crowding contrast aims later replacements",
+      "publisherIDs": [
+        "ivo://cadc.nrc.ca/CFHT?1014060/1014060p",
+        "ivo://cadc.nrc.ca/CFHT?1030179/1030179p"
+      ],
+      "purpose": "fields: crowded Serpens South + sparse SCL-2241_P2, no code change",
+      "safe_ids": [
+        "1014060p",
+        "1030179p"
+      ],
+      "checkout": null
+    },
+    {
+      "config_set": {},
+      "env": {},
+      "exp_id": "E8",
+      "flat_paths": [
+        "TBD from promoted winners (subset of E2/E4/E6 flats)"
+      ],
+      "flat_publisherIDs": [],
+      "flat_safe_ids": [],
+      "jobs": [
+        {
+          "tag": "w8",
+          "workers": 8
+        }
+      ],
+      "note": "runs last; promotes to main line on green gates",
+      "publisherIDs": [
+        "TBD (up to 3: prefer E2 1013965p + E4 1022469p + E6 1022175p for max filter/crowding spread)"
+      ],
+      "purpose": "winners: combined promoted replacements from E2-E4, confirmation run",
+      "safe_ids": [
+        "TBD"
+      ],
+      "checkout": null
+    }
+  ]
 }
