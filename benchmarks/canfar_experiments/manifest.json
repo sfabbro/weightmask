@@ -8,7 +8,8 @@
     "data": "/arc/projects/mlao/cfhtcast/cfhtcast-data/",
     "project_mount": "/arc/projects/mlao/cfhtcast/",
     "results": "<project>/weightmask-perf/results/<exp-id>/",
-    "work": "<project>/weightmask-perf/"
+    "work": "<project>/weightmask-perf/",
+    "pixi_cache": "$JOB_DIR/pixi-cache (per-job on scratch; shared cache deadlocks \u2014 2026-09-09)"
   },
   "code": {
     "branch": "wip/megacam-perf-profile",
@@ -19,8 +20,7 @@
     "cpu": 8,
     "image": "skaha/base-notebook:latest",
     "image_id": "c7e8dbec40d1",
-    "memory_gb": 32,
-    "pixi": "/opt/conda/bin/pixi (in-image, verified 2026-09-09)"
+    "memory_gb": 32
   },
   "exposure_selection": {
     "baseline_excluded_obs": [

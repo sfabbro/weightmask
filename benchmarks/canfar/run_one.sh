@@ -38,7 +38,11 @@ DATA_NOTE=""
 
 echo "== run_one $EXP_ID/$JOB_TAG =="
 echo "bootstrap=$BOOTSTRAP sha=$MANIFEST_SHA checkout=$CHECKOUT_REF scratch=$SCR_BASE keep_all=$KEEP_ALL"
-mkdir -p "$JOB_DIR" "$RESULTS_DIR" "$PIXI_CACHE_DIR"
+mkdir -p "$JOB_DIR" "$RESULTS_DIR"
+# Per-job pixi cache on scratch: a shared cache deadlocks across containers
+# (stale locks survive killed jobs) and network-FS linking is slow.
+PIXI_CACHE_DIR="${PIXI_CACHE_DIR:-$JOB_DIR/pixi-cache}"
+mkdir -p "$PIXI_CACHE_DIR"
 export PIXI_CACHE_DIR
 export PYTHONUNBUFFERED=1
 MANIFEST="$BOOTSTRAP/benchmarks/canfar_experiments/manifest.json"
