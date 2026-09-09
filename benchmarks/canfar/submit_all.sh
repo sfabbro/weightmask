@@ -53,6 +53,9 @@ do_setup() {
     id="$(echo "$out" | grab_id)"
     # clone fails if the dir already exists; fall through to checkout either way
     wait_for "$id" || true
+    out="$(canfar create headless "$IMAGE" --name wm-fetch --cpu 1 --memory 4 -- git -C "$BOOTSTRAP" fetch origin)"
+    echo "$out"
+    wait_for "$(echo "$out" | grab_id)"
     out="$(canfar create headless "$IMAGE" --name wm-checkout --cpu 1 --memory 4 -- git -C "$BOOTSTRAP" checkout "$SHA")"
     echo "$out"
     wait_for "$(echo "$out" | grab_id)"
