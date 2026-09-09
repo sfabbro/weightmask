@@ -3,10 +3,10 @@
 
 Runs on CANFAR against the project mount (stdlib only) or locally on a
 mirrored results dir:
-  python3 benchmarks/canfar/aggregate.py [results_root] [--manifest PATH]
 
-Writes results/table.md: one row per job with wall, efficiency, maxRSS,
-stage deltas vs E0, mask-diff, and floor/gate checklist. Promotion itself
+  python3 benchmarks/canfar/aggregate.py [results_root]
+Writes results/table.md with wall, efficiency, maxRSS, stage deltas, mask-diff,
+and floor/gate checklist. Promotion itself
 stays manual: winners need floor met + gates green
 (`pixi run test`, `benchmark-megacam` suite, `streak_inject.py` recall for
 streak-touching variants); then append before/after rows to
