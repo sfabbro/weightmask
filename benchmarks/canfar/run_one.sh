@@ -6,11 +6,10 @@
 #   /bin/bash <bootstrap>/benchmarks/canfar/run_one.sh <EXP_ID> <JOB_TAG>
 #
 # Proven outer-layer constraints (2026-09-09 probes, recorded in manifest):
-# - outer CMD+args are joined/split on spaces; shell one-liners do NOT survive.
-#   This script is a FILE on the project mount, so full shell works here.
-# - `canfar logs` captures stdout only; /usr/bin/time -v writes to stderr.
-#   Hence `-o time.txt` plus explicit SUMMARY echoes to stdout.
-# - image skaha/base-notebook:latest has pixi at /opt/conda/bin/pixi.
+# - outer CMD+args are split on spaces server-side and `$` expands. This
+#   script is a FILE on the project mount, so full shell works here.
+# - `canfar logs` captures stdout only; resource numbers come from harness
+#   rusage (exact: the backend is threaded) via the parallel-pass sidecar.
 #
 # Env (all but MANIFEST_SHA have defaults):
 #   MANIFEST_SHA   repo commit to run (required; from manifest.json code.pinned_sha)
@@ -179,37 +178,45 @@ FLAT_REL="$(python3 -c "import json;print(json.load(open('$JOB_DIR/flat.json'))[
 if [ -n "$FLAT_REL" ]; then ARGS+=(--flat "$FLAT_REL"); fi
 
 echo "harness args: ${ARGS[*]}"
-/usr/bin/time -v -o "$JOB_DIR/time.txt" "$PIXI" run python benchmarks/perf_megacam.py "${ARGS[@]}"
-if [ ! -s "$JOB_DIR/time.txt" ]; then echo "ERROR: time.txt missing — harness run failed"; exit 1; fi
+JOB_T0=$SECONDS
+"$PIXI" run python benchmarks/perf_megacam.py "${ARGS[@]}"
 "$PIXI" run python - "$JOB_DIR" "$RESULTS_DIR" "$EXP_ID" "$JOB_TAG" "$KEEP_ALL" <<'EOF'
-import glob, json, os, re, sys
+import glob, json, os, sys
 job_dir, res_dir, exp_id, job_tag, keep_all = sys.argv[1:6]
 keep_all = keep_all == "1"
 os.makedirs(res_dir, exist_ok=True)
 
-def parse_time(path):
-    txt = open(path).read()
-    m = re.search(r"Elapsed \(wall clock\) time.*?:\s*(\d+):([\d.]+)", txt)
-    wall = float(m.group(1)) * 60 + float(m.group(2)) if m else None
-    def num(pat):
-        mm = re.search(pat, txt)
-        return float(mm.group(1)) if mm else None
-    return {"wall_s": wall,
-            "max_rss_kb": num(r"Maximum resident set size.*?:\s*(\d+)"),
-            "cpu_percent": num(r"Percent of CPU.*?:\s*(\d+)")}
-t = parse_time(os.path.join(job_dir, "time.txt"))
-wall = t["wall_s"]
-
-
 tag = f"{exp_id}-{job_tag}"
 repo = os.getcwd()
-perf = json.load(open(os.path.join(repo, "test_outputs", "perf", f"megacam_perf_{tag}.json")))
-hdr, stages = perf.get("header", {}), perf.get("stages", {})
-nhdus = sum(e.get("nhdus_processed", 0) for e in perf.get("per_exposure", []))
-mpix = float(perf.get("mpix_total", 0.0))
-per_stage = {k: {"total_s": float(v.get("total_s", 0.0)),
-                 "mean_per_hdu_s": float(v.get("mean_per_hdu_s", 0.0)),
-                 "share": float(v.get("share", 0.0))} for k, v in stages.items()}
+perf_dir = os.path.join(repo, "test_outputs", "perf")
+# Prefer the parallel-pass sidecar (exact w8 wall/peak/CPU); fall back to the
+# sequential report for workers=1 jobs. rusage is exact: backend is threaded.
+workers = json.load(open(os.path.join(job_dir, "group.json")))["job"]["workers"]
+sidecar_path = os.path.join(perf_dir, f"megacam_pass_{tag}.w{workers}.json")
+if int(workers) != 1 and os.path.exists(sidecar_path):
+    side = json.load(open(sidecar_path))
+    wall = float(side["extra_pass_wall_s"])
+    max_rss = float(side["peak_rss_kb"])
+    cpu_s = float(side["cpu_s"])
+    mpix = float(side["mpix_total"])
+    nhdus = int(side["nhdus"])
+    per_stage = {k: {"total_s": float(v.get("total_s", 0.0)),
+                     "mean_per_hdu_s": float(v.get("mean_per_hdu_s", 0.0)),
+                     "share": float(v.get("share", 0.0))} for k, v in side.get("stages", {}).items()}
+    source = os.path.basename(sidecar_path)
+else:
+    perf = json.load(open(os.path.join(perf_dir, f"megacam_perf_{tag}.json")))
+    stages = perf.get("stages", {})
+    nhdus = sum(e.get("nhdus_processed", 0) for e in perf.get("per_exposure", []))
+    mpix = float(perf.get("mpix_total", 0.0))
+    wall = float(sum(float(e.get("wall_s", 0.0)) for e in perf.get("per_exposure", [])))
+    max_rss = float(max([float(e.get("peak_rss_kb", 0.0)) for e in perf.get("per_exposure", [])] or [0.0]))
+    cpu_s = float(sum(float(e.get("cpu_s", 0.0)) for e in perf.get("per_exposure", [])))
+    per_stage = {k: {"total_s": float(v.get("total_s", 0.0)),
+                     "mean_per_hdu_s": float(v.get("mean_per_hdu_s", 0.0)),
+                     "share": float(v.get("share", 0.0))} for k, v in stages.items()}
+    source = f"megacam_perf_{tag}.json"
+cpu_percent = (cpu_s / wall * 100.0) if wall else None
 
 masks = sorted(glob.glob(os.path.join(repo, "test_outputs", "perf", "*.mask.fits")))
 ctrl_dir = os.path.join(os.path.dirname(res_dir), "E0-w8")
@@ -265,17 +272,17 @@ for p in masks:
         checksums[os.path.basename(p)] = "error:" + str(e)[:60]
 
 metrics = {"exp_id": exp_id, "job_tag": job_tag, "wall_s": wall,
-           "max_rss_kb": t["max_rss_kb"], "cpu_percent": t["cpu_percent"],
-           "parallel_efficiency": (t["cpu_percent"] / 800.0) if t["cpu_percent"] else None,
+           "max_rss_kb": max_rss, "cpu_percent": cpu_percent,
+           "parallel_efficiency": (cpu_percent / 800.0) if cpu_percent else None,
            "mpix": mpix, "mpix_s": (mpix / wall) if wall else None,
            "nhdus": nhdus, "per_stage": per_stage, "mask_diff": diff,
-           "mask_checksums": checksums,
+           "mask_checksums": checksums, "source": source,
            "harness_report": f"megacam_perf_{tag}.json"}
 json.dump(metrics, open(os.path.join(res_dir, "metrics.json"), "w"), indent=2)
 
 import shutil
 for name in (f"megacam_perf_{tag}.json", f"megacam_perf_{tag}.md", f"cprofile_hdu_{tag}.txt",
-             f"checkpoint_{tag}.json"):
+             f"checkpoint_{tag}.json", source):
     src = os.path.join(repo, "test_outputs", "perf", name)
     if os.path.exists(src):
         shutil.copy(src, res_dir)
@@ -287,5 +294,5 @@ print("mask_diff:", json.dumps(diff)[:300])
 print("results:", res_dir, "keep_all:", keep_all)
 EOF
 
-echo "SUMMARY $EXP_ID/$JOB_TAG wall=$(python3 -c "import json;print(json.load(open('$RESULTS_DIR/metrics.json'))['wall_s'])")s rss=$(python3 -c "import json;print(json.load(open('$RESULTS_DIR/metrics.json'))['max_rss_kb'])")KB"
+echo "SUMMARY $EXP_ID/$JOB_TAG wall=$(python3 -c "import json;print(json.load(open('$RESULTS_DIR/metrics.json'))['wall_s'])")s rss=$(python3 -c "import json;print(json.load(open('$RESULTS_DIR/metrics.json'))['max_rss_kb'])")KB job_wall_s=$((SECONDS - JOB_T0))"
 echo "results in $RESULTS_DIR"

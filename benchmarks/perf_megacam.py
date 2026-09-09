@@ -557,6 +557,15 @@ def _process_one_exposure(
         )
     finally:
         wall = time.perf_counter() - t0
+        try:
+            import resource as _resource
+
+            _ru = _resource.getrusage(_resource.RUSAGE_SELF)
+            # Linux ru_maxrss is KiB; macOS reports bytes.
+            _rss_kb = float(_ru.ru_maxrss) / 1024.0 if sys.platform == "darwin" else float(_ru.ru_maxrss)
+            _cpu_s = float(_ru.ru_utime + _ru.ru_stime)
+        except Exception:
+            _rss_kb, _cpu_s = 0.0, 0.0
         _uninstall_timing_collector(orig, proc_mod, mef_mod)
         try:
             hdul_input.close()
@@ -596,6 +605,8 @@ def _process_one_exposure(
         "wall_s": float(wall),
         "mpix": float(mpix),
         "stage_totals": stage_totals,
+        "peak_rss_kb": float(_rss_kb),
+        "cpu_s": float(_cpu_s),
     }
 
 
@@ -853,20 +864,51 @@ def main(argv=None) -> int:
     print(f"Wrote {perf_json} and {perf_md}")
 
     # Optional extra pass at a requested worker count (Step 5 comparison).
+    # CANFAR jobs consume this sidecar (wall/peak/CPU/stages of the parallel
+    # pass); per-exposure rusage is exact because the backend is threaded.
     if args.workers is not None and int(args.workers) != 1:
         print(f"Running extra full pass at workers={args.workers}...")
         t1 = time.perf_counter()
+        wpass: list[dict] = []
         for rec in records:
-            _process_one_exposure(
-                rec,
-                int(args.workers),
-                out_suffix=f".w{args.workers}",
-                flat=flat,
-                write_mask=args.masks,
-                file_tag=(f".{args.tag}" if args.tag else ""),
-                config_overrides=config_overrides,
+            wpass.append(
+                _process_one_exposure(
+                    rec,
+                    int(args.workers),
+                    out_suffix=f".w{args.workers}",
+                    flat=flat,
+                    write_mask=args.masks,
+                    file_tag=(f".{args.tag}" if args.tag else ""),
+                    config_overrides=config_overrides,
+                )
             )
-        print(f"Extra pass wall: {time.perf_counter() - t1:.1f}s")
+        wwall = time.perf_counter() - t1
+        print(f"Extra pass wall: {wwall:.1f}s")
+        wstages: dict[str, float] = {}
+        for e in wpass:
+            for k, v in (e.get("stage_totals") or {}).items():
+                wstages[k] = wstages.get(k, 0.0) + float(v)
+        wnhdus = sum(int(e.get("nhdus_processed", 0)) for e in wpass)
+        sidecar = {
+            "tag": args.tag or "baseline",
+            "workers": int(args.workers),
+            "extra_pass_wall_s": float(wwall),
+            "mpix_total": float(sum(float(e.get("mpix", 0.0)) for e in wpass)),
+            "nhdus": int(wnhdus),
+            "peak_rss_kb": float(max([float(e.get("peak_rss_kb", 0.0)) for e in wpass] or [0.0])),
+            "cpu_s": float(sum(float(e.get("cpu_s", 0.0)) for e in wpass)),
+            "stages": {
+                k: {
+                    "total_s": float(v),
+                    "mean_per_hdu_s": float(v / wnhdus) if wnhdus else 0.0,
+                    "share": float(v / max(sum(wstages.values()), 1e-9)),
+                }
+                for k, v in wstages.items()
+            },
+        }
+        sidecar_path = OUT_DIR / f"megacam_pass{suffix}.w{args.workers}.json"
+        sidecar_path.write_text(json.dumps(sidecar, indent=2) + "\n")
+        print(f"Wrote {sidecar_path}")
     return 0
 
 
