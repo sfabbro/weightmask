@@ -20,8 +20,10 @@ from __future__ import annotations
 
 import argparse
 import cProfile
+import io
 import json
 import platform
+import pstats
 import shutil
 import sys
 import threading
@@ -609,7 +611,7 @@ def _write_markdown(report: dict, sweep: dict, cprofile_note: str, *, out_md=Non
             lines.append(f"| {w} | {sweep[w]:.1f} |")
     else:
         lines.append("n/a")
-    lines += ["", "## cProfile", "", cprofile_note, ""]
+    lines += ["", "## cProfile", "", cprofile_note or "n/a", ""]
     (out_md or PERF_MD).write_text("\n".join(lines) + "\n")
 
 
@@ -641,6 +643,12 @@ def _run_cprofile_first_hdu(first_rec: dict, *, flat: str | None = None, out_txt
     pr.enable()
     _orig(sci, hdr, flat_data, config, 1024)
     pr.disable()
+    buf = io.StringIO()
+    ps = pstats.Stats(pr, stream=buf).sort_stats("cumulative")
+    ps.print_stats(40)
+    out_txt = out_txt or CPROFILE_TXT
+    out_txt.write_text(buf.getvalue())
+    return f"single HDU (exposure {first_rec['safe_id']} hdu {mid} flat={bool(flat)}) top-40 cumulative -> {out_txt.name}"
 def main(argv=None) -> int:
     ap = argparse.ArgumentParser(description="MegaCam 10-exposure perf harness.")
     ap.add_argument("--resolve-only", action="store_true")
