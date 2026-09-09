@@ -166,6 +166,21 @@ EOF
 ARGS=(--tag "$EXP_ID-$JOB_TAG" --masks --resume)
 ARGS+=(--workers "$(python3 -c "import json;print(json.load(open('$GROUP_JSON'))['job']['workers'])")")
 ARGS+=(--exposure-ids "$(python3 -c "import json;print(','.join(json.load(open('$GROUP_JSON'))['group']['safe_ids']))")")
+while IFS= read -r kv; do ARGS+=(--config-set "$kv"); done < <(python3 -c "
+import json
+g = json.load(open('$GROUP_JSON'))['group']
+def flat(prefix, d):
+    for k, v in d.items():
+        if isinstance(v, dict): yield from flat(prefix + k + '.', v)
+        else: yield prefix + k + '=' + json.dumps(v)
+for kv in flat('', g.get('config_set', {})): print(kv)
+")
+FLAT_REL="$(python3 -c "import json;print(json.load(open('$JOB_DIR/flat.json'))['flat_rel'] or '')")"
+if [ -n "$FLAT_REL" ]; then ARGS+=(--flat "$FLAT_REL"); fi
+
+echo "harness args: ${ARGS[*]}"
+/usr/bin/time -v -o "$JOB_DIR/time.txt" "$PIXI" run python benchmarks/perf_megacam.py "${ARGS[@]}"
+if [ ! -s "$JOB_DIR/time.txt" ]; then echo "ERROR: time.txt missing — harness run failed"; exit 1; fi
 "$PIXI" run python - "$JOB_DIR" "$RESULTS_DIR" "$EXP_ID" "$JOB_TAG" "$KEEP_ALL" <<'EOF'
 import glob, json, os, re, sys
 job_dir, res_dir, exp_id, job_tag, keep_all = sys.argv[1:6]
