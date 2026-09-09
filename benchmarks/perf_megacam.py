@@ -422,7 +422,7 @@ def _uninstall_timing_collector(orig, proc_mod, mef_mod):
     mef_mod.process_image = orig
 
 
-def _process_one_exposure(rec, workers: int, out_suffix: str = "", *, flat: str | None = None, write_mask: bool = False) -> dict:
+def _process_one_exposure(rec, workers: int, out_suffix: str = "", *, flat: str | None = None, write_mask: bool = False, file_tag: str = "") -> dict:
     import argparse as _ap
 
     import fitsio
@@ -455,7 +455,7 @@ def _process_one_exposure(rec, workers: int, out_suffix: str = "", *, flat: str 
     except OSError:
         file_bytes = 0
 
-    tag = f"{safe}{out_suffix}.w{workers}"
+    tag = f"{safe}{out_suffix}{file_tag}.w{workers}"
     if flat:
         tag += ".flat"
     args = _ap.Namespace(
@@ -700,7 +700,7 @@ def main(argv=None) -> int:
             per_exp.append(done[rec["safe_id"]])
             continue
         print(f"--- exposure {rec['safe_id']} ---")
-        per_exp.append(_process_one_exposure(rec, 1, flat=flat, write_mask=args.masks))
+        per_exp.append(_process_one_exposure(rec, 1, flat=flat, write_mask=args.masks, file_tag=(f".{args.tag}" if args.tag else "")))
         checkpoint.write_text(json.dumps(per_exp, indent=2) + "\n")
     total_wall = time.perf_counter() - t_all
 
@@ -745,7 +745,7 @@ def main(argv=None) -> int:
         print(f"Running extra full pass at workers={args.workers}...")
         t1 = time.perf_counter()
         for rec in records:
-            _process_one_exposure(rec, int(args.workers), out_suffix=f".w{args.workers}", flat=flat, write_mask=args.masks)
+            _process_one_exposure(rec, int(args.workers), out_suffix=f".w{args.workers}", flat=flat, write_mask=args.masks, file_tag=(f".{args.tag}" if args.tag else ""))
         print(f"Extra pass wall: {time.perf_counter() - t1:.1f}s")
     return 0
 
