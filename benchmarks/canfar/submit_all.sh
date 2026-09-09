@@ -34,7 +34,7 @@ REPO="https://github.com/astroai/weightmask.git"
 grab_id() { grep -oE 'ID: [a-z0-9]+' | head -n 1 | awk '{print $2}'; }
 
 wait_for() { # session_id
-    [ "$WAIT" = 1 ] || return 0
+    [ -n "${1:-}" ] || { echo "wait_for: empty session id"; return 1; }
     local id="$1" st=""
     for _ in $(seq 1 120); do
         st="$(canfar info "$id" 2>/dev/null | grep -E 'Status' | head -n 1 || true)"
