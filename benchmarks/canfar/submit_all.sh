@@ -65,6 +65,17 @@ do_setup() {
     echo "setup done"
 }
 
+registry_env_args() {
+    # Harbor pull credentials for astroai images: `canfar config set
+    # registry.username/secret` once, then every headless create carries them
+    # (canfar-lab convention). Skipped silently when unconfigured.
+    local cfgkey val
+    for cfgkey in username secret url; do
+        val="$(canfar config get "registry.$cfgkey" 2>/dev/null || true)"
+        case "$val" in ""|"null") ;; *) printf 'CANFAR_REGISTRY__%s=%s\n' "$(echo "$cfgkey" | tr '[:lower:]' '[:upper:]')" "$val";; esac
+    done
+}
+
 submit_job() { # exp_id job_tag -> echoes session id
     local exp="$1" tag="$2" name out
     name="wm-$(echo "$exp-$tag" | tr 'A-Z' 'a-z')"
@@ -80,6 +91,7 @@ m = json.load(open('$MANIFEST'))
 g = next(x for x in m['groups'] if x['exp_id'] == '$exp')
 for k, v in g.get('env', {}).items(): print(k + '=' + str(v))
 ")
+    while IFS= read -r kv; do env_args+=(--env "$kv"); done < <(registry_env_args)
     echo "== submit $name (keep=$keep) ==" >&2
     out="$(canfar create headless "$IMAGE" --name "$name" --cpu "$CPU" --memory "$MEM" \
         "${env_args[@]}" -- /bin/bash "$BOOTSTRAP/benchmarks/canfar/run_one.sh" "$exp" "$tag")"

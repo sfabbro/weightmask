@@ -18,9 +18,9 @@
   },
   "defaults": {
     "cpu": 8,
-    "image": "skaha/base-notebook:latest",
-    "image_id": "c7e8dbec40d1",
-    "memory_gb": 32
+    "image": "astroai/improc:latest",
+    "memory_gb": 32,
+    "image_note": "team image (was skaha/base-notebook for bootstrapping only \u2014 never for science jobs); needs Harbor creds via canfar config set registry.username/secret, passed as CANFAR_REGISTRY__* env"
   },
   "exposure_selection": {
     "baseline_excluded_obs": [
