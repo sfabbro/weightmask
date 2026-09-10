@@ -90,6 +90,7 @@ import json
 m = json.load(open('$MANIFEST'))
 g = next(x for x in m['groups'] if x['exp_id'] == '$exp')
 for k, v in g.get('env', {}).items(): print(k + '=' + str(v))
+for k, v in next(j for j in g['jobs'] if j['tag'] == '$tag').get('env', {}).items(): print(k + '=' + str(v))
 ")
     while IFS= read -r kv; do env_args+=(--env "$kv"); done < <(registry_env_args)
     echo "== submit $name (keep=$keep) ==" >&2

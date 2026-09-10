@@ -39,17 +39,28 @@ DATA_NOTE=""
 echo "== run_one $EXP_ID/$JOB_TAG =="
 echo "bootstrap=$BOOTSTRAP sha=$MANIFEST_SHA checkout=$CHECKOUT_REF scratch=$SCR_BASE keep_all=$KEEP_ALL"
 mkdir -p "$JOB_DIR" "$RESULTS_DIR"
-# Per-job pixi cache on scratch: a shared cache deadlocks across containers
-# (stale locks survive killed jobs) and network-FS linking is slow.
-PIXI_CACHE_DIR="${PIXI_CACHE_DIR:-$JOB_DIR/pixi-cache}"
+# Job-local pixi cache (forced: images may export a read-only shared one;
+# a shared cache also deadlocks across containers via stale locks).
+export PIXI_CACHE_DIR="$JOB_DIR/pixi-cache"
 mkdir -p "$PIXI_CACHE_DIR"
-export PIXI_CACHE_DIR
 export PYTHONUNBUFFERED=1
+# Thread env is unset by default so runs see full OpenBLAS/MKL threading.
+# The E5 pinned twin re-exports OMP/MKL=1 via its job env.
+unset OMP_NUM_THREADS MKL_NUM_THREADS
 MANIFEST="$BOOTSTRAP/benchmarks/canfar_experiments/manifest.json"
 GROUP_JSON="$JOB_DIR/group.json"
-# In-image pixi is too old for `[workspace]` (E0 probe 2026-09-09); install a
-# job-local pixi (fast, ~10 MB) and use it. Falls back to system pixi.
-PIXI="$JOB_DIR/pixi-home/bin/pixi"
+# Prefer a modern system pixi (needs >= 0.44 for `[workspace]`); otherwise
+# install a job-local one. The skaha fallback path predates workspace.
+pick_pixi() {
+    local v
+    if command -v pixi >/dev/null 2>&1 && v="$(pixi --version 2>/dev/null)" \
+        && [ "$(printf '%s\n' "$v" | grep -oE '[0-9]+\.[0-9]+' | head -n 1 | awk -F. '{print $1 * 1000 + $2}')" -ge 44 ]; then
+        command -v pixi
+    else
+        echo "$JOB_DIR/pixi-home/bin/pixi"
+    fi
+}
+PIXI="$(pick_pixi)"
 
 python3 - "$MANIFEST" "$EXP_ID" "$JOB_TAG" "$GROUP_JSON" <<'EOF'
 import json, sys
