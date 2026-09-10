@@ -20,7 +20,7 @@ HERE="$(cd "$(dirname "$0")" && pwd)"
 MANIFEST="$HERE/../canfar_experiments/manifest.json"
 PROJECT_MOUNT="${PROJECT_MOUNT:-/arc/projects/mlao/cfhtcast}"
 WORK_ROOT="$PROJECT_MOUNT/weightmask-perf"
-BOOTSTRAP="$WORK_ROOT/repos/bootstrap"
+BOOTSTRAP="${BOOTSTRAP:-$WORK_ROOT/repos/bootstrap2}"
 WAIT=1
 case " $* " in *" --no-wait "*) WAIT=0;; esac
 
