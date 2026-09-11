@@ -34,6 +34,34 @@ def load_metrics(root):
     return out
 
 
+def legacy_cpu_s(root, name, m):
+    """Reconstruct true CPU seconds for pre-delta metrics.
+
+    Legacy per-exposure cpu_s entries are process-cumulative snapshots, so a
+    naive sum overcounts. Reload the sidecar/report series from the results
+    dir and difference consecutive snapshots; the first exposure is estimated
+    by the median of the remaining deltas.
+    """
+    src = m.get("source", "")
+    if not src or m.get("cpu_basis") == "delta-v2":
+        return None
+    try:
+        doc = json.load(open(os.path.join(root, name, src)))
+    except Exception:
+        return None
+    series = [float(e.get("cpu_s", 0.0)) for e in doc.get("per_exposure", [])]
+    if not series:
+        return None
+    if len(series) == 1:
+        return series[0]
+    diffs = [b - a for a, b in zip(series, series[1:])]
+    diffs = [d for d in diffs if d >= 0]
+    if not diffs:
+        return series[-1]
+    first = sorted(diffs)[len(diffs) // 2]
+    return first + sum(diffs)
+
+
 def fmt(x, digits=1, scale=1.0):
     if x is None:
         return "-"
@@ -52,10 +80,14 @@ def stage_mean(metrics, stage):
 
 def main(argv=None):
     argv = list(argv or sys.argv[1:])
-    root = argv[0] if argv else os.path.join(
-        os.environ.get("PROJECT_MOUNT", "/arc/projects/mlao/cfhtcast"),
-        "weightmask-perf",
-        "results",
+    root = (
+        argv[0]
+        if argv
+        else os.path.join(
+            os.environ.get("PROJECT_MOUNT", "/arc/projects/mlao/cfhtcast"),
+            "weightmask-perf",
+            "results",
+        )
     )
 
     metrics = load_metrics(root)
@@ -89,7 +121,11 @@ def main(argv=None):
         if m.get("_error"):
             lines.append(f"| {name} | ERROR | - | - | - | - | - | {m['_error']} | - |")
             continue
-        exp = (m.get("exp_id") or name.split("-")[0])
+        exp = m.get("exp_id") or name.split("-")[0]
+        cpu_s = legacy_cpu_s(root, name, m)
+        if cpu_s is not None and m.get("wall_s"):
+            cpu_pct = cpu_s / float(m["wall_s"]) * 100.0
+            m = dict(m, cpu_percent=cpu_pct, parallel_efficiency=cpu_pct / 800.0, cpu_basis="reconstructed")
         wall = fmt(m.get("wall_s"))
         eff = fmt(m.get("parallel_efficiency"), 3)
         rss = fmt(m.get("max_rss_kb"), 0, 1 / 1024)

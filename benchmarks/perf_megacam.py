@@ -68,6 +68,9 @@ STAGE_KEYS = [
     "sky_mesh",
     "hdu_total",
 ]
+# RUSAGE_SELF counters are process-cumulative; successive _process_one_exposure
+# calls in one process must report deltas, not running totals.
+_LAST_CPU_S: float | None = None
 
 
 def _safe_id(publisher_id: str) -> str:
@@ -563,7 +566,10 @@ def _process_one_exposure(
             _ru = _resource.getrusage(_resource.RUSAGE_SELF)
             # Linux ru_maxrss is KiB; macOS reports bytes.
             _rss_kb = float(_ru.ru_maxrss) / 1024.0 if sys.platform == "darwin" else float(_ru.ru_maxrss)
-            _cpu_s = float(_ru.ru_utime + _ru.ru_stime)
+            _cpu_now = float(_ru.ru_utime + _ru.ru_stime)
+            global _LAST_CPU_S
+            _cpu_s = _cpu_now - _LAST_CPU_S if _LAST_CPU_S is not None else _cpu_now
+            _LAST_CPU_S = _cpu_now
         except Exception:
             _rss_kb, _cpu_s = 0.0, 0.0
         _uninstall_timing_collector(orig, proc_mod, mef_mod)
@@ -648,6 +654,7 @@ def _aggregate_report(per_exp: list[dict], total_wall: float, *, extra_header: d
         "mpix_per_s": float(mpix_total / total_wall) if total_wall > 0 else 0.0,
         "stages": stages,
         "per_exposure": per_exp,
+        "cpu_basis": "delta-v2",
     }
 
 
@@ -891,7 +898,7 @@ def main(argv=None) -> int:
         wnhdus = sum(int(e.get("nhdus_processed", 0)) for e in wpass)
         sidecar = {
             "tag": args.tag or "baseline",
-            "workers": int(args.workers),
+            "cpu_basis": "delta-v2",
             "extra_pass_wall_s": float(wwall),
             "mpix_total": float(sum(float(e.get("mpix", 0.0)) for e in wpass)),
             "nhdus": int(wnhdus),

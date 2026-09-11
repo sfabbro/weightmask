@@ -219,6 +219,7 @@ if int(workers) != 1 and os.path.exists(sidecar_path):
                      "mean_per_hdu_s": float(v.get("mean_per_hdu_s", 0.0)),
                      "share": float(v.get("share", 0.0))} for k, v in side.get("stages", {}).items()}
     source = os.path.basename(sidecar_path)
+    cpu_basis = side.get("cpu_basis", "legacy-cumulative")
 else:
     perf = json.load(open(os.path.join(perf_dir, f"megacam_perf_{tag}.json")))
     stages = perf.get("stages", {})
@@ -231,6 +232,7 @@ else:
                      "mean_per_hdu_s": float(v.get("mean_per_hdu_s", 0.0)),
                      "share": float(v.get("share", 0.0))} for k, v in stages.items()}
     source = f"megacam_perf_{tag}.json"
+    cpu_basis = perf.get("cpu_basis", "legacy-cumulative")
 cpu_percent = (cpu_s / wall * 100.0) if wall else None
 
 masks = sorted(glob.glob(os.path.join(repo, "test_outputs", "perf", "*.mask.fits")))
@@ -290,8 +292,7 @@ metrics = {"exp_id": exp_id, "job_tag": job_tag, "wall_s": wall,
            "max_rss_kb": max_rss, "cpu_percent": cpu_percent,
            "parallel_efficiency": (cpu_percent / 800.0) if cpu_percent else None,
            "mpix": mpix, "mpix_s": (mpix / wall) if wall else None,
-           "nhdus": nhdus, "per_stage": per_stage, "mask_diff": diff,
-           "mask_checksums": checksums, "source": source,
+           "mask_checksums": checksums, "source": source, "cpu_basis": cpu_basis,
            "harness_report": f"megacam_perf_{tag}.json"}
 json.dump(metrics, open(os.path.join(res_dir, "metrics.json"), "w"), indent=2)
 
