@@ -44,6 +44,7 @@ class QualityBit(IntFlag):
     DETECTED = 1 << 3
     STREAK = 1 << 4
     INVALID_VARIANCE = 1 << 5
+    NO_DATA = 1 << 6
 
     # Compact aliases retain the original WeightMask vocabulary.
     BAD = BAD_PIXEL
@@ -58,6 +59,7 @@ QUALITY_BITS = {
     "DETECTED": int(QualityBit.DETECTED),
     "STREAK": int(QualityBit.STREAK),
     "INVALID_VARIANCE": int(QualityBit.INVALID_VARIANCE),
+    "NO_DATA": int(QualityBit.NO_DATA),
 }
 QUALITY_BIT_NAMES = {
     int(bit): bit.name
@@ -68,6 +70,7 @@ QUALITY_BIT_NAMES = {
         QualityBit.DETECTED,
         QualityBit.STREAK,
         QualityBit.INVALID_VARIANCE,
+        QualityBit.NO_DATA,
     )
 }
 DEFAULT_ZERO_WEIGHT_BITS = (
@@ -76,6 +79,7 @@ DEFAULT_ZERO_WEIGHT_BITS = (
     | QualityBit.COSMIC_RAY
     | QualityBit.STREAK
     | QualityBit.INVALID_VARIANCE
+    | QualityBit.NO_DATA
 )
 
 

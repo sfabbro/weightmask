@@ -101,14 +101,18 @@ def extract_individual_masks(header_info: dict, mask_data):
         streak_mask = (
             individual_masks.get("streak", np.zeros(shape, dtype=bool)) if mask_data is not None else np.array([])
         )
+        nodata_mask = (
+            individual_masks.get("nodata", np.zeros(shape, dtype=bool)) if mask_data is not None else np.array([])
+        )
     else:
         bad_mask = np.zeros(shape, dtype=bool) if mask_data is not None else np.array([])
         sat_mask = np.zeros(shape, dtype=bool) if mask_data is not None else np.array([])
         cr_mask = np.zeros(shape, dtype=bool) if mask_data is not None else np.array([])
         obj_mask = np.zeros(shape, dtype=bool) if mask_data is not None else np.array([])
         streak_mask = np.zeros(shape, dtype=bool) if mask_data is not None else np.array([])
+        nodata_mask = np.zeros(shape, dtype=bool) if mask_data is not None else np.array([])
 
-    return bad_mask, sat_mask, cr_mask, obj_mask, streak_mask
+    return bad_mask, sat_mask, cr_mask, obj_mask, streak_mask, nodata_mask
 
 
 def _store_individual_masks(
@@ -121,6 +125,7 @@ def _store_individual_masks(
     cr_mask,
     obj_mask,
     streak_mask,
+    nodata_mask,
 ):
     if i not in output_data:
         output_data[i] = {}
@@ -149,6 +154,11 @@ def _store_individual_masks(
             "data": streak_mask.astype(np.uint8),
             "header": hdu_header,
             "name": f"STREAK_{hdu_name}",
+        },
+        "nodata": {
+            "data": nodata_mask.astype(np.uint8),
+            "header": hdu_header,
+            "name": f"NODATA_{hdu_name}",
         },
     }
 
@@ -240,6 +250,7 @@ def _store_output_maps(
     cr_mask,
     obj_mask,
     streak_mask,
+    nodata_mask,
     paths,
     sky_header=None,
 ):
@@ -296,6 +307,7 @@ def _store_output_maps(
             cr_mask,
             obj_mask,
             streak_mask,
+            nodata_mask,
         )
 
 
@@ -665,8 +677,10 @@ def process_all_hdus(
                     step = max(1, wpos.size // 20000)
                     conf_samples[i] = np.ascontiguousarray(wpos[::step])
                     conf_p99[i] = float(np.percentile(conf_samples[i], 99.0))
+            bad_mask, sat_mask, cr_mask, obj_mask, streak_mask, nodata_mask = extract_individual_masks(
+                header_info, mask_data
+            )
             process_success_count += 1
-            bad_mask, sat_mask, cr_mask, obj_mask, streak_mask = extract_individual_masks(header_info, mask_data)
             hdu_name = _nm if isinstance(_nm, str) and _nm else f"HDU{i}"
             hdu_header = _hdr_raw
             if hdu_header is None:
@@ -692,6 +706,7 @@ def process_all_hdus(
                 cr_mask,
                 obj_mask,
                 streak_mask,
+                nodata_mask,
                 paths,
                 sky_header=sky_header,
             )
@@ -812,7 +827,7 @@ def _make_output_writers(paths: dict, hdul_input, config: dict | None = None) ->
         if out_path:
             dt = mask_dt if key == "mask" else float_dt
             writers[key] = _StreamingMapWriter(out_path, hdul_input, primary_header, compress=compress, dtype=dt)
-    for mask_type in ("bad", "sat", "cr", "obj", "streak"):
+    for mask_type in ("bad", "sat", "cr", "obj", "streak", "nodata"):
         out_path = (paths.get("individual_mask_paths") or {}).get(mask_type)
         if out_path:
             writers[f"ind_{mask_type}"] = _StreamingMapWriter(
@@ -830,7 +845,7 @@ def _flush_hdu_output(writers: dict, hdu_output: dict, hdu_index: int) -> None:
             writers[key].write(hdu_index, entry["data"], entry["header"], entry["name"])
 
     individual = entry_map.get("individual_masks") or {}
-    for mask_type in ("bad", "sat", "cr", "obj", "streak"):
+    for mask_type in ("bad", "sat", "cr", "obj", "streak", "nodata"):
         entry = individual.get(mask_type)
         writer_key = f"ind_{mask_type}"
         if entry is not None and writer_key in writers:

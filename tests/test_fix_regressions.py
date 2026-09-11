@@ -441,5 +441,39 @@ class TestCosmicNiterForwarding(unittest.TestCase):
         self.assertEqual(out.shape, (32, 32))
 
 
+class TestNonIlluminatedNoData(unittest.TestCase):
+    def test_datasec_parses_to_exact_complement(self):
+        from weightmask.bad import detect_non_illuminated
+
+        hdr = {"DATASEC": "[33:2080,1:4612]", "CCDSIZE": "[1:2048,1:4612]"}
+        m = detect_non_illuminated((4644, 2112), hdr)
+        self.assertEqual(m.shape, (4644, 2112))
+        self.assertFalse(bool(m[0, 32]))
+        self.assertFalse(bool(m[4611, 2079]))
+        self.assertTrue(bool(m[0, 0]))
+        self.assertTrue(bool(m[0, 31]))
+        self.assertTrue(bool(m[0, 2080]))
+        self.assertTrue(bool(m[0, 2111]))
+        self.assertTrue(bool(m[4612, 1000]))
+        self.assertTrue(bool(m[4643, 1000]))
+        self.assertEqual(int(m.sum()), 4644 * 2112 - 4612 * 2048)
+
+    def test_missing_or_malformed_falls_back_to_empty(self):
+        from weightmask.bad import detect_non_illuminated
+
+        for hdr in ({}, {"DATASEC": None}, {"DATASEC": "nonsense"}, {"DATASEC": "[0:0,0:0]"}):
+            m = detect_non_illuminated((64, 64), hdr)
+            self.assertFalse(bool(m.any()))
+
+    def test_no_data_bit_forces_exact_zero_weight(self):
+        ivar = np.full((8, 8), 3.0, dtype=np.float32)
+        mask = np.zeros((8, 8), dtype=np.uint32)
+        mask[0, :] |= int(QualityBit.NO_DATA)
+        product = build_weight_product(ivar, mask)
+        self.assertTrue(bool((product.weight[0] == 0.0).all()))
+        self.assertTrue(bool((product.weight[1:] > 0).all()))
+        self.assertIn(int(QualityBit.NO_DATA), {int(b) for b in QualityBit})
+
+
 if __name__ == "__main__":
     unittest.main()

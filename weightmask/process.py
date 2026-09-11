@@ -8,7 +8,7 @@ import numpy as np
 
 from . import MASK_BITS, MASK_DTYPE
 from .background import estimate_background
-from .bad import compute_flat_bad_mask, detect_bad_pixels
+from .bad import compute_flat_bad_mask, detect_bad_pixels, detect_non_illuminated
 from .cosmics import detect_cosmic_rays
 from .objects import detect_objects
 from .satur import detect_saturated_pixels, grow_bleed_trails
@@ -221,6 +221,7 @@ def process_image(
     cr_mask = np.zeros(sci_shape, dtype=bool)
     obj_mask = np.zeros(sci_shape, dtype=bool)
     streak_mask = np.zeros(sci_shape, dtype=bool)
+    nodata_mask = np.zeros(sci_shape, dtype=bool)
 
     print("  (1/7) Processing Bad Pixel mask...")
     with _timed(timings, "bad_flat"):
@@ -246,7 +247,12 @@ def process_image(
                         bad_mask[tile_slice] |= flat_mask_bool_tile
         if badpix_mask is not None:
             bad_mask = bad_mask | badpix_mask
+        nodata_mask = detect_non_illuminated(sci_shape, sci_hdr)
+        n_nodata = int(np.count_nonzero(nodata_mask))
+        if n_nodata:
+            print(f"    Masking {n_nodata} non-illuminated (DATASEC-exterior) pixels NO_DATA.")
     final_mask_int[bad_mask] |= MASK_BITS["BAD"]
+    final_mask_int[nodata_mask] |= MASK_BITS["NO_DATA"]
 
     print("  (1.1/7) Detecting saturation on the full image...")
     with _timed(timings, "saturation"):
@@ -418,6 +424,7 @@ def process_image(
         "cr": cr_mask,
         "obj": obj_mask,
         "streak": streak_mask,
+        "nodata": nodata_mask,
     }
 
     hdu_elapsed = time.time() - hdu_start_time

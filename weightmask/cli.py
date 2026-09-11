@@ -267,6 +267,7 @@ def determine_output_paths(args: argparse.Namespace, input_path: str, config: di
             "cr": os.path.join(output_dir, f"{base_out}.cr.fits"),
             "obj": os.path.join(output_dir, f"{base_out}.obj.fits"),
             "streak": os.path.join(output_dir, f"{base_out}.streak.fits"),
+            "nodata": os.path.join(output_dir, f"{base_out}.nodata.fits"),
         }
 
     return {
@@ -392,9 +393,19 @@ def run_pipeline(argv=None) -> int:
             return 1
 
     process_success_count = process_all_hdus(
-        hdus_to_process, hdul_input, hdul_flat, config, paths, args, flat_path=flat_path, hdul_badpix=hdul_badpix,
-        hdul_dark=hdul_dark, max_workers=getattr(args, "max_workers", None),
-        input_path=input_path, badpix_path=badpix_path, dark_path=dark_path,
+        hdus_to_process,
+        hdul_input,
+        hdul_flat,
+        config,
+        paths,
+        args,
+        flat_path=flat_path,
+        hdul_badpix=hdul_badpix,
+        hdul_dark=hdul_dark,
+        max_workers=getattr(args, "max_workers", None),
+        input_path=input_path,
+        badpix_path=badpix_path,
+        dark_path=dark_path,
     )
 
     _cleanup_hdul(hdul_input, hdul_flat, hdul_badpix, hdul_dark)
