@@ -111,6 +111,21 @@ def _apply_morphological_dilation(crmask_bool, config):
     return crmask_bool
 
 
+def _axis_lengths(region):
+    """Major/minor axis lengths of a region across skimage versions.
+
+    skimage 0.26 renamed ``major_axis_length``/``minor_axis_length`` to
+    ``axis_major_length``/``axis_minor_length`` and deprecated the old names
+    (removal is scheduled for 2.0), so prefer the new spelling and fall back
+    for older skimage.
+    """
+    major = getattr(region, "axis_major_length", None)
+    minor = getattr(region, "axis_minor_length", None)
+    if major is None or minor is None:
+        major, minor = region.major_axis_length, region.minor_axis_length
+    return float(major), float(minor)
+
+
 def _post_filter_components(crmask_bool, sci_data, bkg_rms_map, config):
     """Reject large, diffuse components that are unlikely to be cosmic rays."""
     from skimage.measure import label, regionprops
@@ -167,7 +182,8 @@ def _filter_faint_components(crmask_bool, sci_data, bkg_rms_map, faint_cfg):
     for region in regionprops(labeled, intensity_image=sci_data):
         if not (min_area <= region.area <= max_area):
             continue
-        elongation = region.major_axis_length / max(region.minor_axis_length, 1e-9)
+        major_length, minor_length = _axis_lengths(region)
+        elongation = major_length / max(minor_length, 1e-9)
         if elongation < min_elongation:
             continue
         coords = region.coords
@@ -256,7 +272,9 @@ def detect_cosmic_rays(
                 psfsize=int(config.get("psfsize", 7)),
                 verbose=False,
             )
-            faint_kept = _filter_faint_components(np.ascontiguousarray(faint_raw.astype(bool)), sci_data, bkg_rms_map, faint_cfg)
+            faint_kept = _filter_faint_components(
+                np.ascontiguousarray(faint_raw.astype(bool)), sci_data, bkg_rms_map, faint_cfg
+            )
             n_faint = int(np.count_nonzero(faint_kept))
             if n_faint:
                 print(f"    Faint-CR pass kept {n_faint} pixels.")

@@ -13,6 +13,11 @@ flat_masking:
   dead_ccd_min_rel_dev: 0.10     # also require this fractional deviation from the MEF median
   dead_ccd_min_hdus: 8           # skip the veto on small MEFs (too few siblings)
   dead_ccd_badpix_fraction: 0.9  # if already this fraction BAD, treat the CCD as dead
+  bad_mask_cache: true           # reuse each flat HDU's bad-pixel mask across exposures
+                                 # (~20 s per 9.8 Mpix HDU otherwise); the key covers the
+                                 # flat's path/size/mtime, HDU index, tile size and every
+                                 # setting above, so a changed flat never reads a stale mask.
+  bad_mask_cache_dir: null       # null → <flat directory>/.weightmask_cache
 
 dark_masking:
   # Required for --dark_image; without this section the dark is ignored.
@@ -147,6 +152,10 @@ streak_masking:
     area_cut: 100.0              # pixels; minimum contour area
     radius_dev_cut: 0.5          # reject contours that look circular
   mrt_rescue_params:
+    enable: true                 # Radon rescue for faint/intermittent trails; it dominates
+                                 # the streak stage on a clean field (~35 s and ~350 MB per
+                                 # 9.8 Mpix HDU), so it can be switched off where fields are
+                                 # known to carry no such trails.
     theta_step_deg: 2.0          # deg; Radon angle sampling
     peak_threshold_sig: 4.2      # Radon-peak significance
     max_candidates: 4            # cap rescue lines

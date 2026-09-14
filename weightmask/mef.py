@@ -12,7 +12,7 @@ import fitsio
 import numpy as np
 
 from . import __version__
-from .bad import _get_global_median, compute_flat_bad_mask, detect_bad_pixels
+from .bad import _get_global_median, compute_flat_bad_mask_cached, detect_bad_pixels
 from .contract import (
     CONFIDENCE_SEMANTICS,
     INVERSE_VARIANCE_SEMANTICS,
@@ -64,7 +64,13 @@ def process_hdu(
         bad_mask = precomputed_bad_mask
     elif flat_data_full is not None:
         eff = _effective_tile_size(tile_size, sci_data_full.shape)
-        bad_mask = compute_flat_bad_mask(flat_data_full, config.get("flat_masking", {}), eff)
+        bad_mask = compute_flat_bad_mask_cached(
+            flat_data_full,
+            config.get("flat_masking", {}),
+            eff,
+            flat_path=flat_path,
+            hdu_index=hdu_index,
+        )
 
     badpix_mask = None
     if hdu_badpix is not None:
@@ -331,8 +337,10 @@ def _rescale_confidence_to_global(paths, writers, conf_samples, conf_p99, config
     if not np.isfinite(global_p99) or global_p99 <= 0:
         return
     factors = {i: p99 / global_p99 for i, p99 in conf_p99.items() if p99 > 0}
-    compress = bool((config or {}).get("output_params", {}).get("compress", False))
-    wcomp = "RICE_1" if (compress or str(map_path).endswith(".fz")) else "NOT_SET"
+    # Rewriting an existing HDU: only pass ``compress`` when actually
+    # compressing. fitsio ignores/ warns about a placeholder value.
+    compress = bool((config or {}).get("output_params", {}).get("compress", False)) or str(map_path).endswith(".fz")
+    write_kwargs = {"compress": "RICE_1"} if compress else {}
     try:
         with fitsio.FITS(map_path, "rw") as f:
             for hdu_index, factor in factors.items():
@@ -340,7 +348,7 @@ def _rescale_confidence_to_global(paths, writers, conf_samples, conf_p99, config
                 if pos is None or pos >= len(f):
                     continue
                 data = f[pos].read()
-                f[pos].write(np.clip(data * factor, 0.0, 1.0).astype(np.float32), compress=wcomp)
+                f[pos].write(np.clip(data * factor, 0.0, 1.0).astype(np.float32), **write_kwargs)
     except OSError as e:
         print(f"  WARNING: confidence global rescale failed: {e}")
         return
@@ -419,6 +427,44 @@ def _hdu_at(hdul, index: int):
         return None
 
 
+# Per-CCD identifier keys, most specific first. MegaCam frames carry the
+# physical CCD id in CCDNAME (e.g. '8341-7-5'); CCDNAM is the older spelling
+# of the same thing. 'CCD' is deliberately absent: on MegaCam it holds the
+# detector model ('Marconi/EEV CCD42-90'), identical for all 36 HDUs, so
+# naming from it would give every product in the file the same EXTNAME.
+_CCD_IDENTIFIER_KEYS = ("CCDNAME", "CCDNAM")
+
+
+def _hdu_identifier(hdu, header, index: int) -> str:
+    """Output-name token for one HDU: its CCD id, else its own name, else the index.
+
+    The input's ``EXTNAME`` is a tiling-compression artifact and fitsio's image
+    HDUs expose no ``name``, so every product used to be named from its
+    position alone (``MAP_HDU1``). Naming them after the CCD id instead
+    (``MAP_8341-7-5``) makes each HDU self-describing.
+    """
+    for key in _CCD_IDENTIFIER_KEYS:
+        value = None
+        if header is not None:
+            try:
+                value = header.get(key)
+            except Exception:
+                value = None
+        if isinstance(value, bytes):
+            value = value.decode(errors="replace")
+        if value is None or isinstance(value, str) and not value.strip():
+            continue
+        token = "-".join(str(value).split()).replace("/", "-")
+        if token:
+            return token
+    name = getattr(hdu, "name", None)
+    if isinstance(name, bytes):
+        name = name.decode(errors="replace")
+    if isinstance(name, str) and name.strip():
+        return name.strip()
+    return f"HDU{index}"
+
+
 def _open_hdu_handles(
     i: int,
     *,
@@ -467,11 +513,7 @@ def _open_hdu_handles(
                 hdu_header_raw = fi[i].read_header()
             except Exception:
                 hdu_header_raw = None
-            try:
-                tmp_n = fi[i]
-                hdu_name = getattr(tmp_n, "name", f"HDU{i}") if hasattr(tmp_n, "name") else f"HDU{i}"
-            except Exception:
-                hdu_name = f"HDU{i}"
+            hdu_name = _hdu_identifier(hdu_sci, hdu_header_raw, i)
             return hdu_sci, hdu_flat_obj, hdu_badpix_obj, hdu_header_raw, hdu_name, close, None
 
         hdu_sci = hdul_input[i]
@@ -481,11 +523,7 @@ def _open_hdu_handles(
             hdu_header_raw = hdul_input[i].read_header()
         except Exception:
             hdu_header_raw = None
-        try:
-            tmp = hdul_input[i]
-            hdu_name = getattr(tmp, "name", f"HDU{i}") if hasattr(tmp, "name") else f"HDU{i}"
-        except Exception:
-            hdu_name = f"HDU{i}"
+        hdu_name = _hdu_identifier(hdu_sci, hdu_header_raw, i)
         return hdu_sci, hdu_flat_obj, hdu_badpix_obj, hdu_header_raw, hdu_name, close, None
     except Exception as e:
         close()
@@ -515,8 +553,9 @@ def process_all_hdus(
     through the container memory limit when several exposures were processed
     concurrently and OOM-killed the batch.
     Parallel by default: per-HDU ThreadPoolExecutor; single-HDU inputs run
-    inline (per-file fast path). Compute runs concurrently, writes are
-    applied in HDU-index order for deterministic output.
+    inline (per-file fast path). Compute runs concurrently, but only one
+    worker-window of HDUs sits ahead of the writer, and writes are applied in
+    HDU-index order for deterministic output.
     """
     if max_workers is None:
         max_workers = getattr(args, "max_workers", None)
@@ -644,33 +683,14 @@ def process_all_hdus(
         finally:
             close()
 
-    results: dict = {}
-    if len(hdus_to_process) <= 1 or eff_workers <= 1:
-        for i in hdus_to_process:
-            _i, _res, _hdr, _nm = _compute_one(i)
-            results[_i] = (_res, _hdr, _nm)
-    else:
-        npool = max(1, min(eff_workers, len(hdus_to_process)))
-        with concurrent.futures.ThreadPoolExecutor(max_workers=npool) as ex:
-            futs = {ex.submit(_compute_one, i): i for i in hdus_to_process}
-            for fut in concurrent.futures.as_completed(futs):
-                try:
-                    _i, _res, _hdr, _nm = fut.result()
-                except Exception as e:
-                    import traceback
-
-                    _i = futs[fut]
-                    print(f"FATAL ERROR processing HDU {_i}: {e}\n{traceback.format_exc()}")
-                    results[_i] = ((None, None, None, None, None, None), None, f"HDU{_i}")
-                    continue
-                results[_i] = (_res, _hdr, _nm)
-    for i in hdus_to_process:
-        _res, _hdr_raw, _nm = results.get(i, ((None, None, None, None, None, None), None, f"HDU{i}"))
+    def _emit(i, result, hdu_header_raw, hdu_name_raw):
+        """Store and flush one HDU's products (releases its arrays immediately)."""
+        nonlocal process_success_count
         try:
-            if _res is None or _res[0] is None:
+            if result is None or result[0] is None:
                 print(f"Skipping HDU {i} due to processing errors.")
-                continue
-            (mask_data, inv_var_data, weight_map, confidence_map, sky_map, header_info) = _res
+                return
+            (mask_data, inv_var_data, weight_map, confidence_map, sky_map, header_info) = result
             if conf_scope == "per_exposure" and weight_map is not None:
                 wpos = weight_map[weight_map > 0]
                 if wpos.size > 0:
@@ -681,8 +701,8 @@ def process_all_hdus(
                 header_info, mask_data
             )
             process_success_count += 1
-            hdu_name = _nm if isinstance(_nm, str) and _nm else f"HDU{i}"
-            hdu_header = _hdr_raw
+            hdu_name = hdu_name_raw if isinstance(hdu_name_raw, str) and hdu_name_raw else f"HDU{i}"
+            hdu_header = hdu_header_raw
             if hdu_header is None:
                 hdu_header = fitsio.FITSHDR()
             hdu_header = _strip_compression_keywords(hdu_header)
@@ -715,6 +735,44 @@ def process_all_hdus(
             import traceback
 
             print(f"FATAL ERROR processing HDU {i}: {e}\n{traceback.format_exc()}")
+
+    # Each HDU leaves memory as soon as it is produced, and at most
+    # ``workers_n`` HDUs are ever computed ahead of the writer, so peak memory
+    # stays at a few CCDs instead of the whole MEF's (~8 GB for 36 MegaPrime
+    # CCDs). Writes still happen in HDU order, so output files are identical to
+    # the previously fully-buffered path.
+    workers_n = max(1, min(eff_workers, len(hdus_to_process)))
+    if workers_n <= 1:
+        for i in hdus_to_process:
+            _emit(i, *_compute_one(i)[1:])
+    else:
+        with concurrent.futures.ThreadPoolExecutor(max_workers=workers_n) as ex:
+            in_flight: dict = {}
+            queue = iter(hdus_to_process)
+
+            def _submit_next() -> bool:
+                i = next(queue, None)
+                if i is None:
+                    return False
+                in_flight[i] = ex.submit(_compute_one, i)
+                return True
+
+            for _ in range(workers_n):
+                if not _submit_next():
+                    break
+            for i in hdus_to_process:
+                fut = in_flight.pop(i, None)
+                if fut is None:  # pragma: no cover - the window always holds the next index
+                    continue
+                try:
+                    _i, _res, _hdr, _nm = fut.result()
+                except Exception as e:
+                    import traceback
+
+                    print(f"FATAL ERROR processing HDU {i}: {e}\n{traceback.format_exc()}")
+                    _i, _res, _hdr, _nm = i, (None, None, None, None, None, None), None, f"HDU{i}"
+                _emit(_i, _res, _hdr, _nm)
+                _submit_next()
     if conf_scope == "per_exposure" and conf_samples:
         _rescale_confidence_to_global(paths, writers, conf_samples, conf_p99, config)
     return process_success_count
@@ -755,12 +813,14 @@ class _StreamingMapWriter:
 
     def write(self, hdu_index: int, data, header, extname: str) -> None:
         data = self._prep(data)
-        comp = "RICE_1" if self.compress else "NOT_SET"
+        # Only pass ``compress`` when compressing: fitsio warns about (and
+        # ignores) a placeholder value such as "NOT_SET".
+        kwargs = {"compress": "RICE_1"} if self.compress else {}
         with self._lock:
             if not self._opened:
                 single_hdu0 = hdu_index == 0 and len(self.hdul_input) == 1
                 if single_hdu0:
-                    fitsio.write(self.out_path, data, header=header, clobber=True, compress=comp)
+                    fitsio.write(self.out_path, data, header=header, clobber=True, **kwargs)
                     self._opened = True
                     self.positions[hdu_index] = 0
                     self._next_data_pos = 1
@@ -772,14 +832,14 @@ class _StreamingMapWriter:
                     primary_data = None
                     primary_header = self.primary_header
                     self._next_data_pos = 1
-                fitsio.write(self.out_path, primary_data, header=primary_header, clobber=True, compress=comp)
+                fitsio.write(self.out_path, primary_data, header=primary_header, clobber=True, **kwargs)
                 self._opened = True
                 if hdu_index == 0:
                     self.positions[hdu_index] = 0
                     self._next_data_pos = 1
                     return
             with fitsio.FITS(self.out_path, "rw") as f_out:
-                f_out.write(data, header=header, extname=extname, compress=comp)
+                f_out.write(data, header=header, extname=extname, **kwargs)
             self.positions[hdu_index] = self._next_data_pos
             self._next_data_pos += 1
 

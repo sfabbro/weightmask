@@ -81,6 +81,32 @@ weightmask science.fits --config weightmask.yml \
 Default primary path is `<input_base>.weight.fits` if `-o` is omitted, or
 `.weight.fits.fz` when `output_params.compress` is true.
 
+Each output HDU is named after the CCD identifier from its header (`MAP_8341-7-5`,
+`MASK_8341-7-5`, `STREAK_8341-7-5`, ...), taken from `CCDNAME`, then `CCDNAM`.
+`CCD` is deliberately not used: on MegaCam it holds the detector model
+(`Marconi/EEV CCD42-90`), which is the same for every HDU in the file, so it
+would give all products one EXTNAME. Product HDU order still follows the input,
+and files whose headers carry no per-CCD identifier fall back to the positional
+name (`MAP_HDU1`).
+
+### Flat bad-pixel mask cache
+
+One flat HDU's bad-pixel mask costs about 20 s on a 9.8 Mpix CCD and depends only
+on that flat HDU, the tile size and the `flat_masking` settings. It is therefore
+computed once and reused by every exposure processed through the same flat:
+
+```yaml
+flat_masking:
+  bad_mask_cache: true         # default
+  bad_mask_cache_dir: null     # null -> <flat directory>/.weightmask_cache
+```
+
+The cache key covers the flat's absolute path, size, nanosecond mtime, HDU index,
+shape, tile size and every `flat_masking` setting, so replacing the flat or
+retuning the masking cannot reuse a stale mask. A missing, partial, corrupt or
+unwritable cache entry simply falls back to the normal computation, and
+`bad_mask_cache: false` disables the cache entirely.
+
 ### Quality bits
 
 | Bit | Name | Zero weight? |

@@ -1,3 +1,6 @@
+import hashlib
+import json
+import os
 import re
 import warnings
 
@@ -170,9 +173,10 @@ def compute_flat_bad_mask(flat_data, config, tile_size=1024):
 
     Runs ``detect_bad_pixels`` over the same 1024x1024 tiles used by
     ``process_image`` and ORs the results into a full-HDU mask. The result
-    depends only on the flat (and config), so callers cache it per flat and
-    reuse it across every exposure that shares that flat instead of
-    recomputing the expensive 15x15 median filter each time.
+    depends only on the flat HDU, the tile size and the ``flat_masking``
+    settings; ``compute_flat_bad_mask_cached`` reuses it across every exposure
+    that shares a flat instead of recomputing the expensive 15x15 median
+    filter each time.
     """
     bad_mask = np.zeros(flat_data.shape, dtype=bool)
     for y in range(0, flat_data.shape[0], tile_size):
@@ -182,6 +186,99 @@ def compute_flat_bad_mask(flat_data, config, tile_size=1024):
             if not np.isfinite(flat_tile).any():
                 continue
             bad_mask[tile] = detect_bad_pixels(flat_tile, config, using_unit_flat=False)
+    return bad_mask
+
+
+# Bump when the cache layout or the mask computation changes incompatibly.
+_FLAT_BAD_CACHE_VERSION = 1
+# flat_masking keys that configure the cache rather than the mask.
+_FLAT_BAD_CACHE_CONTROL_KEYS = ("bad_mask_cache", "bad_mask_cache_dir")
+
+
+def _flat_bad_settings(flat_cfg) -> str:
+    """Canonical digest of the flat_masking settings that shape the mask.
+
+    Every key is included (bar the cache controls) so that a retuned or newly
+    added setting can never read a mask computed under the old settings.
+    """
+    if not isinstance(flat_cfg, dict):
+        return "{}"
+    payload = {k: v for k, v in flat_cfg.items() if k not in _FLAT_BAD_CACHE_CONTROL_KEYS}
+    try:
+        return json.dumps(payload, sort_keys=True, default=str)
+    except (TypeError, ValueError):  # pragma: no cover - exotic config values
+        return str(sorted((str(k), str(v)) for k, v in payload.items()))
+
+
+def flat_bad_mask_cache_file(flat_cfg, flat_path, hdu_index, shape, tile_size):
+    """Cache file for one flat HDU, or None when caching does not apply.
+
+    The identity covers the flat's absolute path, byte size and nanosecond
+    mtime, the HDU index, its shape, the tile size and the flat_masking
+    settings, so a replaced flat or retuned masking cannot read a stale mask.
+    """
+    if not isinstance(flat_cfg, dict) or not flat_cfg.get("bad_mask_cache", True):
+        return None
+    if not flat_path:
+        return None
+    try:
+        stat = os.stat(str(flat_path))
+    except OSError:
+        return None
+    cache_dir = flat_cfg.get("bad_mask_cache_dir")
+    if not cache_dir:
+        cache_dir = os.path.join(os.path.dirname(os.path.abspath(str(flat_path))), ".weightmask_cache")
+    identity = "|".join(
+        (
+            f"v{_FLAT_BAD_CACHE_VERSION}",
+            os.path.abspath(str(flat_path)),
+            str(stat.st_size),
+            str(stat.st_mtime_ns),
+            str(hdu_index),
+            "x".join(str(int(d)) for d in shape),
+            str(int(tile_size)),
+            _flat_bad_settings(flat_cfg),
+        )
+    )
+    digest = hashlib.sha256(identity.encode()).hexdigest()[:32]
+    return os.path.join(str(cache_dir), f"flatbad_{digest}.npy")
+
+
+def compute_flat_bad_mask_cached(flat_data, flat_cfg, tile_size=1024, *, flat_path=None, hdu_index=None):
+    """``compute_flat_bad_mask``, reused across exposures that share a flat.
+
+    One flat HDU's mask costs ~20 s on a 9.8 Mpix CCD, yet a survey that
+    processes N exposures through one flat computes each HDU's mask N times.
+    Caching it on disk (next to the flat, or in ``flat_masking.bad_mask_cache_dir``)
+    turns that into one computation per flat HDU. Any cache miss, disabled
+    cache or I/O error falls back to the plain computation, so products never
+    depend on the cache being present or writable.
+    """
+    cache_file = flat_bad_mask_cache_file(flat_cfg, flat_path, hdu_index, getattr(flat_data, "shape", ()), tile_size)
+    if cache_file is None:
+        return compute_flat_bad_mask(flat_data, flat_cfg, tile_size)
+    if os.path.exists(cache_file):
+        try:
+            cached = np.load(cache_file, allow_pickle=False)
+            if cached.dtype == np.bool_ and cached.shape == flat_data.shape:
+                print(f"    Reusing cached flat bad-pixel mask for HDU {hdu_index} ({cache_file}).")
+                return cached
+        except (OSError, ValueError, EOFError):
+            # Unreadable, truncated or zero-byte entry: recompute and overwrite
+            # it. ``EOFError`` is what numpy raises for an empty file, which is
+            # not an ``OSError`` subclass, so it has to be named explicitly.
+            pass
+    bad_mask = compute_flat_bad_mask(flat_data, flat_cfg, tile_size)
+    try:
+        directory = os.path.dirname(cache_file)
+        if directory:
+            os.makedirs(directory, exist_ok=True)
+        tmp_path = f"{cache_file}.tmp{os.getpid()}"
+        with open(tmp_path, "wb") as handle:
+            np.save(handle, bad_mask)
+        os.replace(tmp_path, cache_file)  # atomic: concurrent readers see one or the other
+    except OSError:
+        pass
     return bad_mask
 
 
