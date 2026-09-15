@@ -321,6 +321,126 @@ backend remains unjustified.
 - **`niter`.** Still the dominant astroscrappy cost and still forwarded; the audit found no
   cheaper equivalent.
 
+## Third pass: a curated real-MegaCam label set
+
+The first two passes left one gap explicitly: every detection threshold was still being
+tuned against *injected* trails, which do not reproduce the clutter that actually drives
+them. `benchmarks/curate_trail_truth.py` closes that gap by labelling real pixels, and
+`benchmarks/trail_truth/megacam_real_labels.json` commits the result, with
+`megacam_real_labels.review.md` as the row-by-row review sheet and
+`benchmarks/score_trail_truth.py` to score any detector against it.
+
+### The protocol
+
+Four evidence layers, none of which the scored detector can produce on its own:
+
+1. **Propose** with four independent mechanisms: bright elongated connected components,
+the binned-Hough prescreen, the production `detect_streaks` mask, and an exhaustive
+binned Radon sweep. Each candidate's geometry is then re-measured by PCA of the pixels
+behind it, so the measurement is one step removed from the proposer's own estimate. The
+proposer is recorded per entry, because recall on entries a *different* proposer found is
+the number that means something.
+2. **Corroborate across the focal plane.** A MegaCam `fits.fz` shares `CRVAL` across all
+CCDs and differs only in `CRPIX` and (slightly) `CD`, so every chip maps into one common
+tangent plane -- and the gnomonic projection maps great circles to straight lines, so a
+trail crossing the mosaic is *one* line on every chip it crosses. Measured on the local
+files: 9 columns x 4 rows for the 2008 36-CCD format (chips in a column share their `xi`
+range) and 40 chips for the 2017 format.
+3. **Veto detector-fixed structure.** Collinearity alone is *not* sufficient, and this is
+the part that took measurement rather than design:
+
+   * `chip_replica` -- two group members at the same CCD-*local* offset and angle. A sky
+line lands at a different CCD-local offset on each chip, so equal offsets mean the
+feature is replicated per chip. This is what catches the bright band every chip carries
+at `y ~ 4590` (~50 px from the array edge, full 2112-px width, present in both readout
+formats), which the naive cross-CCD test groups happily because chips in a mosaic row
+share their `eta` range.
+   * `static` -- the same CCD-local line in other exposures *of that chip*. A bad column is
+a property of the silicon, so it needs no shared WCS; requiring at least two other
+exposures keeps an unrelated trail or star that happens to lie on the line in one other
+frame from vetoing a real trail. This single layer labels 185 of the 241 entries.
+   * `axis_veto` -- a candidate on a column or row whose robust noise is an outlier for
+that chip. A separate `min_axis_deg: 5.0` exclusion for `trail` labels follows from the
+radon proposer's 2-degree angle grid: candidates at exactly 2.00/4.00 degrees turned out
+to be grid-quantised bad columns, so anything within a few degrees of a CCD axis cannot
+be told apart from one.
+   * A group any of whose members is vetoed is *poisoned*: its clean members drop to
+`uncertain` rather than becoming `trail`.
+4. **Measure independently.** The bilinear profile along the candidate line against a
+background band 25-60 px off-line, in raw counts with a robust off-line sigma.
+`support_px` is the longest run above 4 sigma. Normalising by the background-rms *map*
+was tried first and produced 24000-sigma peaks, because that map carries degenerate
+values; the off-line band is self-calibrating and immune to it.
+
+### Result: the local corpus contains no confirmable trail
+
+Twenty-two candidate "trails" were produced and rejected by the protocol over the course
+of this work, each traced to a specific mechanism. What the real fields actually contain:
+
+* CCD `8351-11-4` of `megacam_streak_case` has **3072 of its 4644 rows above 20 sigma** in
+column `x = 1830` -- 66 % of the column. `8352-3-5` has 3675 of 4644 (79 %) at `x = 1922`.
+A 4-px-wide, 3000-px-long bright line is what a bad column looks like, and it is what the
+proposers keep finding.
+* The only cross-CCD mosaic coincidences are between such structures -- chip-vertical lines
+on two chips in one mosaic column, genuinely collinear but on different sky -- which is why
+the along-line connectivity test (`--group-max-gap-px 800`) exists.
+* **The production detector's own positives on `1013719p` are consistent with a chip column
+band.** The earlier pass reported 30,416 streak pixels over 7 CCDs, 19,151 of them on one
+CCD. A single full-height 4-px band is ~4,600 x 4 = 18,400 px. Two of the three streaks
+the detector accepted across those HDUs carry `axis_alignment_deg = 0.00`.
+
+### What the committed set does measure, and it is not nothing
+
+Scored over 89 annotated HDUs and 241 labelled entries with
+`--detector none,houghpeaks,streaks`:
+
+| detector | artefact entries | artefact FPs | FP rate | artefact pixel coverage |
+|---|---|---|---|---|
+| `none` | 241 | 0 | 0.000 | 0.00000 |
+| `houghpeaks` | 241 | 30 | **0.124** | 0.059 |
+| `streaks` (production) | 241 | 30 | **0.124** | 0.062 |
+
+The false positives break down as 23 `static`, 4 `bad_column`, 3 `chip_replica`: the
+production detector masks chip-fixed structure that the cross-exposure layer proves is on
+the detector, and the extra 570 s of production work over the prescreen buys exactly no
+improvement on this axis (30 vs 30). This is the first number in the project that measures
+the streak detector on real clutter rather than on injected Gaussians, and the committed
+default gate (`--max-artefact-fp-rate 0.10`) is currently **failed** at 0.124. That is the
+finding, not a mis-set gate.
+
+### Three defects found in the tooling itself
+
+Worth recording because each one produced convincing, wrong labels first:
+
+* The Radon proposer rebuilt lines from `(theta, rho)` by hand and so reproduced the
+**mirror** bug the production rescue had just been fixed for; four "trails" were built on
+mirrored lines before this was caught (the giveaway was `z_max = 1419` along a line through
+a bright column).
+* `line_to_mosaic` canonicalised the line normal's sign but not its offset. Because MegaCam
+chips are mirrored in `CD1_1`, a chip-vertical line's mosaic direction -- and the offset's
+sign -- flips between chips, so two parallel lines on opposite sides of the mosaic shared a
+representation. Both are now flipped jointly, pinned by
+`tests/test_trail_truth.py::test_lines_on_opposite_sides_do_not_look_identical`.
+* The first version of the cross-CCD test produced **sixteen** bogus `trail` groups, all
+axis-aligned, all pairs of bad columns in one mosaic column.
+
+### Adding positives
+
+The fixture's `trail` bucket is empty and `finding` records why, with the measurement. To
+populate it, point the same tool at a field that contains a trail -- the only change needed
+is `--exposures`:
+
+```bash
+pixi run python benchmarks/curate_trail_truth.py \
+    --data-root <dir> --exposures <id>[,<id>...] --workers 6 \
+    --out benchmarks/trail_truth/megacam_real_labels.json \
+    --review-sheet benchmarks/trail_truth/megacam_real_labels.review.md
+```
+
+Two or more exposures of the *same CCD set* are what the persistence layer needs; a second
+pointing is not required. `tests/test_trail_truth.py` then re-checks every `trail` row
+against the gates that produced it, so a label cannot be added without evidence.
+
 ## Checked and deliberately left alone
 
 - **`cosmics` (`CR`)** — the two `regionprops` post-filters look like the streaks
@@ -359,12 +479,16 @@ backend remains unjustified.
    8 (the 8-worker figure is the pool running out of work, not GIL contention). Still below
    the core count, but the remaining per-HDU Python work is now a few seconds, so the ceiling
    this would buy is small. Deferred again, deliberately.
-3. **Curated real-trail ground truth.** `benchmarks/mine_trail_candidates.py` mines
-   candidates and `benchmarks/race_poloka.py` cross-checks Poloka's track catalogue, but no
-   reviewed label set is committed, so every remaining detection decision (the sweep
-   reduction above, the `max_candidates` cap, the confidence thresholds) is being tuned
-   against injected trails, which do not reproduce the clutter that actually drives them.
-   This is the highest-value remaining detection investment.
+3. ~~**Curated real-trail ground truth.**~~ **Addressed in the third pass**
+   (`benchmarks/curate_trail_truth.py` + the committed `megacam_real_labels.json`), and the
+   answer was not the expected one: over ten exposures and 364 HDUs, no candidate survives
+   curation as a real trail, and the production detector masks 12.4 % of the real
+   detector-clutter regions that the label set pins (see the third-pass section). So the
+   committed set is a **false-positive** benchmark. Trail *recall* still cannot be scored --
+   that needs one trail-bearing field, which is now a one-command extension rather than a
+   missing capability. The two highest-value uses of the set are therefore: (a) make the
+   12.4 % artefact rate a tracked number, and (b) curate a trail-bearing field so the same
+   gates can be applied to recall.
 4. **Per-trail catalogue output.** Detection currently emits a bit; the stage-level evidence
    (angle, span, support width, confidence, which pass accepted) already exists in
    `_last_run` under `debug: true`. Writing it as a FITS table per CCD would make tuning

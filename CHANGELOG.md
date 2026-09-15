@@ -2,6 +2,40 @@
 
 ## Unreleased
 
+### Curated real-MegaCam label set (new)
+
+Closes the gap the first two passes named: every detection threshold was still being tuned
+against injected trails, which do not reproduce the clutter that drives them.
+
+- Added `benchmarks/curate_trail_truth.py`, which labels real pixels from evidence the
+  scored detector cannot produce on its own: four independent proposers, cross-CCD
+  corroboration in the shared tangent plane of the MegaCam mosaic, then chip-replication,
+  cross-exposure-persistence and axis vetoes, and finally an independent along-line ridge
+  measurement in raw counts against a 25-60 px off-line background band.
+- Committed `benchmarks/trail_truth/megacam_real_labels.json` (241 labelled real-detector
+  regions over 4 exposures and 2 readout formats), its row-by-row review sheet, and
+  `benchmarks/score_trail_truth.py` to score any detector against it.
+- **Result: no confirmable real trail in the local MegaCam corpus.** Over ten exposures and
+  364 HDUs every long bright line resolves to a chip-level defect: CCD `8351-11-4` has 3072
+  of its 4644 rows above 20 sigma in one column (66 %), and every chip carries a bright band
+  at `y ~ 4590` across the full width. The production detector's earlier positives on
+  `1013719p` (30,416 px over 7 CCDs, 19,151 on one) are consistent with a single full-height
+  4-px column band, not a trail. The committed set is therefore a false-positive benchmark.
+- Measured with it: `houghpeaks` and the production `streaks` path each mask **30 of 241**
+  labelled real-clutter regions (12.4 %, ~6 % of artefact pixels) -- mostly chip-fixed
+  structure the cross-exposure layer proves is on the detector. The extra ~570 s of
+  production work over the prescreen buys nothing on this axis. This is the first
+  real-clutter streak measurement in the project; the default gate
+  (`--max-artefact-fp-rate 0.10`) documents it as currently failed.
+- Fixed three defects the curation exposed in its own tooling, each of which had produced
+  convincing wrong labels first: the Radon proposer re-introduced the **mirror** bug in the
+  line convention; `line_to_mosaic` canonicalised the line's normal sign but not its offset,
+  so mirrored chips let two parallel lines on opposite sides of the mosaic share a
+  representation; and the cross-CCD test initially produced sixteen bogus trail groups from
+  pairs of bad columns.
+- Added `tests/test_trail_truth.py` (22 tests): fixture invariants that make a label
+  unaddable without evidence, plus unit tests for the mosaic-geometry and ridge helpers.
+
 Second pass on the same data, verified end-to-end on one **complete 36-CCD MegaCam
 exposure** (`1013719p`, 353 Mpix, 4 workers, `--all-products`): **1676 s -> 1180 s wall
 (-29.6 %, 46.6 -> 32.8 s/CCD)**, streak stage 5702 -> 3819 CPU-s, and all **11 products x
