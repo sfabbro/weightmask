@@ -240,8 +240,12 @@ def _calculate_inverse_variance_rms(bkg_rms_map, epsilon):
         warnings.warn("RMS map is None, cannot calculate variance from RMS.", RuntimeWarning)
         return None
 
+    # The ``inf`` sentinel means "no RMS measurement here"; squaring it gives an
+    # infinite variance, so those pixels fall through to zero inverse variance
+    # (weight 0) -- the sentinel is honoured rather than papered over.
     variance_adu = bkg_rms_map**2
-    inv_variance = np.where(variance_adu > epsilon, 1.0 / variance_adu, 0.0)
+    with np.errstate(divide="ignore", invalid="ignore"):
+        inv_variance = np.where(variance_adu > epsilon, 1.0 / variance_adu, 0.0)
     inv_variance[~np.isfinite(inv_variance)] = 0.0
 
     return inv_variance.astype(np.float32)
@@ -262,9 +266,13 @@ def _handle_empirical_fit(variance_cfg, sky_map, flat_map, sci_data, obj_mask, g
 
     if emp_gain is None or emp_rn_e is None:
         print("  WARNING: Empirical fit failed. Falling back to theoretical method with default/header values.")
-        inv_var = _calculate_inverse_variance_theoretical(sky_map, flat_map, gain, read_noise_e, epsilon, variance_cfg.get("flat_rel_noise", 0.0))
+        inv_var = _calculate_inverse_variance_theoretical(
+            sky_map, flat_map, gain, read_noise_e, epsilon, variance_cfg.get("flat_rel_noise", 0.0)
+        )
     else:
-        inv_var = _calculate_inverse_variance_theoretical(sky_map, flat_map, emp_gain, emp_rn_e, epsilon, variance_cfg.get("flat_rel_noise", 0.0))
+        inv_var = _calculate_inverse_variance_theoretical(
+            sky_map, flat_map, emp_gain, emp_rn_e, epsilon, variance_cfg.get("flat_rel_noise", 0.0)
+        )
         gain = emp_gain  # For unbiasing below
     return inv_var, gain
 

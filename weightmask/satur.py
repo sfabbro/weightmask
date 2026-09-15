@@ -379,7 +379,11 @@ def grow_bleed_trails(sci_data, sat_mask, sky_map, bkg_rms_map, config):
             col_bkg = sky_map[:, x] if sky_map is not None else fallback_bkg
             col_rms = bkg_rms_map[:, x] if bkg_rms_map is not None else fallback_rms
 
-            # Use a conservative threshold (e.g. 5 sigma) to prevent over-growing into noise
+            # Use a conservative threshold (e.g. 5 sigma) to prevent over-growing into noise.
+            # Where ``col_rms`` carries the ``inf`` sentinel (no RMS measurement)
+            # ``stop_thresh`` becomes infinite and the trail simply does not grow
+            # into that column -- the same inert reading the detection thresholds
+            # use, so no substitute RMS is introduced here.
             stop_thresh = col_bkg + bleed_thresh_sigma * col_rms
 
             core_rows = y_max - y_min + 1

@@ -9,7 +9,9 @@ from skimage.feature import canny
 from skimage.measure import LineModelND, label, ransac
 from skimage.measure import perimeter as skimage_perimeter
 from skimage.morphology import dilation, disk, white_tophat
-from skimage.transform import probabilistic_hough_line, radon
+from skimage.transform import probabilistic_hough_line
+
+from .utils import rms_or_robust, rms_valid_mask, robust_rms
 
 
 def _normalize_angle_deg(angle_deg):
@@ -758,8 +760,14 @@ def _refit_endpoints_from_strip(strip, centered, inside):
 def _refine_trail_mask(data_sub, bkg_rms_map, candidate, mask_cfg, existing_mask=None):
     """Refine a Hough candidate by fitting a trail-aligned strip mask."""
     if bkg_rms_map is not None:
-        safe_rms = np.where((bkg_rms_map > 0) & np.isfinite(bkg_rms_map), bkg_rms_map, np.nanmedian(bkg_rms_map))
-        detect_img = data_sub / np.where(safe_rms > 0, safe_rms, 1.0)
+        # Detection threshold: where the background RMS is unknown (the ``inf``
+        # sentinel from ``estimate_background``) there is no significance to
+        # assert, so those pixels are made inert exactly like existing-mask
+        # pixels below -- *not* normalised by a substitute RMS, which would let
+        # an unmeasurable region manufacture strip support.
+        valid_rms = rms_valid_mask(bkg_rms_map)
+        usable_rms = np.where(valid_rms, bkg_rms_map, 1.0)
+        detect_img = np.where(valid_rms, data_sub / np.where(usable_rms > 0, usable_rms, 1.0), np.nan)
     else:
         detect_img = data_sub
     if existing_mask is not None:
@@ -1039,6 +1047,68 @@ def _candidate_from_rho_theta(rho, theta_deg, shape):
     }
 
 
+def _radon_pad_offsets(shape, side):
+    """Per-axis ``(before, after)`` padding that centres ``shape`` inside ``side``.
+
+    Mirrors skimage's centring arithmetic so that the padded image centre stays
+    the CCD centre and ``rho = 0`` keeps meaning "through the middle of the chip".
+    """
+    offsets = []
+    for size in shape:
+        pad = side - size
+        before = (size + pad) // 2 - size // 2
+        offsets.append((before, pad - before))
+    return tuple(offsets)
+
+
+def _radon_projections(image, thetas):
+    """Radon transform of ``image`` on a *tight* square pad.
+
+    ``skimage.transform.radon`` pads every input to a square of side
+    ``sqrt(2) * max(shape)`` -- 6568 for a 4644x2112 CCD whose true diagonal is
+    5102 -- so it warps 1.66x more pixels at every angle than the geometry
+    needs. This runs the identical warp-and-sum on a diagonal-sized pad, keeping
+    the result directly comparable (same bilinear ``warp``, same centring) while
+    shrinking the transform.
+    """
+    from skimage.transform import warp
+
+    height, width = image.shape
+    side = int(np.ceil(np.hypot(height, width)))
+    (before_y, _after_y), (before_x, _after_x) = _radon_pad_offsets(image.shape, side)
+    padded = np.zeros((side, side), dtype=image.dtype)
+    padded[before_y : before_y + height, before_x : before_x + width] = image
+    center = side // 2
+    sinogram = np.zeros((side, len(thetas)), dtype=image.dtype)
+    for index, angle in enumerate(np.deg2rad(thetas)):
+        cos_a, sin_a = float(np.cos(angle)), float(np.sin(angle))
+        rotation = np.array(
+            [
+                [cos_a, sin_a, -center * (cos_a + sin_a - 1)],
+                [-sin_a, cos_a, -center * (cos_a - sin_a - 1)],
+                [0.0, 0.0, 1.0],
+            ]
+        )
+        sinogram[:, index] = warp(padded, rotation, clip=False).sum(0)
+    return sinogram
+
+
+def _valid_rho_range(shape, thetas):
+    """``(low, high)`` rho bounds per angle: the rho values that cross the chip.
+
+    Outside this range a projection sees only zero padding, so it carries no
+    information about the image. Including it is precisely what broke the
+    rescue's significance estimate: at theta = 0, 4628 of 6568 sinogram entries
+    are exact padding zeros, so the column's MAD is 0, the old hard-coded
+    fallback kicked in, and every value in that column became a million-sigma
+    "detection" that no threshold could reject.
+    """
+    height, width = shape
+    theta = np.radians(np.asarray(thetas, dtype=np.float64))
+    half = 0.5 * (height * np.abs(np.cos(theta)) + width * np.abs(np.sin(theta)))
+    return -half, half
+
+
 def _detect_streaks_mrt_like(data_sub, bkg_rms_map, existing_mask, config):
     """Run a lightweight MRT-like Radon rescue for low-confidence ground-based streaks."""
     cfg = config.get("mrt_rescue_params", {})
@@ -1049,8 +1119,11 @@ def _detect_streaks_mrt_like(data_sub, bkg_rms_map, existing_mask, config):
     confidence_threshold = float(cfg.get("confidence_threshold", 0.35))
 
     if bkg_rms_map is not None:
-        safe_rms = np.where((bkg_rms_map > 0) & np.isfinite(bkg_rms_map), bkg_rms_map, np.nanmedian(bkg_rms_map))
-        normalized = data_sub / np.maximum(safe_rms, 1e-6)
+        # Detection threshold: unknown-RMS pixels contribute no signal to the
+        # projections rather than being normalised by a substitute RMS, which
+        # is what made two physical bright columns dominate the sinogram.
+        valid_rms = rms_valid_mask(bkg_rms_map)
+        normalized = np.where(valid_rms, data_sub / np.maximum(np.where(valid_rms, bkg_rms_map, 1.0), 1e-6), 0.0)
     else:
         normalized = data_sub
     if existing_mask is not None:
@@ -1059,34 +1132,92 @@ def _detect_streaks_mrt_like(data_sub, bkg_rms_map, existing_mask, config):
     normalized -= np.nanmedian(normalized)
     normalized = np.clip(normalized, 0.0, None)
 
+    # Binning is the single biggest cost lever here (the transform is quadratic
+    # in the padded side). The peak it finds is confirmed at full resolution by
+    # the same strip refiner as every other candidate, so binning only costs rho
+    # quantisation of `bin` pixels, not a second detection path.
+    bin_factor = max(1, int(cfg.get("bin", 1)))
+    if bin_factor > 1:
+        normalized = _bin_array(normalized, bin_factor)
+    work_shape = normalized.shape
+
     thetas = np.arange(0.0, 180.0, theta_step, dtype=np.float32)
     if thetas.size == 0:
         return np.zeros(data_sub.shape, dtype=bool), [], {"theta_step_deg": theta_step, "peaks": 0}
 
-    sinogram = radon(normalized, theta=thetas, circle=False)
-    med = np.nanmedian(sinogram, axis=0, keepdims=True)
-    sigma = mad_std(sinogram - med, axis=0, ignore_nan=True)
-    sigma = np.where(np.isfinite(sigma) & (sigma > 1e-6), sigma, 1.0)
-    snr = (sinogram - med) / sigma[np.newaxis, :]
+    sinogram = _radon_projections(normalized, thetas)
+    side = sinogram.shape[0]
+    rho_coords = np.arange(side, dtype=np.float64) - 0.5 * (side - 1)
+    rho_low, rho_high = _valid_rho_range(work_shape, thetas)
+    valid_rho = (rho_coords[:, None] >= rho_low[None, :]) & (rho_coords[:, None] <= rho_high[None, :])
 
-    flat_indices = np.argpartition(snr.ravel(), -max_candidates)[-max_candidates:]
-    order = flat_indices[np.argsort(snr.ravel()[flat_indices])[::-1]]
+    # Star-clutter suppression along rho. A bright star is a broad bump in the
+    # sinogram at every angle, and on a real CCD those bumps set the per-angle
+    # MAD (~1.1e3) far above what a faint trail contributes (~150 for a 4-sigma,
+    # 2500-pixel trail), which is why such a trail measures 0.16 sigma against
+    # the old per-column MAD and can never enter a top-k list. Subtracting a
+    # moving median along rho keeps the trail's narrow peak and removes the
+    # broad bumps. The window is scaled by the bin factor so it covers the same
+    # physical scale at any binning.
+    highpass = int(cfg.get("sinogram_highpass", 0))
+    if highpass > 1:
+        window = max(3, highpass // bin_factor) | 1
+        sinogram = sinogram - ndi.median_filter(sinogram, size=(window, 1), mode="nearest")
+
+    # Statistics over the geometrically valid rho only: the padding carries no
+    # information and, being identically zero on a large fraction of every
+    # column, would otherwise collapse the MAD to zero.
+    observed = np.where(valid_rho, sinogram, np.nan)
+    med = np.nanmedian(observed, axis=0, keepdims=True)
+    sigma = mad_std(observed - med, axis=0, ignore_nan=True)
+    usable_sigma = sigma[np.isfinite(sigma) & (sigma > 0)]
+    sigma_floor = max(
+        float(cfg.get("sigma_rel_floor", 1e-3)) * (float(np.median(usable_sigma)) if usable_sigma.size else 1.0),
+        1e-12,
+    )
+    sigma = np.where(np.isfinite(sigma) & (sigma > sigma_floor), sigma, sigma_floor)
+    snr = np.where(valid_rho, (sinogram - med) / sigma[np.newaxis, :], -np.inf)
+
+    # A note on why the peak search is not restricted: a one-pixel-wide detector
+    # column projects into *every* angle (its rho width grows as the angle leaves
+    # the axis), so excluding near-axis angles only moves the same artefacts to
+    # theta = +-4 degrees rather than removing them -- measured, not assumed.
+    # Those artefacts are then rejected downstream by the strip refiner's
+    # step-discontinuity guard, which is what keeps this path from masking a
+    # chip's bright columns as trails.
+    flat_snr = np.where(valid_rho, snr, -np.inf).ravel()
+
+    n_peaks = int(min(max(max_candidates, 0), flat_snr.size))
+    if n_peaks == 0:
+        return np.zeros(data_sub.shape, dtype=bool), [], {"theta_step_deg": theta_step, "peaks": 0, "bin": bin_factor}
+    flat_indices = np.argpartition(flat_snr, -n_peaks)[-n_peaks:]
+    order = flat_indices[np.argsort(flat_snr[flat_indices])[::-1]]
 
     streak_mask = np.zeros(data_sub.shape, dtype=bool)
     accepted = []
     used = []
-    rho_coords = np.arange(sinogram.shape[0], dtype=np.float32) - 0.5 * (sinogram.shape[0] - 1)
     for flat_idx in order:
         rho_idx, theta_idx = np.unravel_index(int(flat_idx), snr.shape)
         score_peak = float(snr[rho_idx, theta_idx])
         if not np.isfinite(score_peak) or score_peak < peak_threshold:
             continue
-        rho = float(rho_coords[rho_idx])
+        rho = float(rho_coords[rho_idx]) * bin_factor
         theta_deg = float(thetas[theta_idx])
         if any(abs(theta_deg - t0) < 2.0 and abs(rho - r0) < 20.0 for r0, t0 in used):
             continue
 
-        candidate = _candidate_from_rho_theta(rho, theta_deg, data_sub.shape)
+        # ``_candidate_from_rho_theta`` speaks the Hesse convention used by
+        # ``hough_line`` (theta = the line's normal direction, rho = the signed
+        # distance along that normal). ``radon`` parameterises the same line
+        # reflected: theta_radon = 90 - phi where phi is the line's own angle.
+        # Feeding radon coordinates straight in therefore built the *mirror* of
+        # the candidate line -- harmless near theta = 0, where the two agree, but
+        # for an oblique line the strip refiner was handed a line that does not
+        # exist in the image and rejected it with `no_support`. That is why this
+        # rescue could only ever propose the near-axis column artefacts.
+        # Calibrated on injected lines at phi = 0/22.9/45/90/140 deg: the
+        # conversion below reproduces all of them to within the rho sampling.
+        candidate = _candidate_from_rho_theta(-rho, 180.0 - theta_deg, data_sub.shape)
         if candidate is None:
             continue
         refined, refine_info = _refine_trail_mask(
@@ -1098,7 +1229,16 @@ def _detect_streaks_mrt_like(data_sub, bkg_rms_map, existing_mask, config):
             accepted.append({"rho": rho, "theta_deg": theta_deg, "peak_snr": score_peak, "confidence": conf})
             used.append((rho, theta_deg))
 
-    return streak_mask, accepted, {"theta_step_deg": theta_step, "accepted_count": len(accepted)}
+    return (
+        streak_mask,
+        accepted,
+        {
+            "theta_step_deg": theta_step,
+            "bin": bin_factor,
+            "sinogram": side,
+            "accepted_count": len(accepted),
+        },
+    )
 
 
 def _refine_hough_peak(H, thetas, rhos, ti, ri):
@@ -1236,8 +1376,11 @@ def _contour_candidates(data_sub, existing_mask, bkg_rms_map, config):
     if existing_mask is not None:
         img = np.where(existing_mask, 0.0, img)
     if bkg_rms_map is not None:
-        rms = np.where((bkg_rms_map > 0) & np.isfinite(bkg_rms_map), bkg_rms_map, np.nan)
-        scale = float(np.nanmedian(rms)) if np.any(np.isfinite(rms)) else 1.0
+        # Detection threshold: the contour level is set from the median of the
+        # *measured* RMS values, so sentinel pixels are excluded rather than
+        # counted into the scale (which ``np.nanmedian`` would not do -- it
+        # ignores NaN but not ``inf``).
+        scale = robust_rms(bkg_rms_map, default=1.0)
     else:
         scale = 1.0
     if not np.isfinite(scale) or scale <= 0:
@@ -1323,12 +1466,18 @@ def _detect_streaks_contours(data_sub, bkg_rms_map, existing_mask, config):
     return streak_mask, accepted, {"candidates": len(candidates), "accepted_count": len(accepted)}
 
 
-def _detect_streaks_satdet(data_sub, bkg_rms_map, existing_mask, config, cache=None):
+def _detect_streaks_satdet(data_sub, bkg_rms_map, existing_mask, config, cache=None, prescreen_confirmed=False):
     """
     Detect streaks using a satdet-inspired Hough candidate extractor plus strip refiner.
 
     ``cache`` carries the shared ``_StreakImageCache`` for this HDU so the
     primary pass and the unmasked retry reuse one prepared image.
+
+    ``prescreen_confirmed`` says the cheap binned-Hough stage has already
+    accepted a trail in this HDU, in which case the full-resolution multi-scale
+    Canny/Hough sweep can be skipped: it costs ~24 s per CCD to produce the
+    ~10^5 segments that only ever confirm what the accumulator peak already
+    found. Off unless ``satdet_params.skip_when_prescreen_confirmed`` is set.
     """
     if cache is None:
         cache = _StreakImageCache()
@@ -1339,6 +1488,14 @@ def _detect_streaks_satdet(data_sub, bkg_rms_map, existing_mask, config, cache=N
     min_segment_accept = int(cfg.get("min_segment_accept", 3))
     if existing_mask is not None:
         confidence_threshold += min(0.25, 20.0 * float(np.mean(existing_mask)))
+
+    if prescreen_confirmed and bool(cfg.get("skip_when_prescreen_confirmed", False)):
+        print("    satdet sweep skipped: the binned Hough prescreen already confirmed a trail.")
+        return (
+            np.zeros(data_sub.shape, dtype=bool),
+            [],
+            {"scales": [], "accepted_count": 0, "skipped": "prescreen_confirmed"},
+        )
 
     print("--> Using satdet-inspired multi-scale streak detection")
     bin_factor = int(cfg.get("bin_factor", 1))
@@ -1419,12 +1576,12 @@ def _detect_trails_sparse_ransac(data_sub, bkg_rms_map, existing_mask, config):
     max_trails = int(cfg.get("max_trails", 3))
 
     if bkg_rms_map is not None:
-        median_rms = np.nanmedian(bkg_rms_map)
-        if np.isfinite(median_rms) and median_rms > 15.0:
+        median_rms = robust_rms(bkg_rms_map, default=1.0)
+        if median_rms > 15.0:
             detect_thresh_sig *= 1.0 + 0.5 * np.log10(median_rms / 15.0)
-        thresh = detect_thresh_sig * np.where(
-            bkg_rms_map > 0, bkg_rms_map, median_rms if np.isfinite(median_rms) else 1.0
-        )
+        # Detection threshold: no measurable RMS means no detectable excess, so
+        # unknown pixels get an infinite threshold (never detect).
+        thresh = detect_thresh_sig * rms_or_robust(bkg_rms_map, fallback=np.inf)
     else:
         thresh = detect_thresh_sig * mad_std(data_sub, ignore_nan=True)
 
@@ -1509,8 +1666,18 @@ def detect_streaks(data_sub, bkg_rms_map, existing_mask, config):
     ct_mask, ct_accepted, ct_debug = _detect_streaks_contours(data_sub, bkg_rms_map, existing_mask, config)
     streak_mask_bool |= ct_mask
     debug_info["contours"] = {"accepted": ct_accepted, **ct_debug}
+    # The cheap binned-Hough stage has already run above; when it confirmed a
+    # trail, the ~24 s full-resolution sweep is redundant (see
+    # ``_detect_streaks_satdet``). "Confirmed" means it accepted a trail *and*
+    # left enough pixels for the downstream low-confidence gates to see the HDU
+    # as already handled, so the rescue and RANSAC stay off too.
+    prescreen_confirmed = len(hp_accepted) > 0 and np.count_nonzero(hp_mask) >= int(
+        config.get("mask_params", {}).get("min_mask_pixels", 64)
+    )
     print("    [streak] satdet primary pass...")
-    satdet_mask, accepted, primary_debug = _detect_streaks_satdet(data_sub, bkg_rms_map, existing_mask, config, cache)
+    satdet_mask, accepted, primary_debug = _detect_streaks_satdet(
+        data_sub, bkg_rms_map, existing_mask, config, cache, prescreen_confirmed=prescreen_confirmed
+    )
     streak_mask_bool |= satdet_mask
     debug_info["primary"] = {"accepted": accepted, **primary_debug}
     # Tactic C: "primary accepted" spans every primary stage (houghpeaks +

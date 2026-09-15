@@ -138,6 +138,13 @@ streak_masking:
     max_candidates: 8            # cap Hough candidates per CCD
     min_segment_accept: 2        # need this many supporting segments
     confidence_threshold: 0.22   # primary-pass accept threshold
+    skip_when_prescreen_confirmed: true
+                                 # skip the full-resolution multi-scale Canny/Hough
+                                 # sweep when the binned-Hough prescreen already
+                                 # accepted a trail. Measured on real MegaCam HDUs:
+                                 # bit-identical streak masks (0 differing pixels)
+                                 # on a clean field, a bright-trail field, and a
+                                 # bright+faint field, for -24.5 s per CCD.
   houghpeak_params:
     enable: true                 # binned Hough-peak extractor
     bin: 4                       # spatial binning before the peak search
@@ -157,9 +164,24 @@ streak_masking:
                                  # 9.8 Mpix HDU), so it can be switched off where fields are
                                  # known to carry no such trails.
     theta_step_deg: 2.0          # deg; Radon angle sampling
-    peak_threshold_sig: 4.2      # Radon-peak significance
+    peak_threshold_sig: 4.2      # Radon-peak significance, measured over the
+                                 # geometrically valid rho range only
     max_candidates: 4            # cap rescue lines
     confidence_threshold: 0.25   # accept threshold for the rescue pass
+    bin: 1                       # mean-bin the projection image before the Radon.
+                                 # 1 = full resolution, ~20 s per CCD. Set 4 for ~1.6 s
+                                 # (12x) at the cost of `bin` pixels of rho quantisation:
+                                 # measured recall on injected trails (1.5 px wide, 800 px
+                                 # long, flat background) is 0.90/0.91/0.36/0.90 at bin=1 vs
+                                 # 0.39/0.90/0.94/0.80 at bin=4 for 60/12/6/4 sigma.
+    sigma_rel_floor: 0.001       # floor for a per-angle peak MAD, as a fraction of
+                                 # the median MAD over angles (never a fixed 1.0)
+    sinogram_highpass: 101       # samples; moving-median window subtracted along rho
+                                 # before significance is measured. The sinogram is
+                                 # star-clutter dominated (per-angle MAD ~1.1e3 on a
+                                 # real CCD, where a 4-sigma 2500px trail contributes
+                                 # only ~150), so broad star bumps must be removed
+                                 # before a narrow trail can stand out. 0 disables.
   mask_params:
     strip_length: 256            # pixels; trail-aligned stamp length
     strip_width: 80              # pixels; stamp width for the profile
