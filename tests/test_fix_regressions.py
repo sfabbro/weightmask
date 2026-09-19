@@ -1,7 +1,9 @@
 """Regression tests for the weightmask defect-review fix list (2026-09-05).
 
 Each test pins one fix behaviorally (observable result, not source text):
-- process_all_hdus computes each flat HDU mask exactly once, in its worker (dedup; no disk cache)
+- process_all_hdus computes each flat HDU mask exactly once, in its worker
+  (the on-disk reuse added later keys on the flat's identity; this pins the
+  per-HDU compute count, which a missing flat path keeps uncached)
 - unknown streak mode raises instead of silently returning zeros
 - non-finite inverse variance sets INVALID_VARIANCE and zeroes weight end to end
 - CR niter config is forwarded to astroscrappy (yml pins niter: 2)
@@ -34,6 +36,7 @@ def _tiny_flat_config():
 
 class TestSingleFlatPrecompute(unittest.TestCase):
     def test_each_flat_hdu_computed_once(self):
+        from weightmask import bad as bad_mod
         from weightmask import mef as cli_mod
 
         config = _tiny_flat_config()
@@ -55,9 +58,10 @@ class TestSingleFlatPrecompute(unittest.TestCase):
 
         # Tactic D: the sequential pre-loop reads medians only; the worker
         # computes each HDU's mask exactly once via the miss path, so run
-        # the real process_hdu and count real compute calls end to end.
+        # the real process_hdu and count real compute calls end to end. The
+        # compute seam lives in weightmask.bad, behind the cache wrapper.
         with (
-            patch.object(cli_mod, "compute_flat_bad_mask", side_effect=counting_compute),
+            patch.object(bad_mod, "compute_flat_bad_mask", side_effect=counting_compute),
             patch.object(cli_mod, "_make_output_writers", return_value={}),
             patch.object(cli_mod, "_store_output_maps"),
             patch.object(cli_mod, "_flush_hdu_output"),

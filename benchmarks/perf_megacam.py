@@ -486,6 +486,8 @@ def _process_one_exposure(
     write_mask: bool = False,
     file_tag: str = "",
     config_overrides: dict | None = None,
+    hdu_limit: int = 0,
+    all_products: bool = False,
 ) -> dict:
     import argparse as _ap
 
@@ -506,6 +508,8 @@ def _process_one_exposure(
     except Exception as e:
         hdul_input.close()
         raise SystemExit(f"get_hdus_to_process failed for {safe}: {e}")
+    if hdu_limit > 0:
+        hdus = hdus[:hdu_limit]
     nhdus_expected = len(hdus)
     shapes = []
     for i in hdus:
@@ -524,24 +528,26 @@ def _process_one_exposure(
     tag = f"{safe}{out_suffix}{file_tag}.w{workers}"
     if flat:
         tag += ".flat"
+    write_all = bool(all_products)
     args = _ap.Namespace(
         output_map=str(OUT_DIR / f"{tag}.weight.fits"),
-        output_mask=str(OUT_DIR / f"{tag}.mask.fits") if write_mask else None,
-        output_invvar=None,
-        output_sky=None,
-        output_weight_raw=None,
-        individual_masks=False,
+        output_mask=str(OUT_DIR / f"{tag}.mask.fits") if (write_mask or write_all) else None,
+        output_invvar=str(OUT_DIR / f"{tag}.ivar.fits") if write_all else None,
+        output_sky=str(OUT_DIR / f"{tag}.sky.fits") if write_all else None,
+        output_weight_raw=str(OUT_DIR / f"{tag}.weight_raw.fits") if write_all else None,
+        individual_masks=write_all,
         max_workers=workers,
         tile_size=1024,
     )
     from weightmask.cli import determine_output_paths
 
     paths = determine_output_paths(args, str(in_path), config)
-    for key in ("out_invvar_path", "out_sky_path", "out_weight_raw_path"):
-        paths[key] = None
-    if not write_mask:
-        paths["out_mask_path"] = None
-    paths["individual_mask_paths"] = {}
+    if not write_all:
+        for key in ("out_invvar_path", "out_sky_path", "out_weight_raw_path"):
+            paths[key] = None
+        if not write_mask:
+            paths["out_mask_path"] = None
+        paths["individual_mask_paths"] = {}
 
     hdul_flat = fitsio.FITS(str(flat), "r") if flat else None
     records, orig, proc_mod, mef_mod = _install_timing_collector()
@@ -696,7 +702,12 @@ def _write_markdown(report: dict, sweep: dict, cprofile_note: str, *, out_md=Non
 
 
 def _run_cprofile_first_hdu(
-    first_rec: dict, *, flat: str | None = None, out_txt=None, config_overrides: dict | None = None
+    first_rec: dict,
+    *,
+    flat: str | None = None,
+    out_txt=None,
+    config_overrides: dict | None = None,
+    hdu_limit: int = 0,
 ) -> str:
     import fitsio
     import yaml
@@ -713,6 +724,8 @@ def _run_cprofile_first_hdu(
     hdul_flat = fitsio.FITS(str(flat), "r") if flat else None
     try:
         hdus = cli.get_hdus_to_process(hdul, None)
+        if hdu_limit > 0:
+            hdus = hdus[:hdu_limit]
         mid = hdus[len(hdus) // 2]
         import numpy as np
 
@@ -737,15 +750,118 @@ def _run_cprofile_first_hdu(
     )
 
 
+def _compare_products(
+    this_dir: Path, baseline_dir: Path, *, since: float | None = None, ignore_extname: bool = False
+) -> dict:
+    """Compare the product files this run wrote against a baseline directory.
+
+    A golden-oracle check: every product written under ``this_dir`` during the
+    run must match the same-named file in ``baseline_dir`` HDU by HDU
+    (EXTNAME, shape, dtype and raw data values). Whole-file bytes are not
+    compared because the FITS headers embed provenance cards that are stable
+    but not byte-order stable.
+    """
+    import numpy as np
+
+    import fitsio
+
+    report: dict = {"file_count": 0, "identical": 0, "different": 0, "missing": [], "details": []}
+    for path in sorted(Path(this_dir).glob("*")):
+        if not path.is_file() or not path.name.endswith((".fits", ".fits.fz")):
+            continue
+        try:
+            if since is not None and path.stat().st_mtime < since - 1.0:
+                continue
+        except OSError:
+            continue
+        report["file_count"] += 1
+        base = Path(baseline_dir) / path.name
+        if not base.exists():
+            report["missing"].append(path.name)
+            continue
+        problems: list[str] = []
+        try:
+            with fitsio.FITS(str(path)) as f_new, fitsio.FITS(str(base)) as f_base:
+                if len(f_new) != len(f_base):
+                    problems.append(f"hdu count {len(f_new)} != {len(f_base)}")
+                for idx in range(min(len(f_new), len(f_base))):
+                    hdu_new, hdu_base = f_new[idx], f_base[idx]
+                    info_new = hdu_new.get_info()
+                    info_base = hdu_base.get_info()
+                    dims_new = tuple(info_new.get("dims") or ())
+                    dims_base = tuple(info_base.get("dims") or ())
+                    name_new = hdu_new.read_header().get("EXTNAME")
+                    name_base = hdu_base.read_header().get("EXTNAME")
+                    if dims_new != dims_base or (name_new != name_base and not ignore_extname):
+                        problems.append(f"hdu{idx}: {name_new}{dims_new} vs {name_base}{dims_base}")
+                        continue
+                    if not dims_new:
+                        continue  # header-only HDU
+                    data_new, data_base = hdu_new.read(), hdu_base.read()
+                    if data_new.dtype != data_base.dtype:
+                        problems.append(f"hdu{idx} ({name_new}) dtype {data_new.dtype} vs {data_base.dtype}")
+                        continue
+                    if np.array_equal(data_new, data_base):
+                        continue
+                    try:
+                        equal = bool(np.array_equal(data_new, data_base, equal_nan=True))
+                    except TypeError:
+                        equal = False
+                    if not equal:
+                        differing = int(np.count_nonzero(data_new != data_base))
+                        problems.append(f"hdu{idx} ({name_new}) data differs at {differing} pixel(s)")
+        except Exception as exc:  # pragma: no cover - corrupt baseline file
+            problems.append(f"read failed: {exc}")
+        if problems:
+            report["different"] += 1
+            report["details"].append({"file": path.name, "problems": problems})
+        else:
+            report["identical"] += 1
+    return report
+
+
 def main(argv=None) -> int:
     ap = argparse.ArgumentParser(description="MegaCam 10-exposure perf harness.")
     ap.add_argument("--resolve-only", action="store_true")
     ap.add_argument("--all-hdus", action="store_true")
     ap.add_argument("--workers", type=int, default=None)
     ap.add_argument("--force-resolve", action="store_true")
+    ap.add_argument(
+        "--out-dir",
+        type=str,
+        default="",
+        help="Redirect run products and reports here (default test_outputs/perf).",
+    )
+    ap.add_argument(
+        "--hdu-limit",
+        type=int,
+        default=0,
+        help="Process at most this many HDUs per exposure (0 = all); for quick runs.",
+    )
+    ap.add_argument(
+        "--no-cprofile",
+        action="store_true",
+        help="Skip the single-HDU cProfile pass (it is one full HDU, often the longest step of a short run).",
+    )
+    ap.add_argument(
+        "--compare-baseline",
+        type=str,
+        default="",
+        help="Directory of a previous run; compare this run's products HDU-by-HDU against it.",
+    )
+    ap.add_argument(
+        "--compare-ignore-extname",
+        action="store_true",
+        help="With --compare-baseline, ignore EXTNAME differences (use after an intended renaming).",
+    )
     ap.add_argument("--flat", type=str, default=None, help="Flat-field MEF for the with-flats variant.")
     ap.add_argument("--tag", type=str, default="", help="Report/output tag (e.g. 'flat'); default untagged.")
     ap.add_argument("--masks", action="store_true", help="Also write integer mask maps.")
+    ap.add_argument(
+        "--all-products",
+        action="store_true",
+        help="Write every product (map, mask, ivar, sky, raw weight, per-contaminant masks).",
+    )
     ap.add_argument("--resume", action="store_true", help="Skip exposures already in checkpoint_<tag>.json.")
     ap.add_argument(
         "--exposure-ids",
@@ -761,6 +877,15 @@ def main(argv=None) -> int:
         help="Repeatable config override (values YAML-parsed, deep-merged over weightmask.yml).",
     )
     args = ap.parse_args(argv)
+    global OUT_DIR
+    if args.out_dir:
+        OUT_DIR = Path(args.out_dir)
+        if not OUT_DIR.is_absolute():
+            OUT_DIR = ROOT / OUT_DIR
+        print(f"Redirecting run outputs to {OUT_DIR}")
+    compare_dir = Path(args.compare_baseline) if args.compare_baseline else None
+    if compare_dir is not None and not compare_dir.is_dir():
+        raise SystemExit(f"--compare-baseline directory not found: {compare_dir}")
     records = resolve_exposures(force=args.force_resolve)
     config_overrides = _parse_config_sets(args.config_set)
     if config_overrides:
@@ -814,6 +939,7 @@ def main(argv=None) -> int:
         except Exception as exc:
             print(f"WARNING: ignoring unreadable checkpoint {checkpoint}: {exc}")
     per_exp: list[dict] = []
+    run_started = time.time()
     t_all = time.perf_counter()
     for rec in records:
         if rec["safe_id"] in done:
@@ -829,6 +955,8 @@ def main(argv=None) -> int:
                 write_mask=args.masks,
                 file_tag=(f".{args.tag}" if args.tag else ""),
                 config_overrides=config_overrides,
+                hdu_limit=args.hdu_limit,
+                all_products=args.all_products,
             )
         )
         checkpoint.write_text(json.dumps(per_exp, indent=2) + "\n")
@@ -852,13 +980,25 @@ def main(argv=None) -> int:
             if w == 1:
                 sweep["1"] = float(per_exp[0]["wall_s"])
                 continue
-            r = _process_one_exposure(first, eff, out_suffix=f".sweep{w}", config_overrides=config_overrides)
+            r = _process_one_exposure(
+                first,
+                eff,
+                out_suffix=f".sweep{w}",
+                config_overrides=config_overrides,
+                hdu_limit=args.hdu_limit,
+                all_products=args.all_products,
+            )
             sweep[str(w)] = float(r["wall_s"])
     else:
         sweep["1"] = float(per_exp[0]["wall_s"])
 
     # (c) single-HDU cProfile.
-    note = _run_cprofile_first_hdu(first, flat=flat, out_txt=cprofile_txt, config_overrides=config_overrides)
+    if args.no_cprofile:
+        note = "skipped (--no-cprofile)"
+    else:
+        note = _run_cprofile_first_hdu(
+            first, flat=flat, out_txt=cprofile_txt, config_overrides=config_overrides, hdu_limit=args.hdu_limit
+        )
 
     extra = {"variant": ("with-flats" if flat else "no-flat"), "tag": args.tag or "baseline"}
     if flat:
@@ -866,6 +1006,25 @@ def main(argv=None) -> int:
         extra["flat_file"] = str(Path(flat).relative_to(ROOT)) if str(flat).startswith(str(ROOT)) else str(flat)
     report = _aggregate_report(per_exp, total_wall, extra_header=extra)
     report["sweep_workers"] = {k: float(v) for k, v in sweep.items()}
+    exit_code = 0
+    if compare_dir is not None:
+        print(f"--- comparing products against baseline {compare_dir} ---")
+        comparison = _compare_products(
+            OUT_DIR, compare_dir, since=run_started, ignore_extname=args.compare_ignore_extname
+        )
+        report["baseline_comparison"] = comparison
+        for detail in comparison["details"][:10]:
+            print(f"  {detail['file']}: {'; '.join(detail['problems'][:3])}")
+        if comparison["missing"]:
+            print(f"  missing in baseline: {comparison['missing'][:5]}")
+        if comparison["different"] or comparison["missing"]:
+            print(
+                f"BASELINE MISMATCH: {comparison['different']} differing / "
+                f"{comparison['file_count']} product files"
+            )
+            exit_code = 1
+        else:
+            print(f"Baseline OK: {comparison['identical']}/{comparison['file_count']} product files identical.")
     perf_json.write_text(json.dumps(report, indent=2) + "\n")
     _write_markdown(report, sweep, note, out_md=perf_md)
     print(f"Wrote {perf_json} and {perf_md}")
@@ -887,6 +1046,8 @@ def main(argv=None) -> int:
                     write_mask=args.masks,
                     file_tag=(f".{args.tag}" if args.tag else ""),
                     config_overrides=config_overrides,
+                    hdu_limit=args.hdu_limit,
+                    all_products=args.all_products,
                 )
             )
         wwall = time.perf_counter() - t1
@@ -916,7 +1077,7 @@ def main(argv=None) -> int:
         sidecar_path = OUT_DIR / f"megacam_pass{suffix}.w{args.workers}.json"
         sidecar_path.write_text(json.dumps(sidecar, indent=2) + "\n")
         print(f"Wrote {sidecar_path}")
-    return 0
+    return exit_code
 
 
 if __name__ == "__main__":

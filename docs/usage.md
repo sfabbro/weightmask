@@ -81,6 +81,70 @@ weightmask science.fits --config weightmask.yml \
 Default primary path is `<input_base>.weight.fits` if `-o` is omitted, or
 `.weight.fits.fz` when `output_params.compress` is true.
 
+Each output HDU is named after the CCD identifier from its header (`MAP_8341-7-5`,
+`MASK_8341-7-5`, `STREAK_8341-7-5`, ...), taken from `CCDNAME`, then `CCDNAM`.
+`CCD` is deliberately not used: on MegaCam it holds the detector model
+(`Marconi/EEV CCD42-90`), which is the same for every HDU in the file, so it
+would give all products one EXTNAME. Product HDU order still follows the input,
+and files whose headers carry no per-CCD identifier fall back to the positional
+name (`MAP_HDU1`).
+
+### Flat bad-pixel mask cache
+
+One flat HDU's bad-pixel mask costs about 20 s on a 9.8 Mpix CCD and depends only
+on that flat HDU, the tile size and the `flat_masking` settings. It is therefore
+computed once and reused by every exposure processed through the same flat:
+
+```yaml
+flat_masking:
+  bad_mask_cache: true         # default
+  bad_mask_cache_dir: null     # null -> <flat directory>/.weightmask_cache
+```
+
+The cache key covers the flat's absolute path, size, nanosecond mtime, HDU index,
+shape, tile size and every `flat_masking` setting, so replacing the flat or
+retuning the masking cannot reuse a stale mask. A missing, partial, corrupt or
+unwritable cache entry simply falls back to the normal computation, and
+`bad_mask_cache: false` disables the cache entirely.
+
+### Streak detection cost and the Radon rescue
+
+The streak stage dominates a CCD's time, and two settings decide most of it:
+
+```yaml
+streak_masking:
+  satdet_params:
+    skip_when_prescreen_confirmed: true   # default; -24.5 s/CCD
+  mrt_rescue_params:
+    enable: true
+    bin: 1                                # 4 = ~1.6 s instead of ~20 s
+    sinogram_highpass: 101                # samples; 0 disables
+    sigma_rel_floor: 0.001
+```
+
+`skip_when_prescreen_confirmed` skips the full-resolution multi-scale Canny/Hough
+sweep when the cheap binned-Hough prescreen has already accepted a trail in the same
+HDU. It cannot suppress a field where the sweep is the stage that finds the trail,
+because it only fires once the prescreen has already confirmed one; what it does
+depend on is the sweep adding nothing to an HDU the prescreen has already accepted.
+Measured on real MegaCam HDUs the streak mask is bit-identical either way on a clean
+field, a bright-trail field, and a bright+faint field where the second trail is the
+adversarial case. Set it to false to keep the sweep unconditional.
+
+`mrt_rescue_params` is a Radon rescue for faint trails, and it is the most expensive
+thing in the stage. `bin` mean-bins the projection image before the transform; the
+peak it finds is confirmed at full resolution by the same strip refiner as every
+other candidate, so binning costs only `bin` pixels of rho quantisation. The measured
+trade-off is in the config comment: `bin: 4` is ~12x faster with equal *average*
+recall but a wider per-case spread, which is why full resolution is the default.
+`enable: false` removes the stage entirely and leaves detection to the Hough paths,
+which is what surveys whose fields are known to carry no intermittent trails should
+set.
+
+If a field is diagnosed as slow, `streak_masking.debug: true` puts the per-stage
+evidence (segments per scale, candidates, accepted lines with angle/rho/confidence,
+which passes ran) into `config['_last_run']`.
+
 ### Quality bits
 
 | Bit | Name | Zero weight? |

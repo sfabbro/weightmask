@@ -3,6 +3,8 @@ import warnings
 import numpy as np
 from scipy.ndimage import convolve
 
+from .utils import rms_or_robust, rms_valid_mask, robust_rms
+
 try:
     from astroscrappy import detect_cosmics
 except Exception:  # pragma: no cover - exercised indirectly in environments without astroscrappy
@@ -31,7 +33,9 @@ def _adjust_dynamic_sigclip(config, bkg_rms_map, default_sigclip):
         return sigclip
 
     try:
-        valid_rms = bkg_rms_map[bkg_rms_map > 0]
+        # Only measured pixels: the ``inf`` sentinel is not a noisy measurement,
+        # and including it would let a mostly-unmeasured chip pose as noiseless.
+        valid_rms = bkg_rms_map[rms_valid_mask(bkg_rms_map)]
         step = max(1, len(valid_rms) // 100000)
         median_rms = np.median(valid_rms[::step]) if len(valid_rms) > 0 else 0.0
         if np.isfinite(median_rms) and median_rms > 0.1:
@@ -81,7 +85,13 @@ def _apply_psf_protection(crmask_bool, sci_data, config, gain, read_noise, bkg_r
     cr_thresh = psf_peak_thresh * 1.1
 
     if bkg_rms_map is not None:
-        snr_map = sci_sub / np.maximum(bkg_rms_map, 1e-6)
+        # Detection threshold: with no measurable RMS the SNR test cannot be
+        # asserted, so no protection is claimed there and those pixels stay
+        # eligible for flagging -- the conservative direction for a gate whose
+        # failure mode is leaving a cosmic ray unmasked.
+        valid_rms = rms_valid_mask(bkg_rms_map)
+        usable_rms = np.maximum(np.where(valid_rms, bkg_rms_map, 1.0), 1e-6)
+        snr_map = np.where(valid_rms, sci_sub / usable_rms, 0.0)
         star_protection_mask = (peakiness < cr_thresh) & (snr_map > 5.0)
     else:
         gain_val = max(float(gain), 1e-6)
@@ -111,6 +121,21 @@ def _apply_morphological_dilation(crmask_bool, config):
     return crmask_bool
 
 
+def _axis_lengths(region):
+    """Major/minor axis lengths of a region across skimage versions.
+
+    skimage 0.26 renamed ``major_axis_length``/``minor_axis_length`` to
+    ``axis_major_length``/``axis_minor_length`` and deprecated the old names
+    (removal is scheduled for 2.0), so prefer the new spelling and fall back
+    for older skimage.
+    """
+    major = getattr(region, "axis_major_length", None)
+    minor = getattr(region, "axis_minor_length", None)
+    if major is None or minor is None:
+        major, minor = region.major_axis_length, region.minor_axis_length
+    return float(major), float(minor)
+
+
 def _post_filter_components(crmask_bool, sci_data, bkg_rms_map, config):
     """Reject large, diffuse components that are unlikely to be cosmic rays."""
     from skimage.measure import label, regionprops
@@ -123,7 +148,10 @@ def _post_filter_components(crmask_bool, sci_data, bkg_rms_map, config):
     min_contrast_sigma = float(config.get("min_component_contrast_sigma", 4.0))
     filtered = np.zeros_like(crmask_bool, dtype=bool)
     if bkg_rms_map is not None:
-        safe_rms = np.where((bkg_rms_map > 0) & np.isfinite(bkg_rms_map), bkg_rms_map, np.nanmedian(bkg_rms_map))
+        # Rejection gate: it must still be able to judge each component, so
+        # unknown-RMS pixels borrow the robust global value rather than being
+        # exempted from the test.
+        safe_rms = rms_or_robust(bkg_rms_map)
     else:
         safe_rms = np.ones_like(sci_data, dtype=np.float32)
 
@@ -158,16 +186,17 @@ def _filter_faint_components(crmask_bool, sci_data, bkg_rms_map, faint_cfg):
     min_elongation = float(faint_cfg.get("min_elongation", 2.0))
     min_contrast_sigma = float(faint_cfg.get("min_contrast_sigma", 4.0))
     if bkg_rms_map is not None:
-        valid_rms = bkg_rms_map[np.isfinite(bkg_rms_map) & (bkg_rms_map > 0)]
-        med_rms = float(np.median(valid_rms)) if valid_rms.size > 0 else 1.0
-        safe_rms = np.where((bkg_rms_map > 0) & np.isfinite(bkg_rms_map), bkg_rms_map, med_rms)
+        # Rejection gate (see _post_filter_components): substitute, do not skip.
+        med_rms = robust_rms(bkg_rms_map, default=1.0)
+        safe_rms = rms_or_robust(bkg_rms_map, fallback=med_rms)
     else:
         safe_rms = np.ones_like(sci_data, dtype=np.float32)
     filtered = np.zeros_like(crmask_bool, dtype=bool)
     for region in regionprops(labeled, intensity_image=sci_data):
         if not (min_area <= region.area <= max_area):
             continue
-        elongation = region.major_axis_length / max(region.minor_axis_length, 1e-9)
+        major_length, minor_length = _axis_lengths(region)
+        elongation = major_length / max(minor_length, 1e-9)
         if elongation < min_elongation:
             continue
         coords = region.coords
@@ -209,6 +238,19 @@ def detect_cosmic_rays(
     sigclip = _adjust_dynamic_sigclip(config, bkg_rms_map, default_sigclip=config.get("sigclip", 4.5))
     objlim = _adjust_dynamic_objlim(config, existing_mask, default_objlim=config.get("objlim", 5.0))
 
+    faint_cfg = config.get("faint_cr", {})
+    # One-pass mode: the loose thresholds that used to justify a second full
+    # L.A.Cosmic run are applied to the primary pass, and the morphology gate
+    # (elongated, high-contrast components only) does the discrimination the
+    # second pass used to do. Costs one pass instead of two; whether the
+    # completeness/false-positive trade is acceptable is decided by
+    # ``benchmarks/cr_faint_curves.py``, not here.
+    single_pass = bool(config.get("single_pass", False)) and faint_cfg.get("enable", False)
+    if single_pass:
+        sigclip = float(faint_cfg.get("sigclip", sigclip))
+        objlim = objlim * float(faint_cfg.get("objlim_boost", 1.5))
+        print("    Single-pass CR mode: loose thresholds with the morphology gate.")
+
     try:
         # Use astroscrappy (L.A.Cosmic) to detect cosmic rays. The dominant
         # cost knob is ``niter``: every iteration re-runs the median/Laplacian
@@ -232,13 +274,20 @@ def detect_cosmic_rays(
             verbose=False,
         )
 
-        crmask_bool = _apply_psf_protection(crmask_bool, sci_data, config, gain, read_noise, bkg_rms_map)
-        crmask_bool = _post_filter_components(crmask_bool.astype(bool), sci_data, bkg_rms_map, config)
+        if single_pass:
+            # The morphology gate subsumes both the PSF protection (a star is
+            # round, so it fails min_elongation) and the component post-filter,
+            # which is exactly why one pass can replace two.
+            crmask_bool = _filter_faint_components(
+                np.ascontiguousarray(crmask_bool.astype(bool)), sci_data, bkg_rms_map, faint_cfg
+            )
+        else:
+            crmask_bool = _apply_psf_protection(crmask_bool, sci_data, config, gain, read_noise, bkg_rms_map)
+            crmask_bool = _post_filter_components(crmask_bool.astype(bool), sci_data, bkg_rms_map, config)
 
         crmask_bool = _apply_morphological_dilation(crmask_bool, config)
 
-        faint_cfg = config.get("faint_cr", {})
-        if faint_cfg.get("enable", False):
+        if faint_cfg.get("enable", False) and not single_pass:
             print("    Running faint-CR pass (low sigclip + morphology gate)...")
             faint_raw, _ = detect_cosmics(
                 sci_data,
@@ -256,7 +305,9 @@ def detect_cosmic_rays(
                 psfsize=int(config.get("psfsize", 7)),
                 verbose=False,
             )
-            faint_kept = _filter_faint_components(np.ascontiguousarray(faint_raw.astype(bool)), sci_data, bkg_rms_map, faint_cfg)
+            faint_kept = _filter_faint_components(
+                np.ascontiguousarray(faint_raw.astype(bool)), sci_data, bkg_rms_map, faint_cfg
+            )
             n_faint = int(np.count_nonzero(faint_kept))
             if n_faint:
                 print(f"    Faint-CR pass kept {n_faint} pixels.")

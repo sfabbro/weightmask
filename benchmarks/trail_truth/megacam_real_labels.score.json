@@ -1,0 +1,7080 @@
+{
+  "fixture": "benchmarks/trail_truth/megacam_real_labels.json",
+  "detectors": [
+    "none",
+    "houghpeaks",
+    "streaks"
+  ],
+  "thresholds": {
+    "min_coverage": 0.25,
+    "corridor_px": 2.0,
+    "skip_px": 8
+  },
+  "totals": {
+    "none": {
+      "trail_entries": 0,
+      "trail_detected": 0,
+      "artefact_entries": 241,
+      "artefact_false_positive": 0,
+      "artefact_band_px": 5431394,
+      "artefact_covered_px": 0,
+      "seconds": 0.0,
+      "hdus_scored": 89,
+      "trail_recall": null,
+      "artefact_fp_rate": 0.0,
+      "artefact_pixel_coverage": 0.0
+    },
+    "houghpeaks": {
+      "trail_entries": 0,
+      "trail_detected": 0,
+      "artefact_entries": 241,
+      "artefact_false_positive": 30,
+      "artefact_band_px": 5431394,
+      "artefact_covered_px": 318071,
+      "seconds": 281.72,
+      "hdus_scored": 89,
+      "trail_recall": null,
+      "artefact_fp_rate": 0.12448132780082988,
+      "artefact_pixel_coverage": 0.05856157737774133
+    },
+    "streaks": {
+      "trail_entries": 0,
+      "trail_detected": 0,
+      "artefact_entries": 241,
+      "artefact_false_positive": 30,
+      "artefact_band_px": 5431394,
+      "artefact_covered_px": 334882,
+      "seconds": 884.6299999999998,
+      "hdus_scored": 89,
+      "trail_recall": null,
+      "artefact_fp_rate": 0.12448132780082988,
+      "artefact_pixel_coverage": 0.061656731218541684
+    }
+  },
+  "skipped": [],
+  "gate_failures": [
+    "houghpeaks: artefact FP rate 0.124 > 0.100",
+    "streaks: artefact FP rate 0.124 > 0.100"
+  ],
+  "per_hdu": [
+    {
+      "exposure": "1013719p",
+      "hdu": 2,
+      "results": {
+        "none": {
+          "seconds": 0.0,
+          "rows": [
+            {
+              "key": "1013719p:2:8352-3-4:154.0",
+              "label": "artefact",
+              "band_px": 23218,
+              "covered_px": 0,
+              "coverage": 0.0
+            },
+            {
+              "key": "1013719p:2:8352-3-4:726.0",
+              "label": "artefact",
+              "band_px": 23218,
+              "covered_px": 0,
+              "coverage": 0.0
+            },
+            {
+              "key": "1013719p:2:8352-3-4:790.0",
+              "label": "artefact",
+              "band_px": 23220,
+              "covered_px": 0,
+              "coverage": 0.0
+            }
+          ]
+        },
+        "houghpeaks": {
+          "seconds": 2.93,
+          "rows": [
+            {
+              "key": "1013719p:2:8352-3-4:154.0",
+              "label": "artefact",
+              "band_px": 23218,
+              "covered_px": 0,
+              "coverage": 0.0
+            },
+            {
+              "key": "1013719p:2:8352-3-4:726.0",
+              "label": "artefact",
+              "band_px": 23218,
+              "covered_px": 0,
+              "coverage": 0.0
+            },
+            {
+              "key": "1013719p:2:8352-3-4:790.0",
+              "label": "artefact",
+              "band_px": 23220,
+              "covered_px": 0,
+              "coverage": 0.0
+            }
+          ]
+        },
+        "streaks": {
+          "seconds": 4.02,
+          "rows": [
+            {
+              "key": "1013719p:2:8352-3-4:154.0",
+              "label": "artefact",
+              "band_px": 23218,
+              "covered_px": 0,
+              "coverage": 0.0
+            },
+            {
+              "key": "1013719p:2:8352-3-4:726.0",
+              "label": "artefact",
+              "band_px": 23218,
+              "covered_px": 0,
+              "coverage": 0.0
+            },
+            {
+              "key": "1013719p:2:8352-3-4:790.0",
+              "label": "artefact",
+              "band_px": 23220,
+              "covered_px": 0,
+              "coverage": 0.0
+            }
+          ]
+        }
+      },
+      "error": null
+    },
+    {
+      "exposure": "1013719p",
+      "hdu": 3,
+      "results": {
+        "none": {
+          "seconds": 0.0,
+          "rows": [
+            {
+              "key": "1013719p:3:8352-15-3:-769.201",
+              "label": "artefact",
+              "band_px": 23218,
+              "covered_px": 0,
+              "coverage": 0.0
+            }
+          ]
+        },
+        "houghpeaks": {
+          "seconds": 2.56,
+          "rows": [
+            {
+              "key": "1013719p:3:8352-15-3:-769.201",
+              "label": "artefact",
+              "band_px": 23218,
+              "covered_px": 13393,
+              "coverage": 0.5768369368593332
+            }
+          ]
+        },
+        "streaks": {
+          "seconds": 3.33,
+          "rows": [
+            {
+              "key": "1013719p:3:8352-15-3:-769.201",
+              "label": "artefact",
+              "band_px": 23218,
+              "covered_px": 13393,
+              "coverage": 0.5768369368593332
+            }
+          ]
+        }
+      },
+      "error": null
+    },
+    {
+      "exposure": "1013719p",
+      "hdu": 4,
+      "results": {
+        "none": {
+          "seconds": 0.0,
+          "rows": [
+            {
+              "key": "1013719p:4:8261-14-4:-901.348",
+              "label": "artefact",
+              "band_px": 23218,
+              "covered_px": 0,
+              "coverage": 0.0
+            }
+          ]
+        },
+        "houghpeaks": {
+          "seconds": 2.09,
+          "rows": [
+            {
+              "key": "1013719p:4:8261-14-4:-901.348",
+              "label": "artefact",
+              "band_px": 23218,
+              "covered_px": 6774,
+              "coverage": 0.29175639589973296
+            }
+          ]
+        },
+        "streaks": {
+          "seconds": 3.13,
+          "rows": [
+            {
+              "key": "1013719p:4:8261-14-4:-901.348",
+              "label": "artefact",
+              "band_px": 23218,
+              "covered_px": 6775,
+              "coverage": 0.2917994659316048
+            }
+          ]
+        }
+      },
+      "error": null
+    },
+    {
+      "exposure": "1013719p",
+      "hdu": 5,
+      "results": {
+        "none": {
+          "seconds": 0.0,
+          "rows": [
+            {
+              "key": "1013719p:5:8341-17-4:866.0",
+              "label": "artefact",
+              "band_px": 23220,
+              "covered_px": 0,
+              "coverage": 0.0
+            },
+            {
+              "key": "1013719p:5:8341-17-4:866.0",
+              "label": "artefact",
+              "band_px": 20383,
+              "covered_px": 0,
+              "coverage": 0.0
+            },
+            {
+              "key": "1013719p:5:8341-17-4:874.0",
+              "label": "artefact",
+              "band_px": 23222,
+              "covered_px": 0,
+              "coverage": 0.0
+            },
+            {
+              "key": "1013719p:5:8341-17-4:890.0",
+              "label": "artefact",
+              "band_px": 23218,
+              "covered_px": 0,
+              "coverage": 0.0
+            },
+            {
+              "key": "1013719p:5:8341-17-4:894.0",
+              "label": "artefact",
+              "band_px": 23220,
+              "covered_px": 0,
+              "coverage": 0.0
+            }
+          ]
+        },
+        "houghpeaks": {
+          "seconds": 2.62,
+          "rows": [
+            {
+              "key": "1013719p:5:8341-17-4:866.0",
+              "label": "artefact",
+              "band_px": 23220,
+              "covered_px": 0,
+              "coverage": 0.0
+            },
+            {
+              "key": "1013719p:5:8341-17-4:866.0",
+              "label": "artefact",
+              "band_px": 20383,
+              "covered_px": 0,
+              "coverage": 0.0
+            },
+            {
+              "key": "1013719p:5:8341-17-4:874.0",
+              "label": "artefact",
+              "band_px": 23222,
+              "covered_px": 0,
+              "coverage": 0.0
+            },
+            {
+              "key": "1013719p:5:8341-17-4:890.0",
+              "label": "artefact",
+              "band_px": 23218,
+              "covered_px": 0,
+              "coverage": 0.0
+            },
+            {
+              "key": "1013719p:5:8341-17-4:894.0",
+              "label": "artefact",
+              "band_px": 23220,
+              "covered_px": 0,
+              "coverage": 0.0
+            }
+          ]
+        },
+        "streaks": {
+          "seconds": 3.99,
+          "rows": [
+            {
+              "key": "1013719p:5:8341-17-4:866.0",
+              "label": "artefact",
+              "band_px": 23220,
+              "covered_px": 0,
+              "coverage": 0.0
+            },
+            {
+              "key": "1013719p:5:8341-17-4:866.0",
+              "label": "artefact",
+              "band_px": 20383,
+              "covered_px": 0,
+              "coverage": 0.0
+            },
+            {
+              "key": "1013719p:5:8341-17-4:874.0",
+              "label": "artefact",
+              "band_px": 23222,
+              "covered_px": 0,
+              "coverage": 0.0
+            },
+            {
+              "key": "1013719p:5:8341-17-4:890.0",
+              "label": "artefact",
+              "band_px": 23218,
+              "covered_px": 0,
+              "coverage": 0.0
+            },
+            {
+              "key": "1013719p:5:8341-17-4:894.0",
+              "label": "artefact",
+              "band_px": 23220,
+              "covered_px": 0,
+              "coverage": 0.0
+            }
+          ]
+        }
+      },
+      "error": null
+    },
+    {
+      "exposure": "1013719p",
+      "hdu": 7,
+      "results": {
+        "none": {
+          "seconds": 0.0,
+          "rows": [
+            {
+              "key": "1013719p:7:8351-13-3:-782.0",
+              "label": "artefact",
+              "band_px": 23218,
+              "covered_px": 0,
+              "coverage": 0.0
+            },
+            {
+              "key": "1013719p:7:8351-13-3:826.0",
+              "label": "artefact",
+              "band_px": 23218,
+              "covered_px": 0,
+              "coverage": 0.0
+            },
+            {
+              "key": "1013719p:7:8351-13-3:926.0",
+              "label": "artefact",
+              "band_px": 23218,
+              "covered_px": 0,
+              "coverage": 0.0
+            }
+          ]
+        },
+        "houghpeaks": {
+          "seconds": 2.42,
+          "rows": [
+            {
+              "key": "1013719p:7:8351-13-3:-782.0",
+              "label": "artefact",
+              "band_px": 23218,
+              "covered_px": 0,
+              "coverage": 0.0
+            },
+            {
+              "key": "1013719p:7:8351-13-3:826.0",
+              "label": "artefact",
+              "band_px": 23218,
+              "covered_px": 3,
+              "coverage": 0.00012921009561547075
+            },
+            {
+              "key": "1013719p:7:8351-13-3:926.0",
+              "label": "artefact",
+              "band_px": 23218,
+              "covered_px": 0,
+              "coverage": 0.0
+            }
+          ]
+        },
+        "streaks": {
+          "seconds": 3.52,
+          "rows": [
+            {
+              "key": "1013719p:7:8351-13-3:-782.0",
+              "label": "artefact",
+              "band_px": 23218,
+              "covered_px": 0,
+              "coverage": 0.0
+            },
+            {
+              "key": "1013719p:7:8351-13-3:826.0",
+              "label": "artefact",
+              "band_px": 23218,
+              "covered_px": 3,
+              "coverage": 0.00012921009561547075
+            },
+            {
+              "key": "1013719p:7:8351-13-3:926.0",
+              "label": "artefact",
+              "band_px": 23218,
+              "covered_px": 0,
+              "coverage": 0.0
+            }
+          ]
+        }
+      },
+      "error": null
+    },
+    {
+      "exposure": "1013719p",
+      "hdu": 8,
+      "results": {
+        "none": {
+          "seconds": 0.0,
+          "rows": [
+            {
+              "key": "1013719p:8:8351-6-3:-782.0",
+              "label": "artefact",
+              "band_px": 23218,
+              "covered_px": 0,
+              "coverage": 0.0
+            }
+          ]
+        },
+        "houghpeaks": {
+          "seconds": 2.47,
+          "rows": [
+            {
+              "key": "1013719p:8:8351-6-3:-782.0",
+              "label": "artefact",
+              "band_px": 23218,
+              "covered_px": 0,
+              "coverage": 0.0
+            }
+          ]
+        },
+        "streaks": {
+          "seconds": 68.32,
+          "rows": [
+            {
+              "key": "1013719p:8:8351-6-3:-782.0",
+              "label": "artefact",
+              "band_px": 23218,
+              "covered_px": 3319,
+              "coverage": 0.14294943578258248
+            }
+          ]
+        }
+      },
+      "error": null
+    },
+    {
+      "exposure": "1013719p",
+      "hdu": 9,
+      "results": {
+        "none": {
+          "seconds": 0.0,
+          "rows": [
+            {
+              "key": "1013719p:9:8261-13-3:-842.0",
+              "label": "artefact",
+              "band_px": 23218,
+              "covered_px": 0,
+              "coverage": 0.0
+            },
+            {
+              "key": "1013719p:9:8261-13-3:450.0",
+              "label": "artefact",
+              "band_px": 23220,
+              "covered_px": 0,
+              "coverage": 0.0
+            },
+            {
+              "key": "1013719p:9:8261-13-3:478.0",
+              "label": "artefact",
+              "band_px": 23218,
+              "covered_px": 0,
+              "coverage": 0.0
+            },
+            {
+              "key": "1013719p:9:8261-13-3:502.0",
+              "label": "artefact",
+              "band_px": 23220,
+              "covered_px": 0,
+              "coverage": 0.0
+            }
+          ]
+        },
+        "houghpeaks": {
+          "seconds": 2.32,
+          "rows": [
+            {
+              "key": "1013719p:9:8261-13-3:-842.0",
+              "label": "artefact",
+              "band_px": 23218,
+              "covered_px": 0,
+              "coverage": 0.0
+            },
+            {
+              "key": "1013719p:9:8261-13-3:450.0",
+              "label": "artefact",
+              "band_px": 23220,
+              "covered_px": 0,
+              "coverage": 0.0
+            },
+            {
+              "key": "1013719p:9:8261-13-3:478.0",
+              "label": "artefact",
+              "band_px": 23218,
+              "covered_px": 0,
+              "coverage": 0.0
+            },
+            {
+              "key": "1013719p:9:8261-13-3:502.0",
+              "label": "artefact",
+              "band_px": 23220,
+              "covered_px": 0,
+              "coverage": 0.0
+            }
+          ]
+        },
+        "streaks": {
+          "seconds": 3.34,
+          "rows": [
+            {
+              "key": "1013719p:9:8261-13-3:-842.0",
+              "label": "artefact",
+              "band_px": 23218,
+              "covered_px": 0,
+              "coverage": 0.0
+            },
+            {
+              "key": "1013719p:9:8261-13-3:450.0",
+              "label": "artefact",
+              "band_px": 23220,
+              "covered_px": 0,
+              "coverage": 0.0
+            },
+            {
+              "key": "1013719p:9:8261-13-3:478.0",
+              "label": "artefact",
+              "band_px": 23218,
+              "covered_px": 0,
+              "coverage": 0.0
+            },
+            {
+              "key": "1013719p:9:8261-13-3:502.0",
+              "label": "artefact",
+              "band_px": 23220,
+              "covered_px": 0,
+              "coverage": 0.0
+            }
+          ]
+        }
+      },
+      "error": null
+    },
+    {
+      "exposure": "1013719p",
+      "hdu": 14,
+      "results": {
+        "none": {
+          "seconds": 0.0,
+          "rows": [
+            {
+              "key": "1013719p:14:8351-17-3:434.0",
+              "label": "artefact",
+              "band_px": 23218,
+              "covered_px": 0,
+              "coverage": 0.0
+            }
+          ]
+        },
+        "houghpeaks": {
+          "seconds": 2.76,
+          "rows": [
+            {
+              "key": "1013719p:14:8351-17-3:434.0",
+              "label": "artefact",
+              "band_px": 23218,
+              "covered_px": 50,
+              "coverage": 0.002153501593591179
+            }
+          ]
+        },
+        "streaks": {
+          "seconds": 3.55,
+          "rows": [
+            {
+              "key": "1013719p:14:8351-17-3:434.0",
+              "label": "artefact",
+              "band_px": 23218,
+              "covered_px": 50,
+              "coverage": 0.002153501593591179
+            }
+          ]
+        }
+      },
+      "error": null
+    },
+    {
+      "exposure": "1013719p",
+      "hdu": 15,
+      "results": {
+        "none": {
+          "seconds": 0.0,
+          "rows": [
+            {
+              "key": "1013719p:15:8434-13-5:882.0",
+              "label": "artefact",
+              "band_px": 23221,
+              "covered_px": 0,
+              "coverage": 0.0
+            }
+          ]
+        },
+        "houghpeaks": {
+          "seconds": 2.65,
+          "rows": [
+            {
+              "key": "1013719p:15:8434-13-5:882.0",
+              "label": "artefact",
+              "band_px": 23221,
+              "covered_px": 0,
+              "coverage": 0.0
+            }
+          ]
+        },
+        "streaks": {
+          "seconds": 3.41,
+          "rows": [
+            {
+              "key": "1013719p:15:8434-13-5:882.0",
+              "label": "artefact",
+              "band_px": 23221,
+              "covered_px": 0,
+              "coverage": 0.0
+            }
+          ]
+        }
+      },
+      "error": null
+    },
+    {
+      "exposure": "1013719p",
+      "hdu": 16,
+      "results": {
+        "none": {
+          "seconds": 0.0,
+          "rows": [
+            {
+              "key": "1013719p:16:8341-17-3:-782.0",
+              "label": "artefact",
+              "band_px": 23218,
+              "covered_px": 0,
+              "coverage": 0.0
+            },
+            {
+              "key": "1013719p:16:8341-17-3:-174.0",
+              "label": "artefact",
+              "band_px": 23218,
+              "covered_px": 0,
+              "coverage": 0.0
+            },
+            {
+              "key": "1013719p:16:8341-17-3:826.0",
+              "label": "artefact",
+              "band_px": 23218,
+              "covered_px": 0,
+              "coverage": 0.0
+            }
+          ]
+        },
+        "houghpeaks": {
+          "seconds": 2.51,
+          "rows": [
+            {
+              "key": "1013719p:16:8341-17-3:-782.0",
+              "label": "artefact",
+              "band_px": 23218,
+              "covered_px": 3744,
+              "coverage": 0.1612541993281075
+            },
+            {
+              "key": "1013719p:16:8341-17-3:-174.0",
+              "label": "artefact",
+              "band_px": 23218,
+              "covered_px": 65,
+              "coverage": 0.002799552071668533
+            },
+            {
+              "key": "1013719p:16:8341-17-3:826.0",
+              "label": "artefact",
+              "band_px": 23218,
+              "covered_px": 0,
+              "coverage": 0.0
+            }
+          ]
+        },
+        "streaks": {
+          "seconds": 3.49,
+          "rows": [
+            {
+              "key": "1013719p:16:8341-17-3:-782.0",
+              "label": "artefact",
+              "band_px": 23218,
+              "covered_px": 3744,
+              "coverage": 0.1612541993281075
+            },
+            {
+              "key": "1013719p:16:8341-17-3:-174.0",
+              "label": "artefact",
+              "band_px": 23218,
+              "covered_px": 65,
+              "coverage": 0.002799552071668533
+            },
+            {
+              "key": "1013719p:16:8341-17-3:826.0",
+              "label": "artefact",
+              "band_px": 23218,
+              "covered_px": 0,
+              "coverage": 0.0
+            }
+          ]
+        }
+      },
+      "error": null
+    },
+    {
+      "exposure": "1013719p",
+      "hdu": 17,
+      "results": {
+        "none": {
+          "seconds": 0.0,
+          "rows": [
+            {
+              "key": "1013719p:17:8351-11-4:-782.0",
+              "label": "artefact",
+              "band_px": 23218,
+              "covered_px": 0,
+              "coverage": 0.0
+            },
+            {
+              "key": "1013719p:17:8351-11-4:-478.0",
+              "label": "artefact",
+              "band_px": 23220,
+              "covered_px": 0,
+              "coverage": 0.0
+            },
+            {
+              "key": "1013719p:17:8351-11-4:-423.916",
+              "label": "artefact",
+              "band_px": 23218,
+              "covered_px": 0,
+              "coverage": 0.0
+            },
+            {
+              "key": "1013719p:17:8351-11-4:-404.146",
+              "label": "artefact",
+              "band_px": 23218,
+              "covered_px": 0,
+              "coverage": 0.0
+            }
+          ]
+        },
+        "houghpeaks": {
+          "seconds": 2.75,
+          "rows": [
+            {
+              "key": "1013719p:17:8351-11-4:-782.0",
+              "label": "artefact",
+              "band_px": 23218,
+              "covered_px": 0,
+              "coverage": 0.0
+            },
+            {
+              "key": "1013719p:17:8351-11-4:-478.0",
+              "label": "artefact",
+              "band_px": 23220,
+              "covered_px": 1933,
+              "coverage": 0.08324720068906115
+            },
+            {
+              "key": "1013719p:17:8351-11-4:-423.916",
+              "label": "artefact",
+              "band_px": 23218,
+              "covered_px": 7185,
+              "coverage": 0.3094581789990525
+            },
+            {
+              "key": "1013719p:17:8351-11-4:-404.146",
+              "label": "artefact",
+              "band_px": 23218,
+              "covered_px": 5159,
+              "coverage": 0.22219829442673789
+            }
+          ]
+        },
+        "streaks": {
+          "seconds": 3.66,
+          "rows": [
+            {
+              "key": "1013719p:17:8351-11-4:-782.0",
+              "label": "artefact",
+              "band_px": 23218,
+              "covered_px": 0,
+              "coverage": 0.0
+            },
+            {
+              "key": "1013719p:17:8351-11-4:-478.0",
+              "label": "artefact",
+              "band_px": 23220,
+              "covered_px": 1933,
+              "coverage": 0.08324720068906115
+            },
+            {
+              "key": "1013719p:17:8351-11-4:-423.916",
+              "label": "artefact",
+              "band_px": 23218,
+              "covered_px": 7185,
+              "coverage": 0.3094581789990525
+            },
+            {
+              "key": "1013719p:17:8351-11-4:-404.146",
+              "label": "artefact",
+              "band_px": 23218,
+              "covered_px": 5159,
+              "coverage": 0.22219829442673789
+            }
+          ]
+        }
+      },
+      "error": null
+    },
+    {
+      "exposure": "1013719p",
+      "hdu": 18,
+      "results": {
+        "none": {
+          "seconds": 0.0,
+          "rows": [
+            {
+              "key": "1013719p:18:7432-19-3:-842.0",
+              "label": "artefact",
+              "band_px": 23218,
+              "covered_px": 0,
+              "coverage": 0.0
+            },
+            {
+              "key": "1013719p:18:7432-19-3:626.0",
+              "label": "artefact",
+              "band_px": 23218,
+              "covered_px": 0,
+              "coverage": 0.0
+            }
+          ]
+        },
+        "houghpeaks": {
+          "seconds": 2.22,
+          "rows": [
+            {
+              "key": "1013719p:18:7432-19-3:-842.0",
+              "label": "artefact",
+              "band_px": 23218,
+              "covered_px": 0,
+              "coverage": 0.0
+            },
+            {
+              "key": "1013719p:18:7432-19-3:626.0",
+              "label": "artefact",
+              "band_px": 23218,
+              "covered_px": 0,
+              "coverage": 0.0
+            }
+          ]
+        },
+        "streaks": {
+          "seconds": 3.23,
+          "rows": [
+            {
+              "key": "1013719p:18:7432-19-3:-842.0",
+              "label": "artefact",
+              "band_px": 23218,
+              "covered_px": 0,
+              "coverage": 0.0
+            },
+            {
+              "key": "1013719p:18:7432-19-3:626.0",
+              "label": "artefact",
+              "band_px": 23218,
+              "covered_px": 0,
+              "coverage": 0.0
+            }
+          ]
+        }
+      },
+      "error": null
+    },
+    {
+      "exposure": "1013719p",
+      "hdu": 19,
+      "results": {
+        "none": {
+          "seconds": 0.0,
+          "rows": [
+            {
+              "key": "1013719p:19:9172-4-3:-782.0",
+              "label": "artefact",
+              "band_px": 23218,
+              "covered_px": 0,
+              "coverage": 0.0
+            },
+            {
+              "key": "1013719p:19:9172-4-3:-775.052",
+              "label": "artefact",
+              "band_px": 23218,
+              "covered_px": 0,
+              "coverage": 0.0
+            },
+            {
+              "key": "1013719p:19:9172-4-3:470.0",
+              "label": "artefact",
+              "band_px": 23220,
+              "covered_px": 0,
+              "coverage": 0.0
+            },
+            {
+              "key": "1013719p:19:9172-4-3:526.0",
+              "label": "artefact",
+              "band_px": 23218,
+              "covered_px": 0,
+              "coverage": 0.0
+            },
+            {
+              "key": "1013719p:19:9172-4-3:578.0",
+              "label": "artefact",
+              "band_px": 23220,
+              "covered_px": 0,
+              "coverage": 0.0
+            }
+          ]
+        },
+        "houghpeaks": {
+          "seconds": 3.0,
+          "rows": [
+            {
+              "key": "1013719p:19:9172-4-3:-782.0",
+              "label": "artefact",
+              "band_px": 23218,
+              "covered_px": 4269,
+              "coverage": 0.18386596606081487
+            },
+            {
+              "key": "1013719p:19:9172-4-3:-775.052",
+              "label": "artefact",
+              "band_px": 23218,
+              "covered_px": 5262,
+              "coverage": 0.2266345077095357
+            },
+            {
+              "key": "1013719p:19:9172-4-3:470.0",
+              "label": "artefact",
+              "band_px": 23220,
+              "covered_px": 0,
+              "coverage": 0.0
+            },
+            {
+              "key": "1013719p:19:9172-4-3:526.0",
+              "label": "artefact",
+              "band_px": 23218,
+              "covered_px": 0,
+              "coverage": 0.0
+            },
+            {
+              "key": "1013719p:19:9172-4-3:578.0",
+              "label": "artefact",
+              "band_px": 23220,
+              "covered_px": 0,
+              "coverage": 0.0
+            }
+          ]
+        },
+        "streaks": {
+          "seconds": 4.16,
+          "rows": [
+            {
+              "key": "1013719p:19:9172-4-3:-782.0",
+              "label": "artefact",
+              "band_px": 23218,
+              "covered_px": 4269,
+              "coverage": 0.18386596606081487
+            },
+            {
+              "key": "1013719p:19:9172-4-3:-775.052",
+              "label": "artefact",
+              "band_px": 23218,
+              "covered_px": 5262,
+              "coverage": 0.2266345077095357
+            },
+            {
+              "key": "1013719p:19:9172-4-3:470.0",
+              "label": "artefact",
+              "band_px": 23220,
+              "covered_px": 0,
+              "coverage": 0.0
+            },
+            {
+              "key": "1013719p:19:9172-4-3:526.0",
+              "label": "artefact",
+              "band_px": 23218,
+              "covered_px": 0,
+              "coverage": 0.0
+            },
+            {
+              "key": "1013719p:19:9172-4-3:578.0",
+              "label": "artefact",
+              "band_px": 23220,
+              "covered_px": 0,
+              "coverage": 0.0
+            }
+          ]
+        }
+      },
+      "error": null
+    },
+    {
+      "exposure": "1013719p",
+      "hdu": 20,
+      "results": {
+        "none": {
+          "seconds": 0.0,
+          "rows": [
+            {
+              "key": "1013719p:20:8341-16-5:-843.089",
+              "label": "artefact",
+              "band_px": 23218,
+              "covered_px": 0,
+              "coverage": 0.0
+            },
+            {
+              "key": "1013719p:20:8341-16-5:-785.248",
+              "label": "artefact",
+              "band_px": 23218,
+              "covered_px": 0,
+              "coverage": 0.0
+            },
+            {
+              "key": "1013719p:20:8341-16-5:-738.0",
+              "label": "artefact",
+              "band_px": 23220,
+              "covered_px": 0,
+              "coverage": 0.0
+            },
+            {
+              "key": "1013719p:20:8341-16-5:-682.0",
+              "label": "artefact",
+              "band_px": 23221,
+              "covered_px": 0,
+              "coverage": 0.0
+            },
+            {
+              "key": "1013719p:20:8341-16-5:-626.0",
+              "label": "artefact",
+              "band_px": 23224,
+              "covered_px": 0,
+              "coverage": 0.0
+            },
+            {
+              "key": "1013719p:20:8341-16-5:-570.0",
+              "label": "artefact",
+              "band_px": 23227,
+              "covered_px": 0,
+              "coverage": 0.0
+            }
+          ]
+        },
+        "houghpeaks": {
+          "seconds": 1.93,
+          "rows": [
+            {
+              "key": "1013719p:20:8341-16-5:-843.089",
+              "label": "artefact",
+              "band_px": 23218,
+              "covered_px": 0,
+              "coverage": 0.0
+            },
+            {
+              "key": "1013719p:20:8341-16-5:-785.248",
+              "label": "artefact",
+              "band_px": 23218,
+              "covered_px": 3447,
+              "coverage": 0.1484623998621759
+            },
+            {
+              "key": "1013719p:20:8341-16-5:-738.0",
+              "label": "artefact",
+              "band_px": 23220,
+              "covered_px": 0,
+              "coverage": 0.0
+            },
+            {
+              "key": "1013719p:20:8341-16-5:-682.0",
+              "label": "artefact",
+              "band_px": 23221,
+              "covered_px": 0,
+              "coverage": 0.0
+            },
+            {
+              "key": "1013719p:20:8341-16-5:-626.0",
+              "label": "artefact",
+              "band_px": 23224,
+              "covered_px": 0,
+              "coverage": 0.0
+            },
+            {
+              "key": "1013719p:20:8341-16-5:-570.0",
+              "label": "artefact",
+              "band_px": 23227,
+              "covered_px": 0,
+              "coverage": 0.0
+            }
+          ]
+        },
+        "streaks": {
+          "seconds": 3.24,
+          "rows": [
+            {
+              "key": "1013719p:20:8341-16-5:-843.089",
+              "label": "artefact",
+              "band_px": 23218,
+              "covered_px": 0,
+              "coverage": 0.0
+            },
+            {
+              "key": "1013719p:20:8341-16-5:-785.248",
+              "label": "artefact",
+              "band_px": 23218,
+              "covered_px": 3447,
+              "coverage": 0.1484623998621759
+            },
+            {
+              "key": "1013719p:20:8341-16-5:-738.0",
+              "label": "artefact",
+              "band_px": 23220,
+              "covered_px": 0,
+              "coverage": 0.0
+            },
+            {
+              "key": "1013719p:20:8341-16-5:-682.0",
+              "label": "artefact",
+              "band_px": 23221,
+              "covered_px": 0,
+              "coverage": 0.0
+            },
+            {
+              "key": "1013719p:20:8341-16-5:-626.0",
+              "label": "artefact",
+              "band_px": 23224,
+              "covered_px": 0,
+              "coverage": 0.0
+            },
+            {
+              "key": "1013719p:20:8341-16-5:-570.0",
+              "label": "artefact",
+              "band_px": 23227,
+              "covered_px": 0,
+              "coverage": 0.0
+            }
+          ]
+        }
+      },
+      "error": null
+    },
+    {
+      "exposure": "1013719p",
+      "hdu": 21,
+      "results": {
+        "none": {
+          "seconds": 0.0,
+          "rows": [
+            {
+              "key": "1013719p:21:8352-13-4:42.0",
+              "label": "artefact",
+              "band_px": 23220,
+              "covered_px": 0,
+              "coverage": 0.0
+            },
+            {
+              "key": "1013719p:21:8352-13-4:86.0",
+              "label": "artefact",
+              "band_px": 23218,
+              "covered_px": 0,
+              "coverage": 0.0
+            },
+            {
+              "key": "1013719p:21:8352-13-4:126.0",
+              "label": "artefact",
+              "band_px": 23220,
+              "covered_px": 0,
+              "coverage": 0.0
+            }
+          ]
+        },
+        "houghpeaks": {
+          "seconds": 2.9,
+          "rows": [
+            {
+              "key": "1013719p:21:8352-13-4:42.0",
+              "label": "artefact",
+              "band_px": 23220,
+              "covered_px": 40,
+              "coverage": 0.0017226528854435831
+            },
+            {
+              "key": "1013719p:21:8352-13-4:86.0",
+              "label": "artefact",
+              "band_px": 23218,
+              "covered_px": 45,
+              "coverage": 0.0019381514342320613
+            },
+            {
+              "key": "1013719p:21:8352-13-4:126.0",
+              "label": "artefact",
+              "band_px": 23220,
+              "covered_px": 45,
+              "coverage": 0.001937984496124031
+            }
+          ]
+        },
+        "streaks": {
+          "seconds": 3.96,
+          "rows": [
+            {
+              "key": "1013719p:21:8352-13-4:42.0",
+              "label": "artefact",
+              "band_px": 23220,
+              "covered_px": 40,
+              "coverage": 0.0017226528854435831
+            },
+            {
+              "key": "1013719p:21:8352-13-4:86.0",
+              "label": "artefact",
+              "band_px": 23218,
+              "covered_px": 45,
+              "coverage": 0.0019381514342320613
+            },
+            {
+              "key": "1013719p:21:8352-13-4:126.0",
+              "label": "artefact",
+              "band_px": 23220,
+              "covered_px": 45,
+              "coverage": 0.001937984496124031
+            }
+          ]
+        }
+      },
+      "error": null
+    },
+    {
+      "exposure": "1013719p",
+      "hdu": 22,
+      "results": {
+        "none": {
+          "seconds": 0.0,
+          "rows": [
+            {
+              "key": "1013719p:22:8374-17-5:-395.739",
+              "label": "artefact",
+              "band_px": 23218,
+              "covered_px": 0,
+              "coverage": 0.0
+            },
+            {
+              "key": "1013719p:22:8374-17-5:-378.937",
+              "label": "artefact",
+              "band_px": 23218,
+              "covered_px": 0,
+              "coverage": 0.0
+            },
+            {
+              "key": "1013719p:22:8374-17-5:374.0",
+              "label": "artefact",
+              "band_px": 23218,
+              "covered_px": 0,
+              "coverage": 0.0
+            },
+            {
+              "key": "1013719p:22:8374-17-5:1008.569",
+              "label": "artefact",
+              "band_px": 23218,
+              "covered_px": 0,
+              "coverage": 0.0
+            }
+          ]
+        },
+        "houghpeaks": {
+          "seconds": 2.98,
+          "rows": [
+            {
+              "key": "1013719p:22:8374-17-5:-395.739",
+              "label": "artefact",
+              "band_px": 23218,
+              "covered_px": 6643,
+              "coverage": 0.28611422172452405
+            },
+            {
+              "key": "1013719p:22:8374-17-5:-378.937",
+              "label": "artefact",
+              "band_px": 23218,
+              "covered_px": 60,
+              "coverage": 0.002584201912309415
+            },
+            {
+              "key": "1013719p:22:8374-17-5:374.0",
+              "label": "artefact",
+              "band_px": 23218,
+              "covered_px": 0,
+              "coverage": 0.0
+            },
+            {
+              "key": "1013719p:22:8374-17-5:1008.569",
+              "label": "artefact",
+              "band_px": 23218,
+              "covered_px": 0,
+              "coverage": 0.0
+            }
+          ]
+        },
+        "streaks": {
+          "seconds": 4.63,
+          "rows": [
+            {
+              "key": "1013719p:22:8374-17-5:-395.739",
+              "label": "artefact",
+              "band_px": 23218,
+              "covered_px": 8031,
+              "coverage": 0.3458954259626152
+            },
+            {
+              "key": "1013719p:22:8374-17-5:-378.937",
+              "label": "artefact",
+              "band_px": 23218,
+              "covered_px": 1046,
+              "coverage": 0.04505125333792747
+            },
+            {
+              "key": "1013719p:22:8374-17-5:374.0",
+              "label": "artefact",
+              "band_px": 23218,
+              "covered_px": 0,
+              "coverage": 0.0
+            },
+            {
+              "key": "1013719p:22:8374-17-5:1008.569",
+              "label": "artefact",
+              "band_px": 23218,
+              "covered_px": 0,
+              "coverage": 0.0
+            }
+          ]
+        }
+      },
+      "error": null
+    },
+    {
+      "exposure": "1013719p",
+      "hdu": 24,
+      "results": {
+        "none": {
+          "seconds": 0.0,
+          "rows": [
+            {
+              "key": "1013719p:24:8351-6-4:586.0",
+              "label": "artefact",
+              "band_px": 23220,
+              "covered_px": 0,
+              "coverage": 0.0
+            },
+            {
+              "key": "1013719p:24:8351-6-4:630.0",
+              "label": "artefact",
+              "band_px": 23218,
+              "covered_px": 0,
+              "coverage": 0.0
+            },
+            {
+              "key": "1013719p:24:8351-6-4:670.0",
+              "label": "artefact",
+              "band_px": 23220,
+              "covered_px": 0,
+              "coverage": 0.0
+            }
+          ]
+        },
+        "houghpeaks": {
+          "seconds": 2.61,
+          "rows": [
+            {
+              "key": "1013719p:24:8351-6-4:586.0",
+              "label": "artefact",
+              "band_px": 23220,
+              "covered_px": 0,
+              "coverage": 0.0
+            },
+            {
+              "key": "1013719p:24:8351-6-4:630.0",
+              "label": "artefact",
+              "band_px": 23218,
+              "covered_px": 0,
+              "coverage": 0.0
+            },
+            {
+              "key": "1013719p:24:8351-6-4:670.0",
+              "label": "artefact",
+              "band_px": 23220,
+              "covered_px": 0,
+              "coverage": 0.0
+            }
+          ]
+        },
+        "streaks": {
+          "seconds": 3.53,
+          "rows": [
+            {
+              "key": "1013719p:24:8351-6-4:586.0",
+              "label": "artefact",
+              "band_px": 23220,
+              "covered_px": 0,
+              "coverage": 0.0
+            },
+            {
+              "key": "1013719p:24:8351-6-4:630.0",
+              "label": "artefact",
+              "band_px": 23218,
+              "covered_px": 0,
+              "coverage": 0.0
+            },
+            {
+              "key": "1013719p:24:8351-6-4:670.0",
+              "label": "artefact",
+              "band_px": 23220,
+              "covered_px": 0,
+              "coverage": 0.0
+            }
+          ]
+        }
+      },
+      "error": null
+    },
+    {
+      "exposure": "1013719p",
+      "hdu": 27,
+      "results": {
+        "none": {
+          "seconds": 0.0,
+          "rows": [
+            {
+              "key": "1013719p:27:8351-7-3:518.0",
+              "label": "artefact",
+              "band_px": 23220,
+              "covered_px": 0,
+              "coverage": 0.0
+            },
+            {
+              "key": "1013719p:27:8351-7-3:582.0",
+              "label": "artefact",
+              "band_px": 23218,
+              "covered_px": 0,
+              "coverage": 0.0
+            }
+          ]
+        },
+        "houghpeaks": {
+          "seconds": 2.8,
+          "rows": [
+            {
+              "key": "1013719p:27:8351-7-3:518.0",
+              "label": "artefact",
+              "band_px": 23220,
+              "covered_px": 0,
+              "coverage": 0.0
+            },
+            {
+              "key": "1013719p:27:8351-7-3:582.0",
+              "label": "artefact",
+              "band_px": 23218,
+              "covered_px": 0,
+              "coverage": 0.0
+            }
+          ]
+        },
+        "streaks": {
+          "seconds": 3.87,
+          "rows": [
+            {
+              "key": "1013719p:27:8351-7-3:518.0",
+              "label": "artefact",
+              "band_px": 23220,
+              "covered_px": 0,
+              "coverage": 0.0
+            },
+            {
+              "key": "1013719p:27:8351-7-3:582.0",
+              "label": "artefact",
+              "band_px": 23218,
+              "covered_px": 0,
+              "coverage": 0.0
+            }
+          ]
+        }
+      },
+      "error": null
+    },
+    {
+      "exposure": "1013719p",
+      "hdu": 28,
+      "results": {
+        "none": {
+          "seconds": 0.0,
+          "rows": [
+            {
+              "key": "1013719p:28:8261-16-5:846.0",
+              "label": "artefact",
+              "band_px": 23220,
+              "covered_px": 0,
+              "coverage": 0.0
+            },
+            {
+              "key": "1013719p:28:8261-16-5:938.0",
+              "label": "artefact",
+              "band_px": 23220,
+              "covered_px": 0,
+              "coverage": 0.0
+            },
+            {
+              "key": "1013719p:28:8261-16-5:966.0",
+              "label": "artefact",
+              "band_px": 17818,
+              "covered_px": 0,
+              "coverage": 0.0
+            },
+            {
+              "key": "1013719p:28:8261-16-5:994.0",
+              "label": "artefact",
+              "band_px": 14264,
+              "covered_px": 0,
+              "coverage": 0.0
+            },
+            {
+              "key": "1013719p:28:8261-16-5:1022.0",
+              "label": "artefact",
+              "band_px": 12438,
+              "covered_px": 0,
+              "coverage": 0.0
+            }
+          ]
+        },
+        "houghpeaks": {
+          "seconds": 1.76,
+          "rows": [
+            {
+              "key": "1013719p:28:8261-16-5:846.0",
+              "label": "artefact",
+              "band_px": 23220,
+              "covered_px": 0,
+              "coverage": 0.0
+            },
+            {
+              "key": "1013719p:28:8261-16-5:938.0",
+              "label": "artefact",
+              "band_px": 23220,
+              "covered_px": 1041,
+              "coverage": 0.04483204134366925
+            },
+            {
+              "key": "1013719p:28:8261-16-5:966.0",
+              "label": "artefact",
+              "band_px": 17818,
+              "covered_px": 0,
+              "coverage": 0.0
+            },
+            {
+              "key": "1013719p:28:8261-16-5:994.0",
+              "label": "artefact",
+              "band_px": 14264,
+              "covered_px": 0,
+              "coverage": 0.0
+            },
+            {
+              "key": "1013719p:28:8261-16-5:1022.0",
+              "label": "artefact",
+              "band_px": 12438,
+              "covered_px": 0,
+              "coverage": 0.0
+            }
+          ]
+        },
+        "streaks": {
+          "seconds": 2.84,
+          "rows": [
+            {
+              "key": "1013719p:28:8261-16-5:846.0",
+              "label": "artefact",
+              "band_px": 23220,
+              "covered_px": 0,
+              "coverage": 0.0
+            },
+            {
+              "key": "1013719p:28:8261-16-5:938.0",
+              "label": "artefact",
+              "band_px": 23220,
+              "covered_px": 1041,
+              "coverage": 0.04483204134366925
+            },
+            {
+              "key": "1013719p:28:8261-16-5:966.0",
+              "label": "artefact",
+              "band_px": 17818,
+              "covered_px": 0,
+              "coverage": 0.0
+            },
+            {
+              "key": "1013719p:28:8261-16-5:994.0",
+              "label": "artefact",
+              "band_px": 14264,
+              "covered_px": 0,
+              "coverage": 0.0
+            },
+            {
+              "key": "1013719p:28:8261-16-5:1022.0",
+              "label": "artefact",
+              "band_px": 12438,
+              "covered_px": 0,
+              "coverage": 0.0
+            }
+          ]
+        }
+      },
+      "error": null
+    },
+    {
+      "exposure": "1013719p",
+      "hdu": 29,
+      "results": {
+        "none": {
+          "seconds": 0.0,
+          "rows": [
+            {
+              "key": "1013719p:29:7432-3-3:998.83",
+              "label": "artefact",
+              "band_px": 23218,
+              "covered_px": 0,
+              "coverage": 0.0
+            },
+            {
+              "key": "1013719p:29:7432-3-3:1006.79",
+              "label": "artefact",
+              "band_px": 23218,
+              "covered_px": 0,
+              "coverage": 0.0
+            }
+          ]
+        },
+        "houghpeaks": {
+          "seconds": 2.36,
+          "rows": [
+            {
+              "key": "1013719p:29:7432-3-3:998.83",
+              "label": "artefact",
+              "band_px": 23218,
+              "covered_px": 4414,
+              "coverage": 0.1901111206822293
+            },
+            {
+              "key": "1013719p:29:7432-3-3:1006.79",
+              "label": "artefact",
+              "band_px": 23218,
+              "covered_px": 0,
+              "coverage": 0.0
+            }
+          ]
+        },
+        "streaks": {
+          "seconds": 3.37,
+          "rows": [
+            {
+              "key": "1013719p:29:7432-3-3:998.83",
+              "label": "artefact",
+              "band_px": 23218,
+              "covered_px": 4414,
+              "coverage": 0.1901111206822293
+            },
+            {
+              "key": "1013719p:29:7432-3-3:1006.79",
+              "label": "artefact",
+              "band_px": 23218,
+              "covered_px": 0,
+              "coverage": 0.0
+            }
+          ]
+        }
+      },
+      "error": null
+    },
+    {
+      "exposure": "1013719p",
+      "hdu": 30,
+      "results": {
+        "none": {
+          "seconds": 0.0,
+          "rows": [
+            {
+              "key": "1013719p:30:8351-16-4:-798.0",
+              "label": "artefact",
+              "band_px": 23218,
+              "covered_px": 0,
+              "coverage": 0.0
+            },
+            {
+              "key": "1013719p:30:8351-16-4:-766.0",
+              "label": "artefact",
+              "band_px": 23220,
+              "covered_px": 0,
+              "coverage": 0.0
+            }
+          ]
+        },
+        "houghpeaks": {
+          "seconds": 2.1,
+          "rows": [
+            {
+              "key": "1013719p:30:8351-16-4:-798.0",
+              "label": "artefact",
+              "band_px": 23218,
+              "covered_px": 0,
+              "coverage": 0.0
+            },
+            {
+              "key": "1013719p:30:8351-16-4:-766.0",
+              "label": "artefact",
+              "band_px": 23220,
+              "covered_px": 0,
+              "coverage": 0.0
+            }
+          ]
+        },
+        "streaks": {
+          "seconds": 3.17,
+          "rows": [
+            {
+              "key": "1013719p:30:8351-16-4:-798.0",
+              "label": "artefact",
+              "band_px": 23218,
+              "covered_px": 0,
+              "coverage": 0.0
+            },
+            {
+              "key": "1013719p:30:8351-16-4:-766.0",
+              "label": "artefact",
+              "band_px": 23220,
+              "covered_px": 0,
+              "coverage": 0.0
+            }
+          ]
+        }
+      },
+      "error": null
+    },
+    {
+      "exposure": "1013719p",
+      "hdu": 31,
+      "results": {
+        "none": {
+          "seconds": 0.0,
+          "rows": [
+            {
+              "key": "1013719p:31:8261-19-5:-638.0",
+              "label": "artefact",
+              "band_px": 23218,
+              "covered_px": 0,
+              "coverage": 0.0
+            },
+            {
+              "key": "1013719p:31:8261-19-5:154.0",
+              "label": "artefact",
+              "band_px": 23218,
+              "covered_px": 0,
+              "coverage": 0.0
+            },
+            {
+              "key": "1013719p:31:8261-19-5:462.0",
+              "label": "artefact",
+              "band_px": 23218,
+              "covered_px": 0,
+              "coverage": 0.0
+            },
+            {
+              "key": "1013719p:31:8261-19-5:1016.016",
+              "label": "artefact",
+              "band_px": 23218,
+              "covered_px": 0,
+              "coverage": 0.0
+            }
+          ]
+        },
+        "houghpeaks": {
+          "seconds": 2.57,
+          "rows": [
+            {
+              "key": "1013719p:31:8261-19-5:-638.0",
+              "label": "artefact",
+              "band_px": 23218,
+              "covered_px": 0,
+              "coverage": 0.0
+            },
+            {
+              "key": "1013719p:31:8261-19-5:154.0",
+              "label": "artefact",
+              "band_px": 23218,
+              "covered_px": 40,
+              "coverage": 0.0017228012748729434
+            },
+            {
+              "key": "1013719p:31:8261-19-5:462.0",
+              "label": "artefact",
+              "band_px": 23218,
+              "covered_px": 0,
+              "coverage": 0.0
+            },
+            {
+              "key": "1013719p:31:8261-19-5:1016.016",
+              "label": "artefact",
+              "band_px": 23218,
+              "covered_px": 0,
+              "coverage": 0.0
+            }
+          ]
+        },
+        "streaks": {
+          "seconds": 4.19,
+          "rows": [
+            {
+              "key": "1013719p:31:8261-19-5:-638.0",
+              "label": "artefact",
+              "band_px": 23218,
+              "covered_px": 0,
+              "coverage": 0.0
+            },
+            {
+              "key": "1013719p:31:8261-19-5:154.0",
+              "label": "artefact",
+              "band_px": 23218,
+              "covered_px": 40,
+              "coverage": 0.0017228012748729434
+            },
+            {
+              "key": "1013719p:31:8261-19-5:462.0",
+              "label": "artefact",
+              "band_px": 23218,
+              "covered_px": 0,
+              "coverage": 0.0
+            },
+            {
+              "key": "1013719p:31:8261-19-5:1016.016",
+              "label": "artefact",
+              "band_px": 23218,
+              "covered_px": 0,
+              "coverage": 0.0
+            }
+          ]
+        }
+      },
+      "error": null
+    },
+    {
+      "exposure": "1013719p",
+      "hdu": 32,
+      "results": {
+        "none": {
+          "seconds": 0.0,
+          "rows": [
+            {
+              "key": "1013719p:32:8351-8-3:762.0",
+              "label": "artefact",
+              "band_px": 23225,
+              "covered_px": 0,
+              "coverage": 0.0
+            },
+            {
+              "key": "1013719p:32:8351-8-3:826.0",
+              "label": "artefact",
+              "band_px": 23218,
+              "covered_px": 0,
+              "coverage": 0.0
+            },
+            {
+              "key": "1013719p:32:8351-8-3:862.0",
+              "label": "artefact",
+              "band_px": 23221,
+              "covered_px": 0,
+              "coverage": 0.0
+            },
+            {
+              "key": "1013719p:32:8351-8-3:878.0",
+              "label": "artefact",
+              "band_px": 19812,
+              "covered_px": 0,
+              "coverage": 0.0
+            },
+            {
+              "key": "1013719p:32:8351-8-3:890.0",
+              "label": "artefact",
+              "band_px": 17182,
+              "covered_px": 0,
+              "coverage": 0.0
+            }
+          ]
+        },
+        "houghpeaks": {
+          "seconds": 2.17,
+          "rows": [
+            {
+              "key": "1013719p:32:8351-8-3:762.0",
+              "label": "artefact",
+              "band_px": 23225,
+              "covered_px": 0,
+              "coverage": 0.0
+            },
+            {
+              "key": "1013719p:32:8351-8-3:826.0",
+              "label": "artefact",
+              "band_px": 23218,
+              "covered_px": 0,
+              "coverage": 0.0
+            },
+            {
+              "key": "1013719p:32:8351-8-3:862.0",
+              "label": "artefact",
+              "band_px": 23221,
+              "covered_px": 0,
+              "coverage": 0.0
+            },
+            {
+              "key": "1013719p:32:8351-8-3:878.0",
+              "label": "artefact",
+              "band_px": 19812,
+              "covered_px": 0,
+              "coverage": 0.0
+            },
+            {
+              "key": "1013719p:32:8351-8-3:890.0",
+              "label": "artefact",
+              "band_px": 17182,
+              "covered_px": 0,
+              "coverage": 0.0
+            }
+          ]
+        },
+        "streaks": {
+          "seconds": 3.24,
+          "rows": [
+            {
+              "key": "1013719p:32:8351-8-3:762.0",
+              "label": "artefact",
+              "band_px": 23225,
+              "covered_px": 0,
+              "coverage": 0.0
+            },
+            {
+              "key": "1013719p:32:8351-8-3:826.0",
+              "label": "artefact",
+              "band_px": 23218,
+              "covered_px": 0,
+              "coverage": 0.0
+            },
+            {
+              "key": "1013719p:32:8351-8-3:862.0",
+              "label": "artefact",
+              "band_px": 23221,
+              "covered_px": 0,
+              "coverage": 0.0
+            },
+            {
+              "key": "1013719p:32:8351-8-3:878.0",
+              "label": "artefact",
+              "band_px": 19812,
+              "covered_px": 0,
+              "coverage": 0.0
+            },
+            {
+              "key": "1013719p:32:8351-8-3:890.0",
+              "label": "artefact",
+              "band_px": 17182,
+              "covered_px": 0,
+              "coverage": 0.0
+            }
+          ]
+        }
+      },
+      "error": null
+    },
+    {
+      "exposure": "1013719p",
+      "hdu": 33,
+      "results": {
+        "none": {
+          "seconds": 0.0,
+          "rows": [
+            {
+              "key": "1013719p:33:8352-10-4:271.01",
+              "label": "artefact",
+              "band_px": 23218,
+              "covered_px": 0,
+              "coverage": 0.0
+            }
+          ]
+        },
+        "houghpeaks": {
+          "seconds": 3.47,
+          "rows": [
+            {
+              "key": "1013719p:33:8352-10-4:271.01",
+              "label": "artefact",
+              "band_px": 23218,
+              "covered_px": 10498,
+              "coverage": 0.452149194590404
+            }
+          ]
+        },
+        "streaks": {
+          "seconds": 4.72,
+          "rows": [
+            {
+              "key": "1013719p:33:8352-10-4:271.01",
+              "label": "artefact",
+              "band_px": 23218,
+              "covered_px": 10503,
+              "coverage": 0.4523645447497631
+            }
+          ]
+        }
+      },
+      "error": null
+    },
+    {
+      "exposure": "1013719p",
+      "hdu": 35,
+      "results": {
+        "none": {
+          "seconds": 0.0,
+          "rows": [
+            {
+              "key": "1013719p:35:8261-7-3:-620.0",
+              "label": "artefact",
+              "band_px": 23218,
+              "covered_px": 0,
+              "coverage": 0.0
+            },
+            {
+              "key": "1013719p:35:8261-7-3:-606.466",
+              "label": "artefact",
+              "band_px": 23218,
+              "covered_px": 0,
+              "coverage": 0.0
+            },
+            {
+              "key": "1013719p:35:8261-7-3:-126.0",
+              "label": "artefact",
+              "band_px": 23218,
+              "covered_px": 0,
+              "coverage": 0.0
+            }
+          ]
+        },
+        "houghpeaks": {
+          "seconds": 2.28,
+          "rows": [
+            {
+              "key": "1013719p:35:8261-7-3:-620.0",
+              "label": "artefact",
+              "band_px": 23218,
+              "covered_px": 6335,
+              "coverage": 0.2728486519080024
+            },
+            {
+              "key": "1013719p:35:8261-7-3:-606.466",
+              "label": "artefact",
+              "band_px": 23218,
+              "covered_px": 5900,
+              "coverage": 0.25411318804375915
+            },
+            {
+              "key": "1013719p:35:8261-7-3:-126.0",
+              "label": "artefact",
+              "band_px": 23218,
+              "covered_px": 0,
+              "coverage": 0.0
+            }
+          ]
+        },
+        "streaks": {
+          "seconds": 3.5,
+          "rows": [
+            {
+              "key": "1013719p:35:8261-7-3:-620.0",
+              "label": "artefact",
+              "band_px": 23218,
+              "covered_px": 6335,
+              "coverage": 0.2728486519080024
+            },
+            {
+              "key": "1013719p:35:8261-7-3:-606.466",
+              "label": "artefact",
+              "band_px": 23218,
+              "covered_px": 5900,
+              "coverage": 0.25411318804375915
+            },
+            {
+              "key": "1013719p:35:8261-7-3:-126.0",
+              "label": "artefact",
+              "band_px": 23218,
+              "covered_px": 0,
+              "coverage": 0.0
+            }
+          ]
+        }
+      },
+      "error": null
+    },
+    {
+      "exposure": "1013720p",
+      "hdu": 2,
+      "results": {
+        "none": {
+          "seconds": 0.0,
+          "rows": [
+            {
+              "key": "1013720p:2:8352-3-4:154.0",
+              "label": "artefact",
+              "band_px": 23218,
+              "covered_px": 0,
+              "coverage": 0.0
+            },
+            {
+              "key": "1013720p:2:8352-3-4:726.0",
+              "label": "artefact",
+              "band_px": 23218,
+              "covered_px": 0,
+              "coverage": 0.0
+            },
+            {
+              "key": "1013720p:2:8352-3-4:790.0",
+              "label": "artefact",
+              "band_px": 23220,
+              "covered_px": 0,
+              "coverage": 0.0
+            }
+          ]
+        },
+        "houghpeaks": {
+          "seconds": 2.43,
+          "rows": [
+            {
+              "key": "1013720p:2:8352-3-4:154.0",
+              "label": "artefact",
+              "band_px": 23218,
+              "covered_px": 0,
+              "coverage": 0.0
+            },
+            {
+              "key": "1013720p:2:8352-3-4:726.0",
+              "label": "artefact",
+              "band_px": 23218,
+              "covered_px": 0,
+              "coverage": 0.0
+            },
+            {
+              "key": "1013720p:2:8352-3-4:790.0",
+              "label": "artefact",
+              "band_px": 23220,
+              "covered_px": 0,
+              "coverage": 0.0
+            }
+          ]
+        },
+        "streaks": {
+          "seconds": 3.67,
+          "rows": [
+            {
+              "key": "1013720p:2:8352-3-4:154.0",
+              "label": "artefact",
+              "band_px": 23218,
+              "covered_px": 0,
+              "coverage": 0.0
+            },
+            {
+              "key": "1013720p:2:8352-3-4:726.0",
+              "label": "artefact",
+              "band_px": 23218,
+              "covered_px": 0,
+              "coverage": 0.0
+            },
+            {
+              "key": "1013720p:2:8352-3-4:790.0",
+              "label": "artefact",
+              "band_px": 23220,
+              "covered_px": 0,
+              "coverage": 0.0
+            }
+          ]
+        }
+      },
+      "error": null
+    },
+    {
+      "exposure": "1013720p",
+      "hdu": 3,
+      "results": {
+        "none": {
+          "seconds": 0.0,
+          "rows": [
+            {
+              "key": "1013720p:3:8352-15-3:-777.813",
+              "label": "artefact",
+              "band_px": 23218,
+              "covered_px": 0,
+              "coverage": 0.0
+            }
+          ]
+        },
+        "houghpeaks": {
+          "seconds": 2.47,
+          "rows": [
+            {
+              "key": "1013720p:3:8352-15-3:-777.813",
+              "label": "artefact",
+              "band_px": 23218,
+              "covered_px": 14050,
+              "coverage": 0.6051339477991213
+            }
+          ]
+        },
+        "streaks": {
+          "seconds": 3.42,
+          "rows": [
+            {
+              "key": "1013720p:3:8352-15-3:-777.813",
+              "label": "artefact",
+              "band_px": 23218,
+              "covered_px": 14050,
+              "coverage": 0.6051339477991213
+            }
+          ]
+        }
+      },
+      "error": null
+    },
+    {
+      "exposure": "1013720p",
+      "hdu": 4,
+      "results": {
+        "none": {
+          "seconds": 0.0,
+          "rows": [
+            {
+              "key": "1013720p:4:8261-14-4:-902.504",
+              "label": "artefact",
+              "band_px": 23218,
+              "covered_px": 0,
+              "coverage": 0.0
+            }
+          ]
+        },
+        "houghpeaks": {
+          "seconds": 2.32,
+          "rows": [
+            {
+              "key": "1013720p:4:8261-14-4:-902.504",
+              "label": "artefact",
+              "band_px": 23218,
+              "covered_px": 7898,
+              "coverage": 0.34016711172366265
+            }
+          ]
+        },
+        "streaks": {
+          "seconds": 3.67,
+          "rows": [
+            {
+              "key": "1013720p:4:8261-14-4:-902.504",
+              "label": "artefact",
+              "band_px": 23218,
+              "covered_px": 7898,
+              "coverage": 0.34016711172366265
+            }
+          ]
+        }
+      },
+      "error": null
+    },
+    {
+      "exposure": "1013720p",
+      "hdu": 5,
+      "results": {
+        "none": {
+          "seconds": 0.0,
+          "rows": [
+            {
+              "key": "1013720p:5:8341-17-4:826.0",
+              "label": "artefact",
+              "band_px": 23218,
+              "covered_px": 0,
+              "coverage": 0.0
+            },
+            {
+              "key": "1013720p:5:8341-17-4:866.0",
+              "label": "artefact",
+              "band_px": 20383,
+              "covered_px": 0,
+              "coverage": 0.0
+            },
+            {
+              "key": "1013720p:5:8341-17-4:874.0",
+              "label": "artefact",
+              "band_px": 23220,
+              "covered_px": 0,
+              "coverage": 0.0
+            },
+            {
+              "key": "1013720p:5:8341-17-4:874.0",
+              "label": "artefact",
+              "band_px": 23222,
+              "covered_px": 0,
+              "coverage": 0.0
+            },
+            {
+              "key": "1013720p:5:8341-17-4:878.0",
+              "label": "artefact",
+              "band_px": 23220,
+              "covered_px": 0,
+              "coverage": 0.0
+            },
+            {
+              "key": "1013720p:5:8341-17-4:886.0",
+              "label": "artefact",
+              "band_px": 23218,
+              "covered_px": 0,
+              "coverage": 0.0
+            }
+          ]
+        },
+        "houghpeaks": {
+          "seconds": 2.85,
+          "rows": [
+            {
+              "key": "1013720p:5:8341-17-4:826.0",
+              "label": "artefact",
+              "band_px": 23218,
+              "covered_px": 20,
+              "coverage": 0.0008614006374364717
+            },
+            {
+              "key": "1013720p:5:8341-17-4:866.0",
+              "label": "artefact",
+              "band_px": 20383,
+              "covered_px": 50,
+              "coverage": 0.0024530245793062846
+            },
+            {
+              "key": "1013720p:5:8341-17-4:874.0",
+              "label": "artefact",
+              "band_px": 23220,
+              "covered_px": 0,
+              "coverage": 0.0
+            },
+            {
+              "key": "1013720p:5:8341-17-4:874.0",
+              "label": "artefact",
+              "band_px": 23222,
+              "covered_px": 50,
+              "coverage": 0.0021531306519679615
+            },
+            {
+              "key": "1013720p:5:8341-17-4:878.0",
+              "label": "artefact",
+              "band_px": 23220,
+              "covered_px": 50,
+              "coverage": 0.002153316106804479
+            },
+            {
+              "key": "1013720p:5:8341-17-4:886.0",
+              "label": "artefact",
+              "band_px": 23218,
+              "covered_px": 0,
+              "coverage": 0.0
+            }
+          ]
+        },
+        "streaks": {
+          "seconds": 4.74,
+          "rows": [
+            {
+              "key": "1013720p:5:8341-17-4:826.0",
+              "label": "artefact",
+              "band_px": 23218,
+              "covered_px": 20,
+              "coverage": 0.0008614006374364717
+            },
+            {
+              "key": "1013720p:5:8341-17-4:866.0",
+              "label": "artefact",
+              "band_px": 20383,
+              "covered_px": 50,
+              "coverage": 0.0024530245793062846
+            },
+            {
+              "key": "1013720p:5:8341-17-4:874.0",
+              "label": "artefact",
+              "band_px": 23220,
+              "covered_px": 0,
+              "coverage": 0.0
+            },
+            {
+              "key": "1013720p:5:8341-17-4:874.0",
+              "label": "artefact",
+              "band_px": 23222,
+              "covered_px": 50,
+              "coverage": 0.0021531306519679615
+            },
+            {
+              "key": "1013720p:5:8341-17-4:878.0",
+              "label": "artefact",
+              "band_px": 23220,
+              "covered_px": 50,
+              "coverage": 0.002153316106804479
+            },
+            {
+              "key": "1013720p:5:8341-17-4:886.0",
+              "label": "artefact",
+              "band_px": 23218,
+              "covered_px": 0,
+              "coverage": 0.0
+            }
+          ]
+        }
+      },
+      "error": null
+    },
+    {
+      "exposure": "1013720p",
+      "hdu": 6,
+      "results": {
+        "none": {
+          "seconds": 0.0,
+          "rows": [
+            {
+              "key": "1013720p:6:8351-20-5:914.0",
+              "label": "artefact",
+              "band_px": 23218,
+              "covered_px": 0,
+              "coverage": 0.0
+            }
+          ]
+        },
+        "houghpeaks": {
+          "seconds": 2.81,
+          "rows": [
+            {
+              "key": "1013720p:6:8351-20-5:914.0",
+              "label": "artefact",
+              "band_px": 23218,
+              "covered_px": 0,
+              "coverage": 0.0
+            }
+          ]
+        },
+        "streaks": {
+          "seconds": 4.03,
+          "rows": [
+            {
+              "key": "1013720p:6:8351-20-5:914.0",
+              "label": "artefact",
+              "band_px": 23218,
+              "covered_px": 0,
+              "coverage": 0.0
+            }
+          ]
+        }
+      },
+      "error": null
+    },
+    {
+      "exposure": "1013720p",
+      "hdu": 7,
+      "results": {
+        "none": {
+          "seconds": 0.0,
+          "rows": [
+            {
+              "key": "1013720p:7:8351-13-3:926.0",
+              "label": "artefact",
+              "band_px": 23218,
+              "covered_px": 0,
+              "coverage": 0.0
+            }
+          ]
+        },
+        "houghpeaks": {
+          "seconds": 3.12,
+          "rows": [
+            {
+              "key": "1013720p:7:8351-13-3:926.0",
+              "label": "artefact",
+              "band_px": 23218,
+              "covered_px": 0,
+              "coverage": 0.0
+            }
+          ]
+        },
+        "streaks": {
+          "seconds": 4.69,
+          "rows": [
+            {
+              "key": "1013720p:7:8351-13-3:926.0",
+              "label": "artefact",
+              "band_px": 23218,
+              "covered_px": 0,
+              "coverage": 0.0
+            }
+          ]
+        }
+      },
+      "error": null
+    },
+    {
+      "exposure": "1013720p",
+      "hdu": 9,
+      "results": {
+        "none": {
+          "seconds": 0.0,
+          "rows": [
+            {
+              "key": "1013720p:9:8261-13-3:-842.0",
+              "label": "artefact",
+              "band_px": 23218,
+              "covered_px": 0,
+              "coverage": 0.0
+            },
+            {
+              "key": "1013720p:9:8261-13-3:450.0",
+              "label": "artefact",
+              "band_px": 23220,
+              "covered_px": 0,
+              "coverage": 0.0
+            },
+            {
+              "key": "1013720p:9:8261-13-3:478.0",
+              "label": "artefact",
+              "band_px": 23218,
+              "covered_px": 0,
+              "coverage": 0.0
+            },
+            {
+              "key": "1013720p:9:8261-13-3:502.0",
+              "label": "artefact",
+              "band_px": 23220,
+              "covered_px": 0,
+              "coverage": 0.0
+            }
+          ]
+        },
+        "houghpeaks": {
+          "seconds": 3.18,
+          "rows": [
+            {
+              "key": "1013720p:9:8261-13-3:-842.0",
+              "label": "artefact",
+              "band_px": 23218,
+              "covered_px": 0,
+              "coverage": 0.0
+            },
+            {
+              "key": "1013720p:9:8261-13-3:450.0",
+              "label": "artefact",
+              "band_px": 23220,
+              "covered_px": 0,
+              "coverage": 0.0
+            },
+            {
+              "key": "1013720p:9:8261-13-3:478.0",
+              "label": "artefact",
+              "band_px": 23218,
+              "covered_px": 0,
+              "coverage": 0.0
+            },
+            {
+              "key": "1013720p:9:8261-13-3:502.0",
+              "label": "artefact",
+              "band_px": 23220,
+              "covered_px": 0,
+              "coverage": 0.0
+            }
+          ]
+        },
+        "streaks": {
+          "seconds": 4.7,
+          "rows": [
+            {
+              "key": "1013720p:9:8261-13-3:-842.0",
+              "label": "artefact",
+              "band_px": 23218,
+              "covered_px": 0,
+              "coverage": 0.0
+            },
+            {
+              "key": "1013720p:9:8261-13-3:450.0",
+              "label": "artefact",
+              "band_px": 23220,
+              "covered_px": 0,
+              "coverage": 0.0
+            },
+            {
+              "key": "1013720p:9:8261-13-3:478.0",
+              "label": "artefact",
+              "band_px": 23218,
+              "covered_px": 0,
+              "coverage": 0.0
+            },
+            {
+              "key": "1013720p:9:8261-13-3:502.0",
+              "label": "artefact",
+              "band_px": 23220,
+              "covered_px": 0,
+              "coverage": 0.0
+            }
+          ]
+        }
+      },
+      "error": null
+    },
+    {
+      "exposure": "1013720p",
+      "hdu": 14,
+      "results": {
+        "none": {
+          "seconds": 0.0,
+          "rows": [
+            {
+              "key": "1013720p:14:8351-17-3:434.0",
+              "label": "artefact",
+              "band_px": 23218,
+              "covered_px": 0,
+              "coverage": 0.0
+            },
+            {
+              "key": "1013720p:14:8351-17-3:822.0",
+              "label": "artefact",
+              "band_px": 23218,
+              "covered_px": 0,
+              "coverage": 0.0
+            }
+          ]
+        },
+        "houghpeaks": {
+          "seconds": 3.83,
+          "rows": [
+            {
+              "key": "1013720p:14:8351-17-3:434.0",
+              "label": "artefact",
+              "band_px": 23218,
+              "covered_px": 45,
+              "coverage": 0.0019381514342320613
+            },
+            {
+              "key": "1013720p:14:8351-17-3:822.0",
+              "label": "artefact",
+              "band_px": 23218,
+              "covered_px": 10,
+              "coverage": 0.00043070031871823584
+            }
+          ]
+        },
+        "streaks": {
+          "seconds": 4.91,
+          "rows": [
+            {
+              "key": "1013720p:14:8351-17-3:434.0",
+              "label": "artefact",
+              "band_px": 23218,
+              "covered_px": 45,
+              "coverage": 0.0019381514342320613
+            },
+            {
+              "key": "1013720p:14:8351-17-3:822.0",
+              "label": "artefact",
+              "band_px": 23218,
+              "covered_px": 10,
+              "coverage": 0.00043070031871823584
+            }
+          ]
+        }
+      },
+      "error": null
+    },
+    {
+      "exposure": "1013720p",
+      "hdu": 15,
+      "results": {
+        "none": {
+          "seconds": 0.0,
+          "rows": [
+            {
+              "key": "1013720p:15:8434-13-5:890.0",
+              "label": "artefact",
+              "band_px": 23213,
+              "covered_px": 0,
+              "coverage": 0.0
+            },
+            {
+              "key": "1013720p:15:8434-13-5:914.0",
+              "label": "artefact",
+              "band_px": 23218,
+              "covered_px": 0,
+              "coverage": 0.0
+            }
+          ]
+        },
+        "houghpeaks": {
+          "seconds": 3.27,
+          "rows": [
+            {
+              "key": "1013720p:15:8434-13-5:890.0",
+              "label": "artefact",
+              "band_px": 23213,
+              "covered_px": 0,
+              "coverage": 0.0
+            },
+            {
+              "key": "1013720p:15:8434-13-5:914.0",
+              "label": "artefact",
+              "band_px": 23218,
+              "covered_px": 0,
+              "coverage": 0.0
+            }
+          ]
+        },
+        "streaks": {
+          "seconds": 4.5,
+          "rows": [
+            {
+              "key": "1013720p:15:8434-13-5:890.0",
+              "label": "artefact",
+              "band_px": 23213,
+              "covered_px": 0,
+              "coverage": 0.0
+            },
+            {
+              "key": "1013720p:15:8434-13-5:914.0",
+              "label": "artefact",
+              "band_px": 23218,
+              "covered_px": 0,
+              "coverage": 0.0
+            }
+          ]
+        }
+      },
+      "error": null
+    },
+    {
+      "exposure": "1013720p",
+      "hdu": 16,
+      "results": {
+        "none": {
+          "seconds": 0.0,
+          "rows": [
+            {
+              "key": "1013720p:16:8341-17-3:-174.0",
+              "label": "artefact",
+              "band_px": 23218,
+              "covered_px": 0,
+              "coverage": 0.0
+            }
+          ]
+        },
+        "houghpeaks": {
+          "seconds": 3.08,
+          "rows": [
+            {
+              "key": "1013720p:16:8341-17-3:-174.0",
+              "label": "artefact",
+              "band_px": 23218,
+              "covered_px": 45,
+              "coverage": 0.0019381514342320613
+            }
+          ]
+        },
+        "streaks": {
+          "seconds": 4.34,
+          "rows": [
+            {
+              "key": "1013720p:16:8341-17-3:-174.0",
+              "label": "artefact",
+              "band_px": 23218,
+              "covered_px": 45,
+              "coverage": 0.0019381514342320613
+            }
+          ]
+        }
+      },
+      "error": null
+    },
+    {
+      "exposure": "1013720p",
+      "hdu": 17,
+      "results": {
+        "none": {
+          "seconds": 0.0,
+          "rows": [
+            {
+              "key": "1013720p:17:8351-11-4:-478.0",
+              "label": "artefact",
+              "band_px": 23220,
+              "covered_px": 0,
+              "coverage": 0.0
+            },
+            {
+              "key": "1013720p:17:8351-11-4:-422.992",
+              "label": "artefact",
+              "band_px": 23218,
+              "covered_px": 0,
+              "coverage": 0.0
+            },
+            {
+              "key": "1013720p:17:8351-11-4:-408.87",
+              "label": "artefact",
+              "band_px": 23218,
+              "covered_px": 0,
+              "coverage": 0.0
+            }
+          ]
+        },
+        "houghpeaks": {
+          "seconds": 3.85,
+          "rows": [
+            {
+              "key": "1013720p:17:8351-11-4:-478.0",
+              "label": "artefact",
+              "band_px": 23220,
+              "covered_px": 2005,
+              "coverage": 0.0863479758828596
+            },
+            {
+              "key": "1013720p:17:8351-11-4:-422.992",
+              "label": "artefact",
+              "band_px": 23218,
+              "covered_px": 8625,
+              "coverage": 0.3714790248944784
+            },
+            {
+              "key": "1013720p:17:8351-11-4:-408.87",
+              "label": "artefact",
+              "band_px": 23218,
+              "covered_px": 6205,
+              "coverage": 0.26724954776466536
+            }
+          ]
+        },
+        "streaks": {
+          "seconds": 5.25,
+          "rows": [
+            {
+              "key": "1013720p:17:8351-11-4:-478.0",
+              "label": "artefact",
+              "band_px": 23220,
+              "covered_px": 2005,
+              "coverage": 0.0863479758828596
+            },
+            {
+              "key": "1013720p:17:8351-11-4:-422.992",
+              "label": "artefact",
+              "band_px": 23218,
+              "covered_px": 8625,
+              "coverage": 0.3714790248944784
+            },
+            {
+              "key": "1013720p:17:8351-11-4:-408.87",
+              "label": "artefact",
+              "band_px": 23218,
+              "covered_px": 6205,
+              "coverage": 0.26724954776466536
+            }
+          ]
+        }
+      },
+      "error": null
+    },
+    {
+      "exposure": "1013720p",
+      "hdu": 18,
+      "results": {
+        "none": {
+          "seconds": 0.0,
+          "rows": [
+            {
+              "key": "1013720p:18:7432-19-3:-842.0",
+              "label": "artefact",
+              "band_px": 23218,
+              "covered_px": 0,
+              "coverage": 0.0
+            },
+            {
+              "key": "1013720p:18:7432-19-3:626.0",
+              "label": "artefact",
+              "band_px": 23218,
+              "covered_px": 0,
+              "coverage": 0.0
+            }
+          ]
+        },
+        "houghpeaks": {
+          "seconds": 3.48,
+          "rows": [
+            {
+              "key": "1013720p:18:7432-19-3:-842.0",
+              "label": "artefact",
+              "band_px": 23218,
+              "covered_px": 0,
+              "coverage": 0.0
+            },
+            {
+              "key": "1013720p:18:7432-19-3:626.0",
+              "label": "artefact",
+              "band_px": 23218,
+              "covered_px": 45,
+              "coverage": 0.0019381514342320613
+            }
+          ]
+        },
+        "streaks": {
+          "seconds": 4.96,
+          "rows": [
+            {
+              "key": "1013720p:18:7432-19-3:-842.0",
+              "label": "artefact",
+              "band_px": 23218,
+              "covered_px": 0,
+              "coverage": 0.0
+            },
+            {
+              "key": "1013720p:18:7432-19-3:626.0",
+              "label": "artefact",
+              "band_px": 23218,
+              "covered_px": 45,
+              "coverage": 0.0019381514342320613
+            }
+          ]
+        }
+      },
+      "error": null
+    },
+    {
+      "exposure": "1013720p",
+      "hdu": 19,
+      "results": {
+        "none": {
+          "seconds": 0.0,
+          "rows": [
+            {
+              "key": "1013720p:19:9172-4-3:482.0",
+              "label": "artefact",
+              "band_px": 23220,
+              "covered_px": 0,
+              "coverage": 0.0
+            },
+            {
+              "key": "1013720p:19:9172-4-3:526.0",
+              "label": "artefact",
+              "band_px": 23218,
+              "covered_px": 0,
+              "coverage": 0.0
+            },
+            {
+              "key": "1013720p:19:9172-4-3:578.0",
+              "label": "artefact",
+              "band_px": 23220,
+              "covered_px": 0,
+              "coverage": 0.0
+            },
+            {
+              "key": "1013720p:19:9172-4-3:914.0",
+              "label": "artefact",
+              "band_px": 23218,
+              "covered_px": 0,
+              "coverage": 0.0
+            }
+          ]
+        },
+        "houghpeaks": {
+          "seconds": 2.96,
+          "rows": [
+            {
+              "key": "1013720p:19:9172-4-3:482.0",
+              "label": "artefact",
+              "band_px": 23220,
+              "covered_px": 0,
+              "coverage": 0.0
+            },
+            {
+              "key": "1013720p:19:9172-4-3:526.0",
+              "label": "artefact",
+              "band_px": 23218,
+              "covered_px": 0,
+              "coverage": 0.0
+            },
+            {
+              "key": "1013720p:19:9172-4-3:578.0",
+              "label": "artefact",
+              "band_px": 23220,
+              "covered_px": 0,
+              "coverage": 0.0
+            },
+            {
+              "key": "1013720p:19:9172-4-3:914.0",
+              "label": "artefact",
+              "band_px": 23218,
+              "covered_px": 0,
+              "coverage": 0.0
+            }
+          ]
+        },
+        "streaks": {
+          "seconds": 4.6,
+          "rows": [
+            {
+              "key": "1013720p:19:9172-4-3:482.0",
+              "label": "artefact",
+              "band_px": 23220,
+              "covered_px": 0,
+              "coverage": 0.0
+            },
+            {
+              "key": "1013720p:19:9172-4-3:526.0",
+              "label": "artefact",
+              "band_px": 23218,
+              "covered_px": 0,
+              "coverage": 0.0
+            },
+            {
+              "key": "1013720p:19:9172-4-3:578.0",
+              "label": "artefact",
+              "band_px": 23220,
+              "covered_px": 0,
+              "coverage": 0.0
+            },
+            {
+              "key": "1013720p:19:9172-4-3:914.0",
+              "label": "artefact",
+              "band_px": 23218,
+              "covered_px": 0,
+              "coverage": 0.0
+            }
+          ]
+        }
+      },
+      "error": null
+    },
+    {
+      "exposure": "1013720p",
+      "hdu": 20,
+      "results": {
+        "none": {
+          "seconds": 0.0,
+          "rows": [
+            {
+              "key": "1013720p:20:8341-16-5:-842.918",
+              "label": "artefact",
+              "band_px": 23218,
+              "covered_px": 0,
+              "coverage": 0.0
+            },
+            {
+              "key": "1013720p:20:8341-16-5:-790.0",
+              "label": "artefact",
+              "band_px": 23218,
+              "covered_px": 0,
+              "coverage": 0.0
+            },
+            {
+              "key": "1013720p:20:8341-16-5:-738.0",
+              "label": "artefact",
+              "band_px": 23220,
+              "covered_px": 0,
+              "coverage": 0.0
+            },
+            {
+              "key": "1013720p:20:8341-16-5:-682.0",
+              "label": "artefact",
+              "band_px": 23221,
+              "covered_px": 0,
+              "coverage": 0.0
+            },
+            {
+              "key": "1013720p:20:8341-16-5:-630.0",
+              "label": "artefact",
+              "band_px": 23226,
+              "covered_px": 0,
+              "coverage": 0.0
+            },
+            {
+              "key": "1013720p:20:8341-16-5:-570.0",
+              "label": "artefact",
+              "band_px": 23227,
+              "covered_px": 0,
+              "coverage": 0.0
+            }
+          ]
+        },
+        "houghpeaks": {
+          "seconds": 3.0,
+          "rows": [
+            {
+              "key": "1013720p:20:8341-16-5:-842.918",
+              "label": "artefact",
+              "band_px": 23218,
+              "covered_px": 0,
+              "coverage": 0.0
+            },
+            {
+              "key": "1013720p:20:8341-16-5:-790.0",
+              "label": "artefact",
+              "band_px": 23218,
+              "covered_px": 0,
+              "coverage": 0.0
+            },
+            {
+              "key": "1013720p:20:8341-16-5:-738.0",
+              "label": "artefact",
+              "band_px": 23220,
+              "covered_px": 0,
+              "coverage": 0.0
+            },
+            {
+              "key": "1013720p:20:8341-16-5:-682.0",
+              "label": "artefact",
+              "band_px": 23221,
+              "covered_px": 0,
+              "coverage": 0.0
+            },
+            {
+              "key": "1013720p:20:8341-16-5:-630.0",
+              "label": "artefact",
+              "band_px": 23226,
+              "covered_px": 0,
+              "coverage": 0.0
+            },
+            {
+              "key": "1013720p:20:8341-16-5:-570.0",
+              "label": "artefact",
+              "band_px": 23227,
+              "covered_px": 0,
+              "coverage": 0.0
+            }
+          ]
+        },
+        "streaks": {
+          "seconds": 4.83,
+          "rows": [
+            {
+              "key": "1013720p:20:8341-16-5:-842.918",
+              "label": "artefact",
+              "band_px": 23218,
+              "covered_px": 0,
+              "coverage": 0.0
+            },
+            {
+              "key": "1013720p:20:8341-16-5:-790.0",
+              "label": "artefact",
+              "band_px": 23218,
+              "covered_px": 0,
+              "coverage": 0.0
+            },
+            {
+              "key": "1013720p:20:8341-16-5:-738.0",
+              "label": "artefact",
+              "band_px": 23220,
+              "covered_px": 0,
+              "coverage": 0.0
+            },
+            {
+              "key": "1013720p:20:8341-16-5:-682.0",
+              "label": "artefact",
+              "band_px": 23221,
+              "covered_px": 0,
+              "coverage": 0.0
+            },
+            {
+              "key": "1013720p:20:8341-16-5:-630.0",
+              "label": "artefact",
+              "band_px": 23226,
+              "covered_px": 0,
+              "coverage": 0.0
+            },
+            {
+              "key": "1013720p:20:8341-16-5:-570.0",
+              "label": "artefact",
+              "band_px": 23227,
+              "covered_px": 0,
+              "coverage": 0.0
+            }
+          ]
+        }
+      },
+      "error": null
+    },
+    {
+      "exposure": "1013720p",
+      "hdu": 21,
+      "results": {
+        "none": {
+          "seconds": 0.0,
+          "rows": [
+            {
+              "key": "1013720p:21:8352-13-4:42.0",
+              "label": "artefact",
+              "band_px": 23220,
+              "covered_px": 0,
+              "coverage": 0.0
+            },
+            {
+              "key": "1013720p:21:8352-13-4:86.0",
+              "label": "artefact",
+              "band_px": 23218,
+              "covered_px": 0,
+              "coverage": 0.0
+            },
+            {
+              "key": "1013720p:21:8352-13-4:118.0",
+              "label": "artefact",
+              "band_px": 23220,
+              "covered_px": 0,
+              "coverage": 0.0
+            }
+          ]
+        },
+        "houghpeaks": {
+          "seconds": 4.35,
+          "rows": [
+            {
+              "key": "1013720p:21:8352-13-4:42.0",
+              "label": "artefact",
+              "band_px": 23220,
+              "covered_px": 40,
+              "coverage": 0.0017226528854435831
+            },
+            {
+              "key": "1013720p:21:8352-13-4:86.0",
+              "label": "artefact",
+              "band_px": 23218,
+              "covered_px": 40,
+              "coverage": 0.0017228012748729434
+            },
+            {
+              "key": "1013720p:21:8352-13-4:118.0",
+              "label": "artefact",
+              "band_px": 23220,
+              "covered_px": 40,
+              "coverage": 0.0017226528854435831
+            }
+          ]
+        },
+        "streaks": {
+          "seconds": 6.29,
+          "rows": [
+            {
+              "key": "1013720p:21:8352-13-4:42.0",
+              "label": "artefact",
+              "band_px": 23220,
+              "covered_px": 40,
+              "coverage": 0.0017226528854435831
+            },
+            {
+              "key": "1013720p:21:8352-13-4:86.0",
+              "label": "artefact",
+              "band_px": 23218,
+              "covered_px": 40,
+              "coverage": 0.0017228012748729434
+            },
+            {
+              "key": "1013720p:21:8352-13-4:118.0",
+              "label": "artefact",
+              "band_px": 23220,
+              "covered_px": 40,
+              "coverage": 0.0017226528854435831
+            }
+          ]
+        }
+      },
+      "error": null
+    },
+    {
+      "exposure": "1013720p",
+      "hdu": 22,
+      "results": {
+        "none": {
+          "seconds": 0.0,
+          "rows": [
+            {
+              "key": "1013720p:22:8374-17-5:-388.937",
+              "label": "artefact",
+              "band_px": 23218,
+              "covered_px": 0,
+              "coverage": 0.0
+            },
+            {
+              "key": "1013720p:22:8374-17-5:-379.92",
+              "label": "artefact",
+              "band_px": 23218,
+              "covered_px": 0,
+              "coverage": 0.0
+            },
+            {
+              "key": "1013720p:22:8374-17-5:374.0",
+              "label": "artefact",
+              "band_px": 23218,
+              "covered_px": 0,
+              "coverage": 0.0
+            },
+            {
+              "key": "1013720p:22:8374-17-5:1008.654",
+              "label": "artefact",
+              "band_px": 23218,
+              "covered_px": 0,
+              "coverage": 0.0
+            }
+          ]
+        },
+        "houghpeaks": {
+          "seconds": 3.83,
+          "rows": [
+            {
+              "key": "1013720p:22:8374-17-5:-388.937",
+              "label": "artefact",
+              "band_px": 23218,
+              "covered_px": 6652,
+              "coverage": 0.28650185201137046
+            },
+            {
+              "key": "1013720p:22:8374-17-5:-379.92",
+              "label": "artefact",
+              "band_px": 23218,
+              "covered_px": 517,
+              "coverage": 0.022267206477732792
+            },
+            {
+              "key": "1013720p:22:8374-17-5:374.0",
+              "label": "artefact",
+              "band_px": 23218,
+              "covered_px": 0,
+              "coverage": 0.0
+            },
+            {
+              "key": "1013720p:22:8374-17-5:1008.654",
+              "label": "artefact",
+              "band_px": 23218,
+              "covered_px": 0,
+              "coverage": 0.0
+            }
+          ]
+        },
+        "streaks": {
+          "seconds": 5.93,
+          "rows": [
+            {
+              "key": "1013720p:22:8374-17-5:-388.937",
+              "label": "artefact",
+              "band_px": 23218,
+              "covered_px": 12876,
+              "coverage": 0.5545697303816005
+            },
+            {
+              "key": "1013720p:22:8374-17-5:-379.92",
+              "label": "artefact",
+              "band_px": 23218,
+              "covered_px": 1421,
+              "coverage": 0.061202515289861315
+            },
+            {
+              "key": "1013720p:22:8374-17-5:374.0",
+              "label": "artefact",
+              "band_px": 23218,
+              "covered_px": 0,
+              "coverage": 0.0
+            },
+            {
+              "key": "1013720p:22:8374-17-5:1008.654",
+              "label": "artefact",
+              "band_px": 23218,
+              "covered_px": 0,
+              "coverage": 0.0
+            }
+          ]
+        }
+      },
+      "error": null
+    },
+    {
+      "exposure": "1013720p",
+      "hdu": 24,
+      "results": {
+        "none": {
+          "seconds": 0.0,
+          "rows": [
+            {
+              "key": "1013720p:24:8351-6-4:586.0",
+              "label": "artefact",
+              "band_px": 23220,
+              "covered_px": 0,
+              "coverage": 0.0
+            },
+            {
+              "key": "1013720p:24:8351-6-4:630.0",
+              "label": "artefact",
+              "band_px": 23218,
+              "covered_px": 0,
+              "coverage": 0.0
+            },
+            {
+              "key": "1013720p:24:8351-6-4:670.0",
+              "label": "artefact",
+              "band_px": 23220,
+              "covered_px": 0,
+              "coverage": 0.0
+            }
+          ]
+        },
+        "houghpeaks": {
+          "seconds": 4.9,
+          "rows": [
+            {
+              "key": "1013720p:24:8351-6-4:586.0",
+              "label": "artefact",
+              "band_px": 23220,
+              "covered_px": 0,
+              "coverage": 0.0
+            },
+            {
+              "key": "1013720p:24:8351-6-4:630.0",
+              "label": "artefact",
+              "band_px": 23218,
+              "covered_px": 0,
+              "coverage": 0.0
+            },
+            {
+              "key": "1013720p:24:8351-6-4:670.0",
+              "label": "artefact",
+              "band_px": 23220,
+              "covered_px": 0,
+              "coverage": 0.0
+            }
+          ]
+        },
+        "streaks": {
+          "seconds": 99.04,
+          "rows": [
+            {
+              "key": "1013720p:24:8351-6-4:586.0",
+              "label": "artefact",
+              "band_px": 23220,
+              "covered_px": 45,
+              "coverage": 0.001937984496124031
+            },
+            {
+              "key": "1013720p:24:8351-6-4:630.0",
+              "label": "artefact",
+              "band_px": 23218,
+              "covered_px": 45,
+              "coverage": 0.0019381514342320613
+            },
+            {
+              "key": "1013720p:24:8351-6-4:670.0",
+              "label": "artefact",
+              "band_px": 23220,
+              "covered_px": 45,
+              "coverage": 0.001937984496124031
+            }
+          ]
+        }
+      },
+      "error": null
+    },
+    {
+      "exposure": "1013720p",
+      "hdu": 26,
+      "results": {
+        "none": {
+          "seconds": 0.0,
+          "rows": [
+            {
+              "key": "1013720p:26:8352-18-5:914.0",
+              "label": "artefact",
+              "band_px": 23218,
+              "covered_px": 0,
+              "coverage": 0.0
+            }
+          ]
+        },
+        "houghpeaks": {
+          "seconds": 4.42,
+          "rows": [
+            {
+              "key": "1013720p:26:8352-18-5:914.0",
+              "label": "artefact",
+              "band_px": 23218,
+              "covered_px": 0,
+              "coverage": 0.0
+            }
+          ]
+        },
+        "streaks": {
+          "seconds": 5.84,
+          "rows": [
+            {
+              "key": "1013720p:26:8352-18-5:914.0",
+              "label": "artefact",
+              "band_px": 23218,
+              "covered_px": 0,
+              "coverage": 0.0
+            }
+          ]
+        }
+      },
+      "error": null
+    },
+    {
+      "exposure": "1013720p",
+      "hdu": 27,
+      "results": {
+        "none": {
+          "seconds": 0.0,
+          "rows": [
+            {
+              "key": "1013720p:27:8351-7-3:518.0",
+              "label": "artefact",
+              "band_px": 23220,
+              "covered_px": 0,
+              "coverage": 0.0
+            },
+            {
+              "key": "1013720p:27:8351-7-3:582.0",
+              "label": "artefact",
+              "band_px": 23218,
+              "covered_px": 0,
+              "coverage": 0.0
+            }
+          ]
+        },
+        "houghpeaks": {
+          "seconds": 4.3,
+          "rows": [
+            {
+              "key": "1013720p:27:8351-7-3:518.0",
+              "label": "artefact",
+              "band_px": 23220,
+              "covered_px": 0,
+              "coverage": 0.0
+            },
+            {
+              "key": "1013720p:27:8351-7-3:582.0",
+              "label": "artefact",
+              "band_px": 23218,
+              "covered_px": 0,
+              "coverage": 0.0
+            }
+          ]
+        },
+        "streaks": {
+          "seconds": 5.9,
+          "rows": [
+            {
+              "key": "1013720p:27:8351-7-3:518.0",
+              "label": "artefact",
+              "band_px": 23220,
+              "covered_px": 0,
+              "coverage": 0.0
+            },
+            {
+              "key": "1013720p:27:8351-7-3:582.0",
+              "label": "artefact",
+              "band_px": 23218,
+              "covered_px": 0,
+              "coverage": 0.0
+            }
+          ]
+        }
+      },
+      "error": null
+    },
+    {
+      "exposure": "1013720p",
+      "hdu": 28,
+      "results": {
+        "none": {
+          "seconds": 0.0,
+          "rows": [
+            {
+              "key": "1013720p:28:8261-16-5:846.0",
+              "label": "artefact",
+              "band_px": 23220,
+              "covered_px": 0,
+              "coverage": 0.0
+            },
+            {
+              "key": "1013720p:28:8261-16-5:910.0",
+              "label": "artefact",
+              "band_px": 23218,
+              "covered_px": 0,
+              "coverage": 0.0
+            },
+            {
+              "key": "1013720p:28:8261-16-5:938.0",
+              "label": "artefact",
+              "band_px": 23220,
+              "covered_px": 0,
+              "coverage": 0.0
+            },
+            {
+              "key": "1013720p:28:8261-16-5:966.0",
+              "label": "artefact",
+              "band_px": 17818,
+              "covered_px": 0,
+              "coverage": 0.0
+            },
+            {
+              "key": "1013720p:28:8261-16-5:994.0",
+              "label": "artefact",
+              "band_px": 14264,
+              "covered_px": 0,
+              "coverage": 0.0
+            },
+            {
+              "key": "1013720p:28:8261-16-5:1022.0",
+              "label": "artefact",
+              "band_px": 12438,
+              "covered_px": 0,
+              "coverage": 0.0
+            }
+          ]
+        },
+        "houghpeaks": {
+          "seconds": 3.68,
+          "rows": [
+            {
+              "key": "1013720p:28:8261-16-5:846.0",
+              "label": "artefact",
+              "band_px": 23220,
+              "covered_px": 0,
+              "coverage": 0.0
+            },
+            {
+              "key": "1013720p:28:8261-16-5:910.0",
+              "label": "artefact",
+              "band_px": 23218,
+              "covered_px": 0,
+              "coverage": 0.0
+            },
+            {
+              "key": "1013720p:28:8261-16-5:938.0",
+              "label": "artefact",
+              "band_px": 23220,
+              "covered_px": 1770,
+              "coverage": 0.07622739018087855
+            },
+            {
+              "key": "1013720p:28:8261-16-5:966.0",
+              "label": "artefact",
+              "band_px": 17818,
+              "covered_px": 0,
+              "coverage": 0.0
+            },
+            {
+              "key": "1013720p:28:8261-16-5:994.0",
+              "label": "artefact",
+              "band_px": 14264,
+              "covered_px": 0,
+              "coverage": 0.0
+            },
+            {
+              "key": "1013720p:28:8261-16-5:1022.0",
+              "label": "artefact",
+              "band_px": 12438,
+              "covered_px": 0,
+              "coverage": 0.0
+            }
+          ]
+        },
+        "streaks": {
+          "seconds": 5.41,
+          "rows": [
+            {
+              "key": "1013720p:28:8261-16-5:846.0",
+              "label": "artefact",
+              "band_px": 23220,
+              "covered_px": 0,
+              "coverage": 0.0
+            },
+            {
+              "key": "1013720p:28:8261-16-5:910.0",
+              "label": "artefact",
+              "band_px": 23218,
+              "covered_px": 0,
+              "coverage": 0.0
+            },
+            {
+              "key": "1013720p:28:8261-16-5:938.0",
+              "label": "artefact",
+              "band_px": 23220,
+              "covered_px": 1770,
+              "coverage": 0.07622739018087855
+            },
+            {
+              "key": "1013720p:28:8261-16-5:966.0",
+              "label": "artefact",
+              "band_px": 17818,
+              "covered_px": 0,
+              "coverage": 0.0
+            },
+            {
+              "key": "1013720p:28:8261-16-5:994.0",
+              "label": "artefact",
+              "band_px": 14264,
+              "covered_px": 0,
+              "coverage": 0.0
+            },
+            {
+              "key": "1013720p:28:8261-16-5:1022.0",
+              "label": "artefact",
+              "band_px": 12438,
+              "covered_px": 0,
+              "coverage": 0.0
+            }
+          ]
+        }
+      },
+      "error": null
+    },
+    {
+      "exposure": "1013720p",
+      "hdu": 29,
+      "results": {
+        "none": {
+          "seconds": 0.0,
+          "rows": [
+            {
+              "key": "1013720p:29:7432-3-3:1007.04",
+              "label": "artefact",
+              "band_px": 23218,
+              "covered_px": 0,
+              "coverage": 0.0
+            }
+          ]
+        },
+        "houghpeaks": {
+          "seconds": 3.94,
+          "rows": [
+            {
+              "key": "1013720p:29:7432-3-3:1007.04",
+              "label": "artefact",
+              "band_px": 23218,
+              "covered_px": 0,
+              "coverage": 0.0
+            }
+          ]
+        },
+        "streaks": {
+          "seconds": 5.91,
+          "rows": [
+            {
+              "key": "1013720p:29:7432-3-3:1007.04",
+              "label": "artefact",
+              "band_px": 23218,
+              "covered_px": 0,
+              "coverage": 0.0
+            }
+          ]
+        }
+      },
+      "error": null
+    },
+    {
+      "exposure": "1013720p",
+      "hdu": 30,
+      "results": {
+        "none": {
+          "seconds": 0.0,
+          "rows": [
+            {
+              "key": "1013720p:30:8351-16-4:-798.0",
+              "label": "artefact",
+              "band_px": 23218,
+              "covered_px": 0,
+              "coverage": 0.0
+            },
+            {
+              "key": "1013720p:30:8351-16-4:-766.0",
+              "label": "artefact",
+              "band_px": 23220,
+              "covered_px": 0,
+              "coverage": 0.0
+            }
+          ]
+        },
+        "houghpeaks": {
+          "seconds": 3.19,
+          "rows": [
+            {
+              "key": "1013720p:30:8351-16-4:-798.0",
+              "label": "artefact",
+              "band_px": 23218,
+              "covered_px": 0,
+              "coverage": 0.0
+            },
+            {
+              "key": "1013720p:30:8351-16-4:-766.0",
+              "label": "artefact",
+              "band_px": 23220,
+              "covered_px": 0,
+              "coverage": 0.0
+            }
+          ]
+        },
+        "streaks": {
+          "seconds": 4.8,
+          "rows": [
+            {
+              "key": "1013720p:30:8351-16-4:-798.0",
+              "label": "artefact",
+              "band_px": 23218,
+              "covered_px": 0,
+              "coverage": 0.0
+            },
+            {
+              "key": "1013720p:30:8351-16-4:-766.0",
+              "label": "artefact",
+              "band_px": 23220,
+              "covered_px": 0,
+              "coverage": 0.0
+            }
+          ]
+        }
+      },
+      "error": null
+    },
+    {
+      "exposure": "1013720p",
+      "hdu": 31,
+      "results": {
+        "none": {
+          "seconds": 0.0,
+          "rows": [
+            {
+              "key": "1013720p:31:8261-19-5:-638.0",
+              "label": "artefact",
+              "band_px": 23218,
+              "covered_px": 0,
+              "coverage": 0.0
+            },
+            {
+              "key": "1013720p:31:8261-19-5:154.0",
+              "label": "artefact",
+              "band_px": 23218,
+              "covered_px": 0,
+              "coverage": 0.0
+            },
+            {
+              "key": "1013720p:31:8261-19-5:462.0",
+              "label": "artefact",
+              "band_px": 23218,
+              "covered_px": 0,
+              "coverage": 0.0
+            },
+            {
+              "key": "1013720p:31:8261-19-5:1016.123",
+              "label": "artefact",
+              "band_px": 23218,
+              "covered_px": 0,
+              "coverage": 0.0
+            }
+          ]
+        },
+        "houghpeaks": {
+          "seconds": 3.69,
+          "rows": [
+            {
+              "key": "1013720p:31:8261-19-5:-638.0",
+              "label": "artefact",
+              "band_px": 23218,
+              "covered_px": 0,
+              "coverage": 0.0
+            },
+            {
+              "key": "1013720p:31:8261-19-5:154.0",
+              "label": "artefact",
+              "band_px": 23218,
+              "covered_px": 40,
+              "coverage": 0.0017228012748729434
+            },
+            {
+              "key": "1013720p:31:8261-19-5:462.0",
+              "label": "artefact",
+              "band_px": 23218,
+              "covered_px": 0,
+              "coverage": 0.0
+            },
+            {
+              "key": "1013720p:31:8261-19-5:1016.123",
+              "label": "artefact",
+              "band_px": 23218,
+              "covered_px": 0,
+              "coverage": 0.0
+            }
+          ]
+        },
+        "streaks": {
+          "seconds": 5.81,
+          "rows": [
+            {
+              "key": "1013720p:31:8261-19-5:-638.0",
+              "label": "artefact",
+              "band_px": 23218,
+              "covered_px": 0,
+              "coverage": 0.0
+            },
+            {
+              "key": "1013720p:31:8261-19-5:154.0",
+              "label": "artefact",
+              "band_px": 23218,
+              "covered_px": 40,
+              "coverage": 0.0017228012748729434
+            },
+            {
+              "key": "1013720p:31:8261-19-5:462.0",
+              "label": "artefact",
+              "band_px": 23218,
+              "covered_px": 0,
+              "coverage": 0.0
+            },
+            {
+              "key": "1013720p:31:8261-19-5:1016.123",
+              "label": "artefact",
+              "band_px": 23218,
+              "covered_px": 0,
+              "coverage": 0.0
+            }
+          ]
+        }
+      },
+      "error": null
+    },
+    {
+      "exposure": "1013720p",
+      "hdu": 32,
+      "results": {
+        "none": {
+          "seconds": 0.0,
+          "rows": [
+            {
+              "key": "1013720p:32:8351-8-3:718.0",
+              "label": "artefact",
+              "band_px": 23227,
+              "covered_px": 0,
+              "coverage": 0.0
+            },
+            {
+              "key": "1013720p:32:8351-8-3:746.0",
+              "label": "artefact",
+              "band_px": 23224,
+              "covered_px": 0,
+              "coverage": 0.0
+            },
+            {
+              "key": "1013720p:32:8351-8-3:826.0",
+              "label": "artefact",
+              "band_px": 23218,
+              "covered_px": 0,
+              "coverage": 0.0
+            },
+            {
+              "key": "1013720p:32:8351-8-3:874.0",
+              "label": "artefact",
+              "band_px": 23222,
+              "covered_px": 0,
+              "coverage": 0.0
+            },
+            {
+              "key": "1013720p:32:8351-8-3:894.0",
+              "label": "artefact",
+              "band_px": 19046,
+              "covered_px": 0,
+              "coverage": 0.0
+            }
+          ]
+        },
+        "houghpeaks": {
+          "seconds": 3.02,
+          "rows": [
+            {
+              "key": "1013720p:32:8351-8-3:718.0",
+              "label": "artefact",
+              "band_px": 23227,
+              "covered_px": 0,
+              "coverage": 0.0
+            },
+            {
+              "key": "1013720p:32:8351-8-3:746.0",
+              "label": "artefact",
+              "band_px": 23224,
+              "covered_px": 0,
+              "coverage": 0.0
+            },
+            {
+              "key": "1013720p:32:8351-8-3:826.0",
+              "label": "artefact",
+              "band_px": 23218,
+              "covered_px": 0,
+              "coverage": 0.0
+            },
+            {
+              "key": "1013720p:32:8351-8-3:874.0",
+              "label": "artefact",
+              "band_px": 23222,
+              "covered_px": 0,
+              "coverage": 0.0
+            },
+            {
+              "key": "1013720p:32:8351-8-3:894.0",
+              "label": "artefact",
+              "band_px": 19046,
+              "covered_px": 0,
+              "coverage": 0.0
+            }
+          ]
+        },
+        "streaks": {
+          "seconds": 4.42,
+          "rows": [
+            {
+              "key": "1013720p:32:8351-8-3:718.0",
+              "label": "artefact",
+              "band_px": 23227,
+              "covered_px": 0,
+              "coverage": 0.0
+            },
+            {
+              "key": "1013720p:32:8351-8-3:746.0",
+              "label": "artefact",
+              "band_px": 23224,
+              "covered_px": 0,
+              "coverage": 0.0
+            },
+            {
+              "key": "1013720p:32:8351-8-3:826.0",
+              "label": "artefact",
+              "band_px": 23218,
+              "covered_px": 0,
+              "coverage": 0.0
+            },
+            {
+              "key": "1013720p:32:8351-8-3:874.0",
+              "label": "artefact",
+              "band_px": 23222,
+              "covered_px": 0,
+              "coverage": 0.0
+            },
+            {
+              "key": "1013720p:32:8351-8-3:894.0",
+              "label": "artefact",
+              "band_px": 19046,
+              "covered_px": 0,
+              "coverage": 0.0
+            }
+          ]
+        }
+      },
+      "error": null
+    },
+    {
+      "exposure": "1013720p",
+      "hdu": 33,
+      "results": {
+        "none": {
+          "seconds": 0.0,
+          "rows": [
+            {
+              "key": "1013720p:33:8352-10-4:271.5",
+              "label": "artefact",
+              "band_px": 23218,
+              "covered_px": 0,
+              "coverage": 0.0
+            }
+          ]
+        },
+        "houghpeaks": {
+          "seconds": 4.86,
+          "rows": [
+            {
+              "key": "1013720p:33:8352-10-4:271.5",
+              "label": "artefact",
+              "band_px": 23218,
+              "covered_px": 12188,
+              "coverage": 0.5249375484537858
+            }
+          ]
+        },
+        "streaks": {
+          "seconds": 6.53,
+          "rows": [
+            {
+              "key": "1013720p:33:8352-10-4:271.5",
+              "label": "artefact",
+              "band_px": 23218,
+              "covered_px": 12248,
+              "coverage": 0.5275217503660953
+            }
+          ]
+        }
+      },
+      "error": null
+    },
+    {
+      "exposure": "1013720p",
+      "hdu": 35,
+      "results": {
+        "none": {
+          "seconds": 0.0,
+          "rows": [
+            {
+              "key": "1013720p:35:8261-7-3:-620.823",
+              "label": "artefact",
+              "band_px": 23218,
+              "covered_px": 0,
+              "coverage": 0.0
+            },
+            {
+              "key": "1013720p:35:8261-7-3:-609.039",
+              "label": "artefact",
+              "band_px": 23218,
+              "covered_px": 0,
+              "coverage": 0.0
+            },
+            {
+              "key": "1013720p:35:8261-7-3:-127.285",
+              "label": "artefact",
+              "band_px": 23218,
+              "covered_px": 0,
+              "coverage": 0.0
+            },
+            {
+              "key": "1013720p:35:8261-7-3:914.0",
+              "label": "artefact",
+              "band_px": 23218,
+              "covered_px": 0,
+              "coverage": 0.0
+            }
+          ]
+        },
+        "houghpeaks": {
+          "seconds": 3.76,
+          "rows": [
+            {
+              "key": "1013720p:35:8261-7-3:-620.823",
+              "label": "artefact",
+              "band_px": 23218,
+              "covered_px": 7385,
+              "coverage": 0.3180721853734172
+            },
+            {
+              "key": "1013720p:35:8261-7-3:-609.039",
+              "label": "artefact",
+              "band_px": 23218,
+              "covered_px": 6545,
+              "coverage": 0.2818933586010854
+            },
+            {
+              "key": "1013720p:35:8261-7-3:-127.285",
+              "label": "artefact",
+              "band_px": 23218,
+              "covered_px": 0,
+              "coverage": 0.0
+            },
+            {
+              "key": "1013720p:35:8261-7-3:914.0",
+              "label": "artefact",
+              "band_px": 23218,
+              "covered_px": 0,
+              "coverage": 0.0
+            }
+          ]
+        },
+        "streaks": {
+          "seconds": 5.42,
+          "rows": [
+            {
+              "key": "1013720p:35:8261-7-3:-620.823",
+              "label": "artefact",
+              "band_px": 23218,
+              "covered_px": 7385,
+              "coverage": 0.3180721853734172
+            },
+            {
+              "key": "1013720p:35:8261-7-3:-609.039",
+              "label": "artefact",
+              "band_px": 23218,
+              "covered_px": 6545,
+              "coverage": 0.2818933586010854
+            },
+            {
+              "key": "1013720p:35:8261-7-3:-127.285",
+              "label": "artefact",
+              "band_px": 23218,
+              "covered_px": 0,
+              "coverage": 0.0
+            },
+            {
+              "key": "1013720p:35:8261-7-3:914.0",
+              "label": "artefact",
+              "band_px": 23218,
+              "covered_px": 0,
+              "coverage": 0.0
+            }
+          ]
+        }
+      },
+      "error": null
+    },
+    {
+      "exposure": "1013721p",
+      "hdu": 2,
+      "results": {
+        "none": {
+          "seconds": 0.0,
+          "rows": [
+            {
+              "key": "1013721p:2:8352-3-4:154.0",
+              "label": "artefact",
+              "band_px": 23218,
+              "covered_px": 0,
+              "coverage": 0.0
+            },
+            {
+              "key": "1013721p:2:8352-3-4:726.0",
+              "label": "artefact",
+              "band_px": 23218,
+              "covered_px": 0,
+              "coverage": 0.0
+            },
+            {
+              "key": "1013721p:2:8352-3-4:790.0",
+              "label": "artefact",
+              "band_px": 23220,
+              "covered_px": 0,
+              "coverage": 0.0
+            }
+          ]
+        },
+        "houghpeaks": {
+          "seconds": 4.74,
+          "rows": [
+            {
+              "key": "1013721p:2:8352-3-4:154.0",
+              "label": "artefact",
+              "band_px": 23218,
+              "covered_px": 0,
+              "coverage": 0.0
+            },
+            {
+              "key": "1013721p:2:8352-3-4:726.0",
+              "label": "artefact",
+              "band_px": 23218,
+              "covered_px": 0,
+              "coverage": 0.0
+            },
+            {
+              "key": "1013721p:2:8352-3-4:790.0",
+              "label": "artefact",
+              "band_px": 23220,
+              "covered_px": 0,
+              "coverage": 0.0
+            }
+          ]
+        },
+        "streaks": {
+          "seconds": 6.46,
+          "rows": [
+            {
+              "key": "1013721p:2:8352-3-4:154.0",
+              "label": "artefact",
+              "band_px": 23218,
+              "covered_px": 0,
+              "coverage": 0.0
+            },
+            {
+              "key": "1013721p:2:8352-3-4:726.0",
+              "label": "artefact",
+              "band_px": 23218,
+              "covered_px": 0,
+              "coverage": 0.0
+            },
+            {
+              "key": "1013721p:2:8352-3-4:790.0",
+              "label": "artefact",
+              "band_px": 23220,
+              "covered_px": 0,
+              "coverage": 0.0
+            }
+          ]
+        }
+      },
+      "error": null
+    },
+    {
+      "exposure": "1013721p",
+      "hdu": 3,
+      "results": {
+        "none": {
+          "seconds": 0.0,
+          "rows": [
+            {
+              "key": "1013721p:3:8352-15-3:-778.154",
+              "label": "artefact",
+              "band_px": 23218,
+              "covered_px": 0,
+              "coverage": 0.0
+            }
+          ]
+        },
+        "houghpeaks": {
+          "seconds": 4.08,
+          "rows": [
+            {
+              "key": "1013721p:3:8352-15-3:-778.154",
+              "label": "artefact",
+              "band_px": 23218,
+              "covered_px": 13914,
+              "coverage": 0.5992764234645533
+            }
+          ]
+        },
+        "streaks": {
+          "seconds": 5.32,
+          "rows": [
+            {
+              "key": "1013721p:3:8352-15-3:-778.154",
+              "label": "artefact",
+              "band_px": 23218,
+              "covered_px": 13914,
+              "coverage": 0.5992764234645533
+            }
+          ]
+        }
+      },
+      "error": null
+    },
+    {
+      "exposure": "1013721p",
+      "hdu": 4,
+      "results": {
+        "none": {
+          "seconds": 0.0,
+          "rows": [
+            {
+              "key": "1013721p:4:8261-14-4:-903.233",
+              "label": "artefact",
+              "band_px": 23218,
+              "covered_px": 0,
+              "coverage": 0.0
+            }
+          ]
+        },
+        "houghpeaks": {
+          "seconds": 2.9,
+          "rows": [
+            {
+              "key": "1013721p:4:8261-14-4:-903.233",
+              "label": "artefact",
+              "band_px": 23218,
+              "covered_px": 7583,
+              "coverage": 0.3266000516840383
+            }
+          ]
+        },
+        "streaks": {
+          "seconds": 4.54,
+          "rows": [
+            {
+              "key": "1013721p:4:8261-14-4:-903.233",
+              "label": "artefact",
+              "band_px": 23218,
+              "covered_px": 7591,
+              "coverage": 0.3269446119390128
+            }
+          ]
+        }
+      },
+      "error": null
+    },
+    {
+      "exposure": "1013721p",
+      "hdu": 5,
+      "results": {
+        "none": {
+          "seconds": 0.0,
+          "rows": [
+            {
+              "key": "1013721p:5:8341-17-4:826.0",
+              "label": "artefact",
+              "band_px": 23218,
+              "covered_px": 0,
+              "coverage": 0.0
+            },
+            {
+              "key": "1013721p:5:8341-17-4:862.0",
+              "label": "artefact",
+              "band_px": 20573,
+              "covered_px": 0,
+              "coverage": 0.0
+            },
+            {
+              "key": "1013721p:5:8341-17-4:866.0",
+              "label": "artefact",
+              "band_px": 23222,
+              "covered_px": 0,
+              "coverage": 0.0
+            },
+            {
+              "key": "1013721p:5:8341-17-4:874.0",
+              "label": "artefact",
+              "band_px": 23220,
+              "covered_px": 0,
+              "coverage": 0.0
+            },
+            {
+              "key": "1013721p:5:8341-17-4:882.0",
+              "label": "artefact",
+              "band_px": 23218,
+              "covered_px": 0,
+              "coverage": 0.0
+            },
+            {
+              "key": "1013721p:5:8341-17-4:886.0",
+              "label": "artefact",
+              "band_px": 23220,
+              "covered_px": 0,
+              "coverage": 0.0
+            }
+          ]
+        },
+        "houghpeaks": {
+          "seconds": 4.15,
+          "rows": [
+            {
+              "key": "1013721p:5:8341-17-4:826.0",
+              "label": "artefact",
+              "band_px": 23218,
+              "covered_px": 0,
+              "coverage": 0.0
+            },
+            {
+              "key": "1013721p:5:8341-17-4:862.0",
+              "label": "artefact",
+              "band_px": 20573,
+              "covered_px": 0,
+              "coverage": 0.0
+            },
+            {
+              "key": "1013721p:5:8341-17-4:866.0",
+              "label": "artefact",
+              "band_px": 23222,
+              "covered_px": 0,
+              "coverage": 0.0
+            },
+            {
+              "key": "1013721p:5:8341-17-4:874.0",
+              "label": "artefact",
+              "band_px": 23220,
+              "covered_px": 0,
+              "coverage": 0.0
+            },
+            {
+              "key": "1013721p:5:8341-17-4:882.0",
+              "label": "artefact",
+              "band_px": 23218,
+              "covered_px": 0,
+              "coverage": 0.0
+            },
+            {
+              "key": "1013721p:5:8341-17-4:886.0",
+              "label": "artefact",
+              "band_px": 23220,
+              "covered_px": 0,
+              "coverage": 0.0
+            }
+          ]
+        },
+        "streaks": {
+          "seconds": 6.65,
+          "rows": [
+            {
+              "key": "1013721p:5:8341-17-4:826.0",
+              "label": "artefact",
+              "band_px": 23218,
+              "covered_px": 0,
+              "coverage": 0.0
+            },
+            {
+              "key": "1013721p:5:8341-17-4:862.0",
+              "label": "artefact",
+              "band_px": 20573,
+              "covered_px": 0,
+              "coverage": 0.0
+            },
+            {
+              "key": "1013721p:5:8341-17-4:866.0",
+              "label": "artefact",
+              "band_px": 23222,
+              "covered_px": 0,
+              "coverage": 0.0
+            },
+            {
+              "key": "1013721p:5:8341-17-4:874.0",
+              "label": "artefact",
+              "band_px": 23220,
+              "covered_px": 0,
+              "coverage": 0.0
+            },
+            {
+              "key": "1013721p:5:8341-17-4:882.0",
+              "label": "artefact",
+              "band_px": 23218,
+              "covered_px": 0,
+              "coverage": 0.0
+            },
+            {
+              "key": "1013721p:5:8341-17-4:886.0",
+              "label": "artefact",
+              "band_px": 23220,
+              "covered_px": 0,
+              "coverage": 0.0
+            }
+          ]
+        }
+      },
+      "error": null
+    },
+    {
+      "exposure": "1013721p",
+      "hdu": 6,
+      "results": {
+        "none": {
+          "seconds": 0.0,
+          "rows": [
+            {
+              "key": "1013721p:6:8351-20-5:-782.0",
+              "label": "artefact",
+              "band_px": 23218,
+              "covered_px": 0,
+              "coverage": 0.0
+            }
+          ]
+        },
+        "houghpeaks": {
+          "seconds": 4.31,
+          "rows": [
+            {
+              "key": "1013721p:6:8351-20-5:-782.0",
+              "label": "artefact",
+              "band_px": 23218,
+              "covered_px": 0,
+              "coverage": 0.0
+            }
+          ]
+        },
+        "streaks": {
+          "seconds": 5.38,
+          "rows": [
+            {
+              "key": "1013721p:6:8351-20-5:-782.0",
+              "label": "artefact",
+              "band_px": 23218,
+              "covered_px": 0,
+              "coverage": 0.0
+            }
+          ]
+        }
+      },
+      "error": null
+    },
+    {
+      "exposure": "1013721p",
+      "hdu": 7,
+      "results": {
+        "none": {
+          "seconds": 0.0,
+          "rows": [
+            {
+              "key": "1013721p:7:8351-13-3:-782.0",
+              "label": "artefact",
+              "band_px": 23218,
+              "covered_px": 0,
+              "coverage": 0.0
+            },
+            {
+              "key": "1013721p:7:8351-13-3:926.0",
+              "label": "artefact",
+              "band_px": 23218,
+              "covered_px": 0,
+              "coverage": 0.0
+            }
+          ]
+        },
+        "houghpeaks": {
+          "seconds": 4.49,
+          "rows": [
+            {
+              "key": "1013721p:7:8351-13-3:-782.0",
+              "label": "artefact",
+              "band_px": 23218,
+              "covered_px": 0,
+              "coverage": 0.0
+            },
+            {
+              "key": "1013721p:7:8351-13-3:926.0",
+              "label": "artefact",
+              "band_px": 23218,
+              "covered_px": 0,
+              "coverage": 0.0
+            }
+          ]
+        },
+        "streaks": {
+          "seconds": 95.1,
+          "rows": [
+            {
+              "key": "1013721p:7:8351-13-3:-782.0",
+              "label": "artefact",
+              "band_px": 23218,
+              "covered_px": 45,
+              "coverage": 0.0019381514342320613
+            },
+            {
+              "key": "1013721p:7:8351-13-3:926.0",
+              "label": "artefact",
+              "band_px": 23218,
+              "covered_px": 0,
+              "coverage": 0.0
+            }
+          ]
+        }
+      },
+      "error": null
+    },
+    {
+      "exposure": "1013721p",
+      "hdu": 8,
+      "results": {
+        "none": {
+          "seconds": 0.0,
+          "rows": [
+            {
+              "key": "1013721p:8:8351-6-3:-782.0",
+              "label": "artefact",
+              "band_px": 23218,
+              "covered_px": 0,
+              "coverage": 0.0
+            }
+          ]
+        },
+        "houghpeaks": {
+          "seconds": 3.76,
+          "rows": [
+            {
+              "key": "1013721p:8:8351-6-3:-782.0",
+              "label": "artefact",
+              "band_px": 23218,
+              "covered_px": 0,
+              "coverage": 0.0
+            }
+          ]
+        },
+        "streaks": {
+          "seconds": 4.93,
+          "rows": [
+            {
+              "key": "1013721p:8:8351-6-3:-782.0",
+              "label": "artefact",
+              "band_px": 23218,
+              "covered_px": 0,
+              "coverage": 0.0
+            }
+          ]
+        }
+      },
+      "error": null
+    },
+    {
+      "exposure": "1013721p",
+      "hdu": 9,
+      "results": {
+        "none": {
+          "seconds": 0.0,
+          "rows": [
+            {
+              "key": "1013721p:9:8261-13-3:-842.0",
+              "label": "artefact",
+              "band_px": 23218,
+              "covered_px": 0,
+              "coverage": 0.0
+            },
+            {
+              "key": "1013721p:9:8261-13-3:450.0",
+              "label": "artefact",
+              "band_px": 23220,
+              "covered_px": 0,
+              "coverage": 0.0
+            },
+            {
+              "key": "1013721p:9:8261-13-3:478.0",
+              "label": "artefact",
+              "band_px": 23218,
+              "covered_px": 0,
+              "coverage": 0.0
+            },
+            {
+              "key": "1013721p:9:8261-13-3:502.0",
+              "label": "artefact",
+              "band_px": 23220,
+              "covered_px": 0,
+              "coverage": 0.0
+            }
+          ]
+        },
+        "houghpeaks": {
+          "seconds": 3.28,
+          "rows": [
+            {
+              "key": "1013721p:9:8261-13-3:-842.0",
+              "label": "artefact",
+              "band_px": 23218,
+              "covered_px": 0,
+              "coverage": 0.0
+            },
+            {
+              "key": "1013721p:9:8261-13-3:450.0",
+              "label": "artefact",
+              "band_px": 23220,
+              "covered_px": 0,
+              "coverage": 0.0
+            },
+            {
+              "key": "1013721p:9:8261-13-3:478.0",
+              "label": "artefact",
+              "band_px": 23218,
+              "covered_px": 0,
+              "coverage": 0.0
+            },
+            {
+              "key": "1013721p:9:8261-13-3:502.0",
+              "label": "artefact",
+              "band_px": 23220,
+              "covered_px": 0,
+              "coverage": 0.0
+            }
+          ]
+        },
+        "streaks": {
+          "seconds": 4.72,
+          "rows": [
+            {
+              "key": "1013721p:9:8261-13-3:-842.0",
+              "label": "artefact",
+              "band_px": 23218,
+              "covered_px": 0,
+              "coverage": 0.0
+            },
+            {
+              "key": "1013721p:9:8261-13-3:450.0",
+              "label": "artefact",
+              "band_px": 23220,
+              "covered_px": 0,
+              "coverage": 0.0
+            },
+            {
+              "key": "1013721p:9:8261-13-3:478.0",
+              "label": "artefact",
+              "band_px": 23218,
+              "covered_px": 0,
+              "coverage": 0.0
+            },
+            {
+              "key": "1013721p:9:8261-13-3:502.0",
+              "label": "artefact",
+              "band_px": 23220,
+              "covered_px": 0,
+              "coverage": 0.0
+            }
+          ]
+        }
+      },
+      "error": null
+    },
+    {
+      "exposure": "1013721p",
+      "hdu": 14,
+      "results": {
+        "none": {
+          "seconds": 0.0,
+          "rows": [
+            {
+              "key": "1013721p:14:8351-17-3:434.0",
+              "label": "artefact",
+              "band_px": 23218,
+              "covered_px": 0,
+              "coverage": 0.0
+            },
+            {
+              "key": "1013721p:14:8351-17-3:822.0",
+              "label": "artefact",
+              "band_px": 23218,
+              "covered_px": 0,
+              "coverage": 0.0
+            }
+          ]
+        },
+        "houghpeaks": {
+          "seconds": 4.25,
+          "rows": [
+            {
+              "key": "1013721p:14:8351-17-3:434.0",
+              "label": "artefact",
+              "band_px": 23218,
+              "covered_px": 0,
+              "coverage": 0.0
+            },
+            {
+              "key": "1013721p:14:8351-17-3:822.0",
+              "label": "artefact",
+              "band_px": 23218,
+              "covered_px": 0,
+              "coverage": 0.0
+            }
+          ]
+        },
+        "streaks": {
+          "seconds": 5.68,
+          "rows": [
+            {
+              "key": "1013721p:14:8351-17-3:434.0",
+              "label": "artefact",
+              "band_px": 23218,
+              "covered_px": 0,
+              "coverage": 0.0
+            },
+            {
+              "key": "1013721p:14:8351-17-3:822.0",
+              "label": "artefact",
+              "band_px": 23218,
+              "covered_px": 0,
+              "coverage": 0.0
+            }
+          ]
+        }
+      },
+      "error": null
+    },
+    {
+      "exposure": "1013721p",
+      "hdu": 15,
+      "results": {
+        "none": {
+          "seconds": 0.0,
+          "rows": [
+            {
+              "key": "1013721p:15:8434-13-5:-2248.708",
+              "label": "artefact",
+              "band_px": 10560,
+              "covered_px": 0,
+              "coverage": 0.0
+            },
+            {
+              "key": "1013721p:15:8434-13-5:-782.0",
+              "label": "artefact",
+              "band_px": 23218,
+              "covered_px": 0,
+              "coverage": 0.0
+            },
+            {
+              "key": "1013721p:15:8434-13-5:882.0",
+              "label": "artefact",
+              "band_px": 23221,
+              "covered_px": 0,
+              "coverage": 0.0
+            }
+          ]
+        },
+        "houghpeaks": {
+          "seconds": 4.63,
+          "rows": [
+            {
+              "key": "1013721p:15:8434-13-5:-2248.708",
+              "label": "artefact",
+              "band_px": 10560,
+              "covered_px": 3376,
+              "coverage": 0.3196969696969697
+            },
+            {
+              "key": "1013721p:15:8434-13-5:-782.0",
+              "label": "artefact",
+              "band_px": 23218,
+              "covered_px": 0,
+              "coverage": 0.0
+            },
+            {
+              "key": "1013721p:15:8434-13-5:882.0",
+              "label": "artefact",
+              "band_px": 23221,
+              "covered_px": 0,
+              "coverage": 0.0
+            }
+          ]
+        },
+        "streaks": {
+          "seconds": 5.79,
+          "rows": [
+            {
+              "key": "1013721p:15:8434-13-5:-2248.708",
+              "label": "artefact",
+              "band_px": 10560,
+              "covered_px": 3376,
+              "coverage": 0.3196969696969697
+            },
+            {
+              "key": "1013721p:15:8434-13-5:-782.0",
+              "label": "artefact",
+              "band_px": 23218,
+              "covered_px": 0,
+              "coverage": 0.0
+            },
+            {
+              "key": "1013721p:15:8434-13-5:882.0",
+              "label": "artefact",
+              "band_px": 23221,
+              "covered_px": 0,
+              "coverage": 0.0
+            }
+          ]
+        }
+      },
+      "error": null
+    },
+    {
+      "exposure": "1013721p",
+      "hdu": 16,
+      "results": {
+        "none": {
+          "seconds": 0.0,
+          "rows": [
+            {
+              "key": "1013721p:16:8341-17-3:-782.0",
+              "label": "artefact",
+              "band_px": 23218,
+              "covered_px": 0,
+              "coverage": 0.0
+            },
+            {
+              "key": "1013721p:16:8341-17-3:-774.666",
+              "label": "artefact",
+              "band_px": 23218,
+              "covered_px": 0,
+              "coverage": 0.0
+            },
+            {
+              "key": "1013721p:16:8341-17-3:-174.0",
+              "label": "artefact",
+              "band_px": 23218,
+              "covered_px": 0,
+              "coverage": 0.0
+            }
+          ]
+        },
+        "houghpeaks": {
+          "seconds": 3.37,
+          "rows": [
+            {
+              "key": "1013721p:16:8341-17-3:-782.0",
+              "label": "artefact",
+              "band_px": 23218,
+              "covered_px": 2019,
+              "coverage": 0.08695839434921182
+            },
+            {
+              "key": "1013721p:16:8341-17-3:-774.666",
+              "label": "artefact",
+              "band_px": 23218,
+              "covered_px": 5895,
+              "coverage": 0.2538978378844
+            },
+            {
+              "key": "1013721p:16:8341-17-3:-174.0",
+              "label": "artefact",
+              "band_px": 23218,
+              "covered_px": 40,
+              "coverage": 0.0017228012748729434
+            }
+          ]
+        },
+        "streaks": {
+          "seconds": 4.61,
+          "rows": [
+            {
+              "key": "1013721p:16:8341-17-3:-782.0",
+              "label": "artefact",
+              "band_px": 23218,
+              "covered_px": 2019,
+              "coverage": 0.08695839434921182
+            },
+            {
+              "key": "1013721p:16:8341-17-3:-774.666",
+              "label": "artefact",
+              "band_px": 23218,
+              "covered_px": 5895,
+              "coverage": 0.2538978378844
+            },
+            {
+              "key": "1013721p:16:8341-17-3:-174.0",
+              "label": "artefact",
+              "band_px": 23218,
+              "covered_px": 40,
+              "coverage": 0.0017228012748729434
+            }
+          ]
+        }
+      },
+      "error": null
+    },
+    {
+      "exposure": "1013721p",
+      "hdu": 17,
+      "results": {
+        "none": {
+          "seconds": 0.0,
+          "rows": [
+            {
+              "key": "1013721p:17:8351-11-4:-782.0",
+              "label": "artefact",
+              "band_px": 23218,
+              "covered_px": 0,
+              "coverage": 0.0
+            },
+            {
+              "key": "1013721p:17:8351-11-4:-478.0",
+              "label": "artefact",
+              "band_px": 23220,
+              "covered_px": 0,
+              "coverage": 0.0
+            },
+            {
+              "key": "1013721p:17:8351-11-4:-424.45",
+              "label": "artefact",
+              "band_px": 23218,
+              "covered_px": 0,
+              "coverage": 0.0
+            },
+            {
+              "key": "1013721p:17:8351-11-4:-408.584",
+              "label": "artefact",
+              "band_px": 23218,
+              "covered_px": 0,
+              "coverage": 0.0
+            },
+            {
+              "key": "1013721p:17:8351-11-4:-402.0",
+              "label": "artefact",
+              "band_px": 23218,
+              "covered_px": 0,
+              "coverage": 0.0
+            }
+          ]
+        },
+        "houghpeaks": {
+          "seconds": 3.69,
+          "rows": [
+            {
+              "key": "1013721p:17:8351-11-4:-782.0",
+              "label": "artefact",
+              "band_px": 23218,
+              "covered_px": 0,
+              "coverage": 0.0
+            },
+            {
+              "key": "1013721p:17:8351-11-4:-478.0",
+              "label": "artefact",
+              "band_px": 23220,
+              "covered_px": 2005,
+              "coverage": 0.0863479758828596
+            },
+            {
+              "key": "1013721p:17:8351-11-4:-424.45",
+              "label": "artefact",
+              "band_px": 23218,
+              "covered_px": 8215,
+              "coverage": 0.3538203118270308
+            },
+            {
+              "key": "1013721p:17:8351-11-4:-408.584",
+              "label": "artefact",
+              "band_px": 23218,
+              "covered_px": 5930,
+              "coverage": 0.2554052889999139
+            },
+            {
+              "key": "1013721p:17:8351-11-4:-402.0",
+              "label": "artefact",
+              "band_px": 23218,
+              "covered_px": 0,
+              "coverage": 0.0
+            }
+          ]
+        },
+        "streaks": {
+          "seconds": 5.0,
+          "rows": [
+            {
+              "key": "1013721p:17:8351-11-4:-782.0",
+              "label": "artefact",
+              "band_px": 23218,
+              "covered_px": 0,
+              "coverage": 0.0
+            },
+            {
+              "key": "1013721p:17:8351-11-4:-478.0",
+              "label": "artefact",
+              "band_px": 23220,
+              "covered_px": 2005,
+              "coverage": 0.0863479758828596
+            },
+            {
+              "key": "1013721p:17:8351-11-4:-424.45",
+              "label": "artefact",
+              "band_px": 23218,
+              "covered_px": 8215,
+              "coverage": 0.3538203118270308
+            },
+            {
+              "key": "1013721p:17:8351-11-4:-408.584",
+              "label": "artefact",
+              "band_px": 23218,
+              "covered_px": 5930,
+              "coverage": 0.2554052889999139
+            },
+            {
+              "key": "1013721p:17:8351-11-4:-402.0",
+              "label": "artefact",
+              "band_px": 23218,
+              "covered_px": 0,
+              "coverage": 0.0
+            }
+          ]
+        }
+      },
+      "error": null
+    },
+    {
+      "exposure": "1013721p",
+      "hdu": 18,
+      "results": {
+        "none": {
+          "seconds": 0.0,
+          "rows": [
+            {
+              "key": "1013721p:18:7432-19-3:-842.0",
+              "label": "artefact",
+              "band_px": 23218,
+              "covered_px": 0,
+              "coverage": 0.0
+            },
+            {
+              "key": "1013721p:18:7432-19-3:626.0",
+              "label": "artefact",
+              "band_px": 23218,
+              "covered_px": 0,
+              "coverage": 0.0
+            }
+          ]
+        },
+        "houghpeaks": {
+          "seconds": 3.22,
+          "rows": [
+            {
+              "key": "1013721p:18:7432-19-3:-842.0",
+              "label": "artefact",
+              "band_px": 23218,
+              "covered_px": 0,
+              "coverage": 0.0
+            },
+            {
+              "key": "1013721p:18:7432-19-3:626.0",
+              "label": "artefact",
+              "band_px": 23218,
+              "covered_px": 0,
+              "coverage": 0.0
+            }
+          ]
+        },
+        "streaks": {
+          "seconds": 4.51,
+          "rows": [
+            {
+              "key": "1013721p:18:7432-19-3:-842.0",
+              "label": "artefact",
+              "band_px": 23218,
+              "covered_px": 0,
+              "coverage": 0.0
+            },
+            {
+              "key": "1013721p:18:7432-19-3:626.0",
+              "label": "artefact",
+              "band_px": 23218,
+              "covered_px": 0,
+              "coverage": 0.0
+            }
+          ]
+        }
+      },
+      "error": null
+    },
+    {
+      "exposure": "1013721p",
+      "hdu": 19,
+      "results": {
+        "none": {
+          "seconds": 0.0,
+          "rows": [
+            {
+              "key": "1013721p:19:9172-4-3:-782.0",
+              "label": "artefact",
+              "band_px": 23218,
+              "covered_px": 0,
+              "coverage": 0.0
+            },
+            {
+              "key": "1013721p:19:9172-4-3:482.0",
+              "label": "artefact",
+              "band_px": 23220,
+              "covered_px": 0,
+              "coverage": 0.0
+            },
+            {
+              "key": "1013721p:19:9172-4-3:526.0",
+              "label": "artefact",
+              "band_px": 23218,
+              "covered_px": 0,
+              "coverage": 0.0
+            },
+            {
+              "key": "1013721p:19:9172-4-3:566.0",
+              "label": "artefact",
+              "band_px": 23220,
+              "covered_px": 0,
+              "coverage": 0.0
+            },
+            {
+              "key": "1013721p:19:9172-4-3:914.0",
+              "label": "artefact",
+              "band_px": 23218,
+              "covered_px": 0,
+              "coverage": 0.0
+            }
+          ]
+        },
+        "houghpeaks": {
+          "seconds": 3.85,
+          "rows": [
+            {
+              "key": "1013721p:19:9172-4-3:-782.0",
+              "label": "artefact",
+              "band_px": 23218,
+              "covered_px": 3764,
+              "coverage": 0.16211559996554398
+            },
+            {
+              "key": "1013721p:19:9172-4-3:482.0",
+              "label": "artefact",
+              "band_px": 23220,
+              "covered_px": 0,
+              "coverage": 0.0
+            },
+            {
+              "key": "1013721p:19:9172-4-3:526.0",
+              "label": "artefact",
+              "band_px": 23218,
+              "covered_px": 0,
+              "coverage": 0.0
+            },
+            {
+              "key": "1013721p:19:9172-4-3:566.0",
+              "label": "artefact",
+              "band_px": 23220,
+              "covered_px": 0,
+              "coverage": 0.0
+            },
+            {
+              "key": "1013721p:19:9172-4-3:914.0",
+              "label": "artefact",
+              "band_px": 23218,
+              "covered_px": 0,
+              "coverage": 0.0
+            }
+          ]
+        },
+        "streaks": {
+          "seconds": 6.01,
+          "rows": [
+            {
+              "key": "1013721p:19:9172-4-3:-782.0",
+              "label": "artefact",
+              "band_px": 23218,
+              "covered_px": 3764,
+              "coverage": 0.16211559996554398
+            },
+            {
+              "key": "1013721p:19:9172-4-3:482.0",
+              "label": "artefact",
+              "band_px": 23220,
+              "covered_px": 0,
+              "coverage": 0.0
+            },
+            {
+              "key": "1013721p:19:9172-4-3:526.0",
+              "label": "artefact",
+              "band_px": 23218,
+              "covered_px": 0,
+              "coverage": 0.0
+            },
+            {
+              "key": "1013721p:19:9172-4-3:566.0",
+              "label": "artefact",
+              "band_px": 23220,
+              "covered_px": 0,
+              "coverage": 0.0
+            },
+            {
+              "key": "1013721p:19:9172-4-3:914.0",
+              "label": "artefact",
+              "band_px": 23218,
+              "covered_px": 0,
+              "coverage": 0.0
+            }
+          ]
+        }
+      },
+      "error": null
+    },
+    {
+      "exposure": "1013721p",
+      "hdu": 20,
+      "results": {
+        "none": {
+          "seconds": 0.0,
+          "rows": [
+            {
+              "key": "1013721p:20:8341-16-5:-842.873",
+              "label": "artefact",
+              "band_px": 23218,
+              "covered_px": 0,
+              "coverage": 0.0
+            },
+            {
+              "key": "1013721p:20:8341-16-5:-794.0",
+              "label": "artefact",
+              "band_px": 23218,
+              "covered_px": 0,
+              "coverage": 0.0
+            },
+            {
+              "key": "1013721p:20:8341-16-5:-738.0",
+              "label": "artefact",
+              "band_px": 23220,
+              "covered_px": 0,
+              "coverage": 0.0
+            },
+            {
+              "key": "1013721p:20:8341-16-5:-682.0",
+              "label": "artefact",
+              "band_px": 23221,
+              "covered_px": 0,
+              "coverage": 0.0
+            },
+            {
+              "key": "1013721p:20:8341-16-5:-626.0",
+              "label": "artefact",
+              "band_px": 23224,
+              "covered_px": 0,
+              "coverage": 0.0
+            },
+            {
+              "key": "1013721p:20:8341-16-5:-570.0",
+              "label": "artefact",
+              "band_px": 23227,
+              "covered_px": 0,
+              "coverage": 0.0
+            }
+          ]
+        },
+        "houghpeaks": {
+          "seconds": 3.33,
+          "rows": [
+            {
+              "key": "1013721p:20:8341-16-5:-842.873",
+              "label": "artefact",
+              "band_px": 23218,
+              "covered_px": 0,
+              "coverage": 0.0
+            },
+            {
+              "key": "1013721p:20:8341-16-5:-794.0",
+              "label": "artefact",
+              "band_px": 23218,
+              "covered_px": 0,
+              "coverage": 0.0
+            },
+            {
+              "key": "1013721p:20:8341-16-5:-738.0",
+              "label": "artefact",
+              "band_px": 23220,
+              "covered_px": 0,
+              "coverage": 0.0
+            },
+            {
+              "key": "1013721p:20:8341-16-5:-682.0",
+              "label": "artefact",
+              "band_px": 23221,
+              "covered_px": 0,
+              "coverage": 0.0
+            },
+            {
+              "key": "1013721p:20:8341-16-5:-626.0",
+              "label": "artefact",
+              "band_px": 23224,
+              "covered_px": 0,
+              "coverage": 0.0
+            },
+            {
+              "key": "1013721p:20:8341-16-5:-570.0",
+              "label": "artefact",
+              "band_px": 23227,
+              "covered_px": 0,
+              "coverage": 0.0
+            }
+          ]
+        },
+        "streaks": {
+          "seconds": 6.24,
+          "rows": [
+            {
+              "key": "1013721p:20:8341-16-5:-842.873",
+              "label": "artefact",
+              "band_px": 23218,
+              "covered_px": 0,
+              "coverage": 0.0
+            },
+            {
+              "key": "1013721p:20:8341-16-5:-794.0",
+              "label": "artefact",
+              "band_px": 23218,
+              "covered_px": 0,
+              "coverage": 0.0
+            },
+            {
+              "key": "1013721p:20:8341-16-5:-738.0",
+              "label": "artefact",
+              "band_px": 23220,
+              "covered_px": 0,
+              "coverage": 0.0
+            },
+            {
+              "key": "1013721p:20:8341-16-5:-682.0",
+              "label": "artefact",
+              "band_px": 23221,
+              "covered_px": 0,
+              "coverage": 0.0
+            },
+            {
+              "key": "1013721p:20:8341-16-5:-626.0",
+              "label": "artefact",
+              "band_px": 23224,
+              "covered_px": 0,
+              "coverage": 0.0
+            },
+            {
+              "key": "1013721p:20:8341-16-5:-570.0",
+              "label": "artefact",
+              "band_px": 23227,
+              "covered_px": 0,
+              "coverage": 0.0
+            }
+          ]
+        }
+      },
+      "error": null
+    },
+    {
+      "exposure": "1013721p",
+      "hdu": 21,
+      "results": {
+        "none": {
+          "seconds": 0.0,
+          "rows": [
+            {
+              "key": "1013721p:21:8352-13-4:42.0",
+              "label": "artefact",
+              "band_px": 23220,
+              "covered_px": 0,
+              "coverage": 0.0
+            },
+            {
+              "key": "1013721p:21:8352-13-4:86.0",
+              "label": "artefact",
+              "band_px": 23218,
+              "covered_px": 0,
+              "coverage": 0.0
+            },
+            {
+              "key": "1013721p:21:8352-13-4:118.0",
+              "label": "artefact",
+              "band_px": 23220,
+              "covered_px": 0,
+              "coverage": 0.0
+            }
+          ]
+        },
+        "houghpeaks": {
+          "seconds": 4.1,
+          "rows": [
+            {
+              "key": "1013721p:21:8352-13-4:42.0",
+              "label": "artefact",
+              "band_px": 23220,
+              "covered_px": 45,
+              "coverage": 0.001937984496124031
+            },
+            {
+              "key": "1013721p:21:8352-13-4:86.0",
+              "label": "artefact",
+              "band_px": 23218,
+              "covered_px": 44,
+              "coverage": 0.0018950814023602376
+            },
+            {
+              "key": "1013721p:21:8352-13-4:118.0",
+              "label": "artefact",
+              "band_px": 23220,
+              "covered_px": 45,
+              "coverage": 0.001937984496124031
+            }
+          ]
+        },
+        "streaks": {
+          "seconds": 5.76,
+          "rows": [
+            {
+              "key": "1013721p:21:8352-13-4:42.0",
+              "label": "artefact",
+              "band_px": 23220,
+              "covered_px": 45,
+              "coverage": 0.001937984496124031
+            },
+            {
+              "key": "1013721p:21:8352-13-4:86.0",
+              "label": "artefact",
+              "band_px": 23218,
+              "covered_px": 44,
+              "coverage": 0.0018950814023602376
+            },
+            {
+              "key": "1013721p:21:8352-13-4:118.0",
+              "label": "artefact",
+              "band_px": 23220,
+              "covered_px": 45,
+              "coverage": 0.001937984496124031
+            }
+          ]
+        }
+      },
+      "error": null
+    },
+    {
+      "exposure": "1013721p",
+      "hdu": 22,
+      "results": {
+        "none": {
+          "seconds": 0.0,
+          "rows": [
+            {
+              "key": "1013721p:22:8374-17-5:-388.487",
+              "label": "artefact",
+              "band_px": 23218,
+              "covered_px": 0,
+              "coverage": 0.0
+            },
+            {
+              "key": "1013721p:22:8374-17-5:-378.951",
+              "label": "artefact",
+              "band_px": 23218,
+              "covered_px": 0,
+              "coverage": 0.0
+            },
+            {
+              "key": "1013721p:22:8374-17-5:374.0",
+              "label": "artefact",
+              "band_px": 23218,
+              "covered_px": 0,
+              "coverage": 0.0
+            }
+          ]
+        },
+        "houghpeaks": {
+          "seconds": 3.73,
+          "rows": [
+            {
+              "key": "1013721p:22:8374-17-5:-388.487",
+              "label": "artefact",
+              "band_px": 23218,
+              "covered_px": 7694,
+              "coverage": 0.33138082522181067
+            },
+            {
+              "key": "1013721p:22:8374-17-5:-378.951",
+              "label": "artefact",
+              "band_px": 23218,
+              "covered_px": 1002,
+              "coverage": 0.043156171935567235
+            },
+            {
+              "key": "1013721p:22:8374-17-5:374.0",
+              "label": "artefact",
+              "band_px": 23218,
+              "covered_px": 65,
+              "coverage": 0.002799552071668533
+            }
+          ]
+        },
+        "streaks": {
+          "seconds": 5.25,
+          "rows": [
+            {
+              "key": "1013721p:22:8374-17-5:-388.487",
+              "label": "artefact",
+              "band_px": 23218,
+              "covered_px": 11240,
+              "coverage": 0.4841071582392971
+            },
+            {
+              "key": "1013721p:22:8374-17-5:-378.951",
+              "label": "artefact",
+              "band_px": 23218,
+              "covered_px": 1002,
+              "coverage": 0.043156171935567235
+            },
+            {
+              "key": "1013721p:22:8374-17-5:374.0",
+              "label": "artefact",
+              "band_px": 23218,
+              "covered_px": 65,
+              "coverage": 0.002799552071668533
+            }
+          ]
+        }
+      },
+      "error": null
+    },
+    {
+      "exposure": "1013721p",
+      "hdu": 23,
+      "results": {
+        "none": {
+          "seconds": 0.0,
+          "rows": [
+            {
+              "key": "1013721p:23:8351-11-5:-2242.433",
+              "label": "artefact",
+              "band_px": 10560,
+              "covered_px": 0,
+              "coverage": 0.0
+            }
+          ]
+        },
+        "houghpeaks": {
+          "seconds": 3.23,
+          "rows": [
+            {
+              "key": "1013721p:23:8351-11-5:-2242.433",
+              "label": "artefact",
+              "band_px": 10560,
+              "covered_px": 2677,
+              "coverage": 0.25350378787878786
+            }
+          ]
+        },
+        "streaks": {
+          "seconds": 4.69,
+          "rows": [
+            {
+              "key": "1013721p:23:8351-11-5:-2242.433",
+              "label": "artefact",
+              "band_px": 10560,
+              "covered_px": 2677,
+              "coverage": 0.25350378787878786
+            }
+          ]
+        }
+      },
+      "error": null
+    },
+    {
+      "exposure": "1013721p",
+      "hdu": 24,
+      "results": {
+        "none": {
+          "seconds": 0.0,
+          "rows": [
+            {
+              "key": "1013721p:24:8351-6-4:586.0",
+              "label": "artefact",
+              "band_px": 23220,
+              "covered_px": 0,
+              "coverage": 0.0
+            },
+            {
+              "key": "1013721p:24:8351-6-4:630.0",
+              "label": "artefact",
+              "band_px": 23218,
+              "covered_px": 0,
+              "coverage": 0.0
+            },
+            {
+              "key": "1013721p:24:8351-6-4:670.0",
+              "label": "artefact",
+              "band_px": 23220,
+              "covered_px": 0,
+              "coverage": 0.0
+            }
+          ]
+        },
+        "houghpeaks": {
+          "seconds": 4.09,
+          "rows": [
+            {
+              "key": "1013721p:24:8351-6-4:586.0",
+              "label": "artefact",
+              "band_px": 23220,
+              "covered_px": 0,
+              "coverage": 0.0
+            },
+            {
+              "key": "1013721p:24:8351-6-4:630.0",
+              "label": "artefact",
+              "band_px": 23218,
+              "covered_px": 0,
+              "coverage": 0.0
+            },
+            {
+              "key": "1013721p:24:8351-6-4:670.0",
+              "label": "artefact",
+              "band_px": 23220,
+              "covered_px": 0,
+              "coverage": 0.0
+            }
+          ]
+        },
+        "streaks": {
+          "seconds": 89.1,
+          "rows": [
+            {
+              "key": "1013721p:24:8351-6-4:586.0",
+              "label": "artefact",
+              "band_px": 23220,
+              "covered_px": 30,
+              "coverage": 0.0012919896640826874
+            },
+            {
+              "key": "1013721p:24:8351-6-4:630.0",
+              "label": "artefact",
+              "band_px": 23218,
+              "covered_px": 30,
+              "coverage": 0.0012921009561547075
+            },
+            {
+              "key": "1013721p:24:8351-6-4:670.0",
+              "label": "artefact",
+              "band_px": 23220,
+              "covered_px": 30,
+              "coverage": 0.0012919896640826874
+            }
+          ]
+        }
+      },
+      "error": null
+    },
+    {
+      "exposure": "1013721p",
+      "hdu": 27,
+      "results": {
+        "none": {
+          "seconds": 0.0,
+          "rows": [
+            {
+              "key": "1013721p:27:8351-7-3:518.0",
+              "label": "artefact",
+              "band_px": 23220,
+              "covered_px": 0,
+              "coverage": 0.0
+            },
+            {
+              "key": "1013721p:27:8351-7-3:582.0",
+              "label": "artefact",
+              "band_px": 23218,
+              "covered_px": 0,
+              "coverage": 0.0
+            }
+          ]
+        },
+        "houghpeaks": {
+          "seconds": 4.09,
+          "rows": [
+            {
+              "key": "1013721p:27:8351-7-3:518.0",
+              "label": "artefact",
+              "band_px": 23220,
+              "covered_px": 0,
+              "coverage": 0.0
+            },
+            {
+              "key": "1013721p:27:8351-7-3:582.0",
+              "label": "artefact",
+              "band_px": 23218,
+              "covered_px": 0,
+              "coverage": 0.0
+            }
+          ]
+        },
+        "streaks": {
+          "seconds": 5.0,
+          "rows": [
+            {
+              "key": "1013721p:27:8351-7-3:518.0",
+              "label": "artefact",
+              "band_px": 23220,
+              "covered_px": 0,
+              "coverage": 0.0
+            },
+            {
+              "key": "1013721p:27:8351-7-3:582.0",
+              "label": "artefact",
+              "band_px": 23218,
+              "covered_px": 0,
+              "coverage": 0.0
+            }
+          ]
+        }
+      },
+      "error": null
+    },
+    {
+      "exposure": "1013721p",
+      "hdu": 28,
+      "results": {
+        "none": {
+          "seconds": 0.0,
+          "rows": [
+            {
+              "key": "1013721p:28:8261-16-5:-786.0",
+              "label": "artefact",
+              "band_px": 23218,
+              "covered_px": 0,
+              "coverage": 0.0
+            },
+            {
+              "key": "1013721p:28:8261-16-5:842.0",
+              "label": "artefact",
+              "band_px": 23220,
+              "covered_px": 0,
+              "coverage": 0.0
+            },
+            {
+              "key": "1013721p:28:8261-16-5:906.0",
+              "label": "artefact",
+              "band_px": 23218,
+              "covered_px": 0,
+              "coverage": 0.0
+            },
+            {
+              "key": "1013721p:28:8261-16-5:934.0",
+              "label": "artefact",
+              "band_px": 23220,
+              "covered_px": 0,
+              "coverage": 0.0
+            },
+            {
+              "key": "1013721p:28:8261-16-5:962.0",
+              "label": "artefact",
+              "band_px": 18103,
+              "covered_px": 0,
+              "coverage": 0.0
+            },
+            {
+              "key": "1013721p:28:8261-16-5:990.0",
+              "label": "artefact",
+              "band_px": 14454,
+              "covered_px": 0,
+              "coverage": 0.0
+            },
+            {
+              "key": "1013721p:28:8261-16-5:1018.0",
+              "label": "artefact",
+              "band_px": 12579,
+              "covered_px": 0,
+              "coverage": 0.0
+            }
+          ]
+        },
+        "houghpeaks": {
+          "seconds": 2.77,
+          "rows": [
+            {
+              "key": "1013721p:28:8261-16-5:-786.0",
+              "label": "artefact",
+              "band_px": 23218,
+              "covered_px": 0,
+              "coverage": 0.0
+            },
+            {
+              "key": "1013721p:28:8261-16-5:842.0",
+              "label": "artefact",
+              "band_px": 23220,
+              "covered_px": 0,
+              "coverage": 0.0
+            },
+            {
+              "key": "1013721p:28:8261-16-5:906.0",
+              "label": "artefact",
+              "band_px": 23218,
+              "covered_px": 0,
+              "coverage": 0.0
+            },
+            {
+              "key": "1013721p:28:8261-16-5:934.0",
+              "label": "artefact",
+              "band_px": 23220,
+              "covered_px": 0,
+              "coverage": 0.0
+            },
+            {
+              "key": "1013721p:28:8261-16-5:962.0",
+              "label": "artefact",
+              "band_px": 18103,
+              "covered_px": 0,
+              "coverage": 0.0
+            },
+            {
+              "key": "1013721p:28:8261-16-5:990.0",
+              "label": "artefact",
+              "band_px": 14454,
+              "covered_px": 0,
+              "coverage": 0.0
+            },
+            {
+              "key": "1013721p:28:8261-16-5:1018.0",
+              "label": "artefact",
+              "band_px": 12579,
+              "covered_px": 0,
+              "coverage": 0.0
+            }
+          ]
+        },
+        "streaks": {
+          "seconds": 4.09,
+          "rows": [
+            {
+              "key": "1013721p:28:8261-16-5:-786.0",
+              "label": "artefact",
+              "band_px": 23218,
+              "covered_px": 0,
+              "coverage": 0.0
+            },
+            {
+              "key": "1013721p:28:8261-16-5:842.0",
+              "label": "artefact",
+              "band_px": 23220,
+              "covered_px": 0,
+              "coverage": 0.0
+            },
+            {
+              "key": "1013721p:28:8261-16-5:906.0",
+              "label": "artefact",
+              "band_px": 23218,
+              "covered_px": 0,
+              "coverage": 0.0
+            },
+            {
+              "key": "1013721p:28:8261-16-5:934.0",
+              "label": "artefact",
+              "band_px": 23220,
+              "covered_px": 0,
+              "coverage": 0.0
+            },
+            {
+              "key": "1013721p:28:8261-16-5:962.0",
+              "label": "artefact",
+              "band_px": 18103,
+              "covered_px": 0,
+              "coverage": 0.0
+            },
+            {
+              "key": "1013721p:28:8261-16-5:990.0",
+              "label": "artefact",
+              "band_px": 14454,
+              "covered_px": 0,
+              "coverage": 0.0
+            },
+            {
+              "key": "1013721p:28:8261-16-5:1018.0",
+              "label": "artefact",
+              "band_px": 12579,
+              "covered_px": 0,
+              "coverage": 0.0
+            }
+          ]
+        }
+      },
+      "error": null
+    },
+    {
+      "exposure": "1013721p",
+      "hdu": 29,
+      "results": {
+        "none": {
+          "seconds": 0.0,
+          "rows": [
+            {
+              "key": "1013721p:29:7432-3-3:1006.982",
+              "label": "artefact",
+              "band_px": 23218,
+              "covered_px": 0,
+              "coverage": 0.0
+            }
+          ]
+        },
+        "houghpeaks": {
+          "seconds": 3.89,
+          "rows": [
+            {
+              "key": "1013721p:29:7432-3-3:1006.982",
+              "label": "artefact",
+              "band_px": 23218,
+              "covered_px": 0,
+              "coverage": 0.0
+            }
+          ]
+        },
+        "streaks": {
+          "seconds": 87.57,
+          "rows": [
+            {
+              "key": "1013721p:29:7432-3-3:1006.982",
+              "label": "artefact",
+              "band_px": 23218,
+              "covered_px": 0,
+              "coverage": 0.0
+            }
+          ]
+        }
+      },
+      "error": null
+    },
+    {
+      "exposure": "1013721p",
+      "hdu": 30,
+      "results": {
+        "none": {
+          "seconds": 0.0,
+          "rows": [
+            {
+              "key": "1013721p:30:8351-16-4:-798.0",
+              "label": "artefact",
+              "band_px": 23218,
+              "covered_px": 0,
+              "coverage": 0.0
+            },
+            {
+              "key": "1013721p:30:8351-16-4:-770.0",
+              "label": "artefact",
+              "band_px": 23220,
+              "covered_px": 0,
+              "coverage": 0.0
+            }
+          ]
+        },
+        "houghpeaks": {
+          "seconds": 2.79,
+          "rows": [
+            {
+              "key": "1013721p:30:8351-16-4:-798.0",
+              "label": "artefact",
+              "band_px": 23218,
+              "covered_px": 0,
+              "coverage": 0.0
+            },
+            {
+              "key": "1013721p:30:8351-16-4:-770.0",
+              "label": "artefact",
+              "band_px": 23220,
+              "covered_px": 0,
+              "coverage": 0.0
+            }
+          ]
+        },
+        "streaks": {
+          "seconds": 4.16,
+          "rows": [
+            {
+              "key": "1013721p:30:8351-16-4:-798.0",
+              "label": "artefact",
+              "band_px": 23218,
+              "covered_px": 0,
+              "coverage": 0.0
+            },
+            {
+              "key": "1013721p:30:8351-16-4:-770.0",
+              "label": "artefact",
+              "band_px": 23220,
+              "covered_px": 0,
+              "coverage": 0.0
+            }
+          ]
+        }
+      },
+      "error": null
+    },
+    {
+      "exposure": "1013721p",
+      "hdu": 31,
+      "results": {
+        "none": {
+          "seconds": 0.0,
+          "rows": [
+            {
+              "key": "1013721p:31:8261-19-5:-638.0",
+              "label": "artefact",
+              "band_px": 23218,
+              "covered_px": 0,
+              "coverage": 0.0
+            },
+            {
+              "key": "1013721p:31:8261-19-5:154.0",
+              "label": "artefact",
+              "band_px": 23218,
+              "covered_px": 0,
+              "coverage": 0.0
+            },
+            {
+              "key": "1013721p:31:8261-19-5:462.0",
+              "label": "artefact",
+              "band_px": 23218,
+              "covered_px": 0,
+              "coverage": 0.0
+            }
+          ]
+        },
+        "houghpeaks": {
+          "seconds": 2.83,
+          "rows": [
+            {
+              "key": "1013721p:31:8261-19-5:-638.0",
+              "label": "artefact",
+              "band_px": 23218,
+              "covered_px": 0,
+              "coverage": 0.0
+            },
+            {
+              "key": "1013721p:31:8261-19-5:154.0",
+              "label": "artefact",
+              "band_px": 23218,
+              "covered_px": 40,
+              "coverage": 0.0017228012748729434
+            },
+            {
+              "key": "1013721p:31:8261-19-5:462.0",
+              "label": "artefact",
+              "band_px": 23218,
+              "covered_px": 0,
+              "coverage": 0.0
+            }
+          ]
+        },
+        "streaks": {
+          "seconds": 4.72,
+          "rows": [
+            {
+              "key": "1013721p:31:8261-19-5:-638.0",
+              "label": "artefact",
+              "band_px": 23218,
+              "covered_px": 0,
+              "coverage": 0.0
+            },
+            {
+              "key": "1013721p:31:8261-19-5:154.0",
+              "label": "artefact",
+              "band_px": 23218,
+              "covered_px": 40,
+              "coverage": 0.0017228012748729434
+            },
+            {
+              "key": "1013721p:31:8261-19-5:462.0",
+              "label": "artefact",
+              "band_px": 23218,
+              "covered_px": 0,
+              "coverage": 0.0
+            }
+          ]
+        }
+      },
+      "error": null
+    },
+    {
+      "exposure": "1013721p",
+      "hdu": 32,
+      "results": {
+        "none": {
+          "seconds": 0.0,
+          "rows": [
+            {
+              "key": "1013721p:32:8351-8-3:742.0",
+              "label": "artefact",
+              "band_px": 23222,
+              "covered_px": 0,
+              "coverage": 0.0
+            },
+            {
+              "key": "1013721p:32:8351-8-3:766.0",
+              "label": "artefact",
+              "band_px": 23224,
+              "covered_px": 0,
+              "coverage": 0.0
+            },
+            {
+              "key": "1013721p:32:8351-8-3:826.0",
+              "label": "artefact",
+              "band_px": 23218,
+              "covered_px": 0,
+              "coverage": 0.0
+            },
+            {
+              "key": "1013721p:32:8351-8-3:874.0",
+              "label": "artefact",
+              "band_px": 23222,
+              "covered_px": 0,
+              "coverage": 0.0
+            },
+            {
+              "key": "1013721p:32:8351-8-3:874.0",
+              "label": "artefact",
+              "band_px": 20005,
+              "covered_px": 0,
+              "coverage": 0.0
+            }
+          ]
+        },
+        "houghpeaks": {
+          "seconds": 2.97,
+          "rows": [
+            {
+              "key": "1013721p:32:8351-8-3:742.0",
+              "label": "artefact",
+              "band_px": 23222,
+              "covered_px": 0,
+              "coverage": 0.0
+            },
+            {
+              "key": "1013721p:32:8351-8-3:766.0",
+              "label": "artefact",
+              "band_px": 23224,
+              "covered_px": 0,
+              "coverage": 0.0
+            },
+            {
+              "key": "1013721p:32:8351-8-3:826.0",
+              "label": "artefact",
+              "band_px": 23218,
+              "covered_px": 0,
+              "coverage": 0.0
+            },
+            {
+              "key": "1013721p:32:8351-8-3:874.0",
+              "label": "artefact",
+              "band_px": 23222,
+              "covered_px": 0,
+              "coverage": 0.0
+            },
+            {
+              "key": "1013721p:32:8351-8-3:874.0",
+              "label": "artefact",
+              "band_px": 20005,
+              "covered_px": 0,
+              "coverage": 0.0
+            }
+          ]
+        },
+        "streaks": {
+          "seconds": 3.98,
+          "rows": [
+            {
+              "key": "1013721p:32:8351-8-3:742.0",
+              "label": "artefact",
+              "band_px": 23222,
+              "covered_px": 0,
+              "coverage": 0.0
+            },
+            {
+              "key": "1013721p:32:8351-8-3:766.0",
+              "label": "artefact",
+              "band_px": 23224,
+              "covered_px": 0,
+              "coverage": 0.0
+            },
+            {
+              "key": "1013721p:32:8351-8-3:826.0",
+              "label": "artefact",
+              "band_px": 23218,
+              "covered_px": 0,
+              "coverage": 0.0
+            },
+            {
+              "key": "1013721p:32:8351-8-3:874.0",
+              "label": "artefact",
+              "band_px": 23222,
+              "covered_px": 0,
+              "coverage": 0.0
+            },
+            {
+              "key": "1013721p:32:8351-8-3:874.0",
+              "label": "artefact",
+              "band_px": 20005,
+              "covered_px": 0,
+              "coverage": 0.0
+            }
+          ]
+        }
+      },
+      "error": null
+    },
+    {
+      "exposure": "1013721p",
+      "hdu": 33,
+      "results": {
+        "none": {
+          "seconds": 0.0,
+          "rows": [
+            {
+              "key": "1013721p:33:8352-10-4:271.0",
+              "label": "artefact",
+              "band_px": 23218,
+              "covered_px": 0,
+              "coverage": 0.0
+            }
+          ]
+        },
+        "houghpeaks": {
+          "seconds": 3.73,
+          "rows": [
+            {
+              "key": "1013721p:33:8352-10-4:271.0",
+              "label": "artefact",
+              "band_px": 23218,
+              "covered_px": 11673,
+              "coverage": 0.5027564820397967
+            }
+          ]
+        },
+        "streaks": {
+          "seconds": 5.41,
+          "rows": [
+            {
+              "key": "1013721p:33:8352-10-4:271.0",
+              "label": "artefact",
+              "band_px": 23218,
+              "covered_px": 11693,
+              "coverage": 0.5036178826772332
+            }
+          ]
+        }
+      },
+      "error": null
+    },
+    {
+      "exposure": "1013721p",
+      "hdu": 35,
+      "results": {
+        "none": {
+          "seconds": 0.0,
+          "rows": [
+            {
+              "key": "1013721p:35:8261-7-3:-619.0",
+              "label": "artefact",
+              "band_px": 23218,
+              "covered_px": 0,
+              "coverage": 0.0
+            },
+            {
+              "key": "1013721p:35:8261-7-3:-608.728",
+              "label": "artefact",
+              "band_px": 23218,
+              "covered_px": 0,
+              "coverage": 0.0
+            },
+            {
+              "key": "1013721p:35:8261-7-3:-126.0",
+              "label": "artefact",
+              "band_px": 23218,
+              "covered_px": 0,
+              "coverage": 0.0
+            }
+          ]
+        },
+        "houghpeaks": {
+          "seconds": 2.69,
+          "rows": [
+            {
+              "key": "1013721p:35:8261-7-3:-619.0",
+              "label": "artefact",
+              "band_px": 23218,
+              "covered_px": 7030,
+              "coverage": 0.3027823240589198
+            },
+            {
+              "key": "1013721p:35:8261-7-3:-608.728",
+              "label": "artefact",
+              "band_px": 23218,
+              "covered_px": 6394,
+              "coverage": 0.27538978378844
+            },
+            {
+              "key": "1013721p:35:8261-7-3:-126.0",
+              "label": "artefact",
+              "band_px": 23218,
+              "covered_px": 0,
+              "coverage": 0.0
+            }
+          ]
+        },
+        "streaks": {
+          "seconds": 4.24,
+          "rows": [
+            {
+              "key": "1013721p:35:8261-7-3:-619.0",
+              "label": "artefact",
+              "band_px": 23218,
+              "covered_px": 7030,
+              "coverage": 0.3027823240589198
+            },
+            {
+              "key": "1013721p:35:8261-7-3:-608.728",
+              "label": "artefact",
+              "band_px": 23218,
+              "covered_px": 6394,
+              "coverage": 0.27538978378844
+            },
+            {
+              "key": "1013721p:35:8261-7-3:-126.0",
+              "label": "artefact",
+              "band_px": 23218,
+              "covered_px": 0,
+              "coverage": 0.0
+            }
+          ]
+        }
+      },
+      "error": null
+    },
+    {
+      "exposure": "megacam_streak_case",
+      "hdu": 3,
+      "results": {
+        "none": {
+          "seconds": 0.0,
+          "rows": [
+            {
+              "key": "megacam_streak_case:3:8352-15-3:2277.306",
+              "label": "artefact",
+              "band_px": 10558,
+              "covered_px": 0,
+              "coverage": 0.0
+            }
+          ]
+        },
+        "houghpeaks": {
+          "seconds": 2.48,
+          "rows": [
+            {
+              "key": "megacam_streak_case:3:8352-15-3:2277.306",
+              "label": "artefact",
+              "band_px": 10558,
+              "covered_px": 2225,
+              "coverage": 0.21074067058154955
+            }
+          ]
+        },
+        "streaks": {
+          "seconds": 3.72,
+          "rows": [
+            {
+              "key": "megacam_streak_case:3:8352-15-3:2277.306",
+              "label": "artefact",
+              "band_px": 10558,
+              "covered_px": 2225,
+              "coverage": 0.21074067058154955
+            }
+          ]
+        }
+      },
+      "error": null
+    },
+    {
+      "exposure": "megacam_streak_case",
+      "hdu": 4,
+      "results": {
+        "none": {
+          "seconds": 0.0,
+          "rows": [
+            {
+              "key": "megacam_streak_case:4:8261-14-4:882.0",
+              "label": "artefact",
+              "band_px": 23218,
+              "covered_px": 0,
+              "coverage": 0.0
+            },
+            {
+              "key": "megacam_streak_case:4:8261-14-4:2280.98",
+              "label": "artefact",
+              "band_px": 9424,
+              "covered_px": 0,
+              "coverage": 0.0
+            }
+          ]
+        },
+        "houghpeaks": {
+          "seconds": 2.52,
+          "rows": [
+            {
+              "key": "megacam_streak_case:4:8261-14-4:882.0",
+              "label": "artefact",
+              "band_px": 23218,
+              "covered_px": 0,
+              "coverage": 0.0
+            },
+            {
+              "key": "megacam_streak_case:4:8261-14-4:2280.98",
+              "label": "artefact",
+              "band_px": 9424,
+              "covered_px": 1938,
+              "coverage": 0.2056451612903226
+            }
+          ]
+        },
+        "streaks": {
+          "seconds": 3.62,
+          "rows": [
+            {
+              "key": "megacam_streak_case:4:8261-14-4:882.0",
+              "label": "artefact",
+              "band_px": 23218,
+              "covered_px": 0,
+              "coverage": 0.0
+            },
+            {
+              "key": "megacam_streak_case:4:8261-14-4:2280.98",
+              "label": "artefact",
+              "band_px": 9424,
+              "covered_px": 1938,
+              "coverage": 0.2056451612903226
+            }
+          ]
+        }
+      },
+      "error": null
+    },
+    {
+      "exposure": "megacam_streak_case",
+      "hdu": 8,
+      "results": {
+        "none": {
+          "seconds": 0.0,
+          "rows": [
+            {
+              "key": "megacam_streak_case:8:8351-6-3:-716.0",
+              "label": "artefact",
+              "band_px": 23218,
+              "covered_px": 0,
+              "coverage": 0.0
+            },
+            {
+              "key": "megacam_streak_case:8:8351-6-3:-639.0",
+              "label": "artefact",
+              "band_px": 23218,
+              "covered_px": 0,
+              "coverage": 0.0
+            }
+          ]
+        },
+        "houghpeaks": {
+          "seconds": 2.46,
+          "rows": [
+            {
+              "key": "megacam_streak_case:8:8351-6-3:-716.0",
+              "label": "artefact",
+              "band_px": 23218,
+              "covered_px": 13628,
+              "coverage": 0.5869583943492118
+            },
+            {
+              "key": "megacam_streak_case:8:8351-6-3:-639.0",
+              "label": "artefact",
+              "band_px": 23218,
+              "covered_px": 13133,
+              "coverage": 0.5656387285726592
+            }
+          ]
+        },
+        "streaks": {
+          "seconds": 4.02,
+          "rows": [
+            {
+              "key": "megacam_streak_case:8:8351-6-3:-716.0",
+              "label": "artefact",
+              "band_px": 23218,
+              "covered_px": 13628,
+              "coverage": 0.5869583943492118
+            },
+            {
+              "key": "megacam_streak_case:8:8351-6-3:-639.0",
+              "label": "artefact",
+              "band_px": 23218,
+              "covered_px": 13133,
+              "coverage": 0.5656387285726592
+            }
+          ]
+        }
+      },
+      "error": null
+    },
+    {
+      "exposure": "megacam_streak_case",
+      "hdu": 12,
+      "results": {
+        "none": {
+          "seconds": 0.0,
+          "rows": [
+            {
+              "key": "megacam_streak_case:12:8352-15-5:1077.78",
+              "label": "artefact",
+              "band_px": 10558,
+              "covered_px": 0,
+              "coverage": 0.0
+            }
+          ]
+        },
+        "houghpeaks": {
+          "seconds": 3.12,
+          "rows": [
+            {
+              "key": "megacam_streak_case:12:8352-15-5:1077.78",
+              "label": "artefact",
+              "band_px": 10558,
+              "covered_px": 0,
+              "coverage": 0.0
+            }
+          ]
+        },
+        "streaks": {
+          "seconds": 72.01,
+          "rows": [
+            {
+              "key": "megacam_streak_case:12:8352-15-5:1077.78",
+              "label": "artefact",
+              "band_px": 10558,
+              "covered_px": 0,
+              "coverage": 0.0
+            }
+          ]
+        }
+      },
+      "error": null
+    },
+    {
+      "exposure": "megacam_streak_case",
+      "hdu": 13,
+      "results": {
+        "none": {
+          "seconds": 0.0,
+          "rows": [
+            {
+              "key": "megacam_streak_case:13:8351-20-4:886.0",
+              "label": "artefact",
+              "band_px": 23218,
+              "covered_px": 0,
+              "coverage": 0.0
+            }
+          ]
+        },
+        "houghpeaks": {
+          "seconds": 2.73,
+          "rows": [
+            {
+              "key": "megacam_streak_case:13:8351-20-4:886.0",
+              "label": "artefact",
+              "band_px": 23218,
+              "covered_px": 0,
+              "coverage": 0.0
+            }
+          ]
+        },
+        "streaks": {
+          "seconds": 4.31,
+          "rows": [
+            {
+              "key": "megacam_streak_case:13:8351-20-4:886.0",
+              "label": "artefact",
+              "band_px": 23218,
+              "covered_px": 0,
+              "coverage": 0.0
+            }
+          ]
+        }
+      },
+      "error": null
+    },
+    {
+      "exposure": "megacam_streak_case",
+      "hdu": 17,
+      "results": {
+        "none": {
+          "seconds": 0.0,
+          "rows": [
+            {
+              "key": "megacam_streak_case:17:8351-11-4:774.478",
+              "label": "artefact",
+              "band_px": 23218,
+              "covered_px": 0,
+              "coverage": 0.0
+            }
+          ]
+        },
+        "houghpeaks": {
+          "seconds": 2.69,
+          "rows": [
+            {
+              "key": "megacam_streak_case:17:8351-11-4:774.478",
+              "label": "artefact",
+              "band_px": 23218,
+              "covered_px": 15413,
+              "coverage": 0.6638384012404169
+            }
+          ]
+        },
+        "streaks": {
+          "seconds": 4.08,
+          "rows": [
+            {
+              "key": "megacam_streak_case:17:8351-11-4:774.478",
+              "label": "artefact",
+              "band_px": 23218,
+              "covered_px": 15413,
+              "coverage": 0.6638384012404169
+            }
+          ]
+        }
+      },
+      "error": null
+    },
+    {
+      "exposure": "megacam_streak_case",
+      "hdu": 22,
+      "results": {
+        "none": {
+          "seconds": 0.0,
+          "rows": [
+            {
+              "key": "megacam_streak_case:22:8374-17-5:866.0",
+              "label": "artefact",
+              "band_px": 23218,
+              "covered_px": 0,
+              "coverage": 0.0
+            }
+          ]
+        },
+        "houghpeaks": {
+          "seconds": 2.76,
+          "rows": [
+            {
+              "key": "megacam_streak_case:22:8374-17-5:866.0",
+              "label": "artefact",
+              "band_px": 23218,
+              "covered_px": 0,
+              "coverage": 0.0
+            }
+          ]
+        },
+        "streaks": {
+          "seconds": 3.68,
+          "rows": [
+            {
+              "key": "megacam_streak_case:22:8374-17-5:866.0",
+              "label": "artefact",
+              "band_px": 23218,
+              "covered_px": 0,
+              "coverage": 0.0
+            }
+          ]
+        }
+      },
+      "error": null
+    },
+    {
+      "exposure": "megacam_streak_case",
+      "hdu": 24,
+      "results": {
+        "none": {
+          "seconds": 0.0,
+          "rows": [
+            {
+              "key": "megacam_streak_case:24:8351-6-4:890.0",
+              "label": "artefact",
+              "band_px": 23218,
+              "covered_px": 0,
+              "coverage": 0.0
+            }
+          ]
+        },
+        "houghpeaks": {
+          "seconds": 2.25,
+          "rows": [
+            {
+              "key": "megacam_streak_case:24:8351-6-4:890.0",
+              "label": "artefact",
+              "band_px": 23218,
+              "covered_px": 0,
+              "coverage": 0.0
+            }
+          ]
+        },
+        "streaks": {
+          "seconds": 3.51,
+          "rows": [
+            {
+              "key": "megacam_streak_case:24:8351-6-4:890.0",
+              "label": "artefact",
+              "band_px": 23218,
+              "covered_px": 0,
+              "coverage": 0.0
+            }
+          ]
+        }
+      },
+      "error": null
+    },
+    {
+      "exposure": "megacam_streak_case",
+      "hdu": 31,
+      "results": {
+        "none": {
+          "seconds": 0.0,
+          "rows": [
+            {
+              "key": "megacam_streak_case:31:8261-19-5:-739.0",
+              "label": "artefact",
+              "band_px": 23218,
+              "covered_px": 0,
+              "coverage": 0.0
+            },
+            {
+              "key": "megacam_streak_case:31:8261-19-5:870.0",
+              "label": "artefact",
+              "band_px": 23218,
+              "covered_px": 0,
+              "coverage": 0.0
+            }
+          ]
+        },
+        "houghpeaks": {
+          "seconds": 2.42,
+          "rows": [
+            {
+              "key": "megacam_streak_case:31:8261-19-5:-739.0",
+              "label": "artefact",
+              "band_px": 23218,
+              "covered_px": 11758,
+              "coverage": 0.5064174347489017
+            },
+            {
+              "key": "megacam_streak_case:31:8261-19-5:870.0",
+              "label": "artefact",
+              "band_px": 23218,
+              "covered_px": 0,
+              "coverage": 0.0
+            }
+          ]
+        },
+        "streaks": {
+          "seconds": 4.31,
+          "rows": [
+            {
+              "key": "megacam_streak_case:31:8261-19-5:-739.0",
+              "label": "artefact",
+              "band_px": 23218,
+              "covered_px": 11838,
+              "coverage": 0.5098630372986476
+            },
+            {
+              "key": "megacam_streak_case:31:8261-19-5:870.0",
+              "label": "artefact",
+              "band_px": 23218,
+              "covered_px": 0,
+              "coverage": 0.0
+            }
+          ]
+        }
+      },
+      "error": null
+    },
+    {
+      "exposure": "megacam_streak_case",
+      "hdu": 33,
+      "results": {
+        "none": {
+          "seconds": 0.0,
+          "rows": [
+            {
+              "key": "megacam_streak_case:33:8352-10-4:886.0",
+              "label": "artefact",
+              "band_px": 23218,
+              "covered_px": 0,
+              "coverage": 0.0
+            }
+          ]
+        },
+        "houghpeaks": {
+          "seconds": 2.47,
+          "rows": [
+            {
+              "key": "megacam_streak_case:33:8352-10-4:886.0",
+              "label": "artefact",
+              "band_px": 23218,
+              "covered_px": 0,
+              "coverage": 0.0
+            }
+          ]
+        },
+        "streaks": {
+          "seconds": 3.87,
+          "rows": [
+            {
+              "key": "megacam_streak_case:33:8352-10-4:886.0",
+              "label": "artefact",
+              "band_px": 23218,
+              "covered_px": 0,
+              "coverage": 0.0
+            }
+          ]
+        }
+      },
+      "error": null
+    },
+    {
+      "exposure": "megacam_streak_case",
+      "hdu": 39,
+      "results": {
+        "none": {
+          "seconds": 0.0,
+          "rows": [
+            {
+              "key": "megacam_streak_case:39:8352-3-5:866.987",
+              "label": "artefact",
+              "band_px": 23218,
+              "covered_px": 0,
+              "coverage": 0.0
+            },
+            {
+              "key": "megacam_streak_case:39:8352-3-5:880.656",
+              "label": "artefact",
+              "band_px": 23218,
+              "covered_px": 0,
+              "coverage": 0.0
+            }
+          ]
+        },
+        "houghpeaks": {
+          "seconds": 3.04,
+          "rows": [
+            {
+              "key": "megacam_streak_case:39:8352-3-5:866.987",
+              "label": "artefact",
+              "band_px": 23218,
+              "covered_px": 4691,
+              "coverage": 0.20204151951072444
+            },
+            {
+              "key": "megacam_streak_case:39:8352-3-5:880.656",
+              "label": "artefact",
+              "band_px": 23218,
+              "covered_px": 5175,
+              "coverage": 0.22288741493668704
+            }
+          ]
+        },
+        "streaks": {
+          "seconds": 3.57,
+          "rows": [
+            {
+              "key": "megacam_streak_case:39:8352-3-5:866.987",
+              "label": "artefact",
+              "band_px": 23218,
+              "covered_px": 4691,
+              "coverage": 0.20204151951072444
+            },
+            {
+              "key": "megacam_streak_case:39:8352-3-5:880.656",
+              "label": "artefact",
+              "band_px": 23218,
+              "covered_px": 5175,
+              "coverage": 0.22288741493668704
+            }
+          ]
+        }
+      },
+      "error": null
+    }
+  ]
+}
