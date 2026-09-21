@@ -13,7 +13,7 @@ from .cosmics import detect_cosmic_rays
 from .objects import detect_objects
 from .satur import detect_saturated_pixels, grow_bleed_trails
 from .streaks import detect_streaks
-from .variance import calculate_inverse_variance
+from .variance import amplifier_gain_map, calculate_inverse_variance
 from .weight import generate_weight_and_confidence
 
 
@@ -142,6 +142,30 @@ def validate_config(config: dict) -> bool:
     return True
 
 
+def _first_present_keyword(header, key_cfg):
+    """Keyword name that ``_header_lookup`` would read, or None."""
+    if header is None:
+        return None
+    keys = key_cfg if isinstance(key_cfg, (list, tuple)) else [key_cfg]
+    get = getattr(header, "get", None)
+    for k in keys:
+        if not isinstance(k, str) or not k:
+            continue
+        try:
+            v = get(k, None) if callable(get) else None
+        except Exception:
+            v = None
+        if v is None:
+            try:
+                if k in header:
+                    v = header[k]
+            except Exception:
+                v = None
+        if v is not None:
+            return k
+    return None
+
+
 def _header_lookup(header, key_cfg, default):
     """First-present header value for a str-or-list keyword config, else default."""
     if header is None:
@@ -186,6 +210,7 @@ def process_image(
     tile_size: int = 1024,
     bad_mask: Optional[np.ndarray] = None,
     badpix_mask: Optional[np.ndarray] = None,
+    detector_prior: Optional[np.ndarray] = None,
 ) -> Tuple[
     Optional[np.ndarray],
     Optional[np.ndarray],
@@ -310,6 +335,8 @@ def process_image(
             read_noise_e,
             cosmic_cfg,
             bkg_rms_map=prelim_bkg_rms,
+            sky_map=prelim_bkg_map,
+            header=sci_hdr,
         )
     cr_mask |= cr_add_mask
     final_mask_int[cr_add_mask] |= MASK_BITS["CR"]
@@ -319,9 +346,10 @@ def process_image(
     # --- 3. Iterative Background and Object Detection ---
     print("  (3/7) Starting iterative Background/Object detection...")
     sep_bg_cfg = config.get("sep_background", {})
-    object_cfg = config.get("sep_objects", {})
+    object_cfg = dict(config.get("sep_objects", {}))
     iterations = sep_bg_cfg.get("iterations", 2)
     current_obj_mask = np.zeros(sci_shape, dtype=bool)
+    sky_only_mask = np.zeros(sci_shape, dtype=bool)
     bg_diag: dict = {}
     last_bg_mask = None
     last_bkg_map = None
@@ -329,7 +357,7 @@ def process_image(
     with _timed(timings, "bgobj_loop"):
         for i in range(iterations):
             print(f"    Iteration {i + 1}/{iterations}...")
-            total_mask_for_bg = interim_mask_bool | current_obj_mask
+            total_mask_for_bg = interim_mask_bool | current_obj_mask | sky_only_mask
             with _timed(timings, f"bg_iter_{i}"):
                 bkg_map, bkg_rms_map = estimate_background(
                     sci_data_full, total_mask_for_bg, {**sep_bg_cfg, "_diagnostics": bg_diag}
@@ -341,6 +369,9 @@ def process_image(
                 new_obj_add_mask = detect_objects(data_sub, bkg_rms_map, total_mask_for_bg, object_cfg)
             last_bg_mask = total_mask_for_bg
             last_bkg_map, last_bkg_rms_map = bkg_map, bkg_rms_map
+            elongated = object_cfg.pop("_elongated_for_sky", None)
+            if isinstance(elongated, np.ndarray) and elongated.shape == sci_shape:
+                sky_only_mask |= elongated.astype(bool, copy=False)
             if np.count_nonzero(new_obj_add_mask) == 0 and i > 0:
                 print("      No new objects found, ending iteration.")
                 break
@@ -352,7 +383,7 @@ def process_image(
     # --- 4. Final Sky Maps and Object Mask ---
     print("  (4/7) Finalizing sky maps and object mask...")
     final_obj_mask = current_obj_mask
-    final_full_mask = interim_mask_bool | final_obj_mask
+    final_full_mask = interim_mask_bool | final_obj_mask | sky_only_mask
     with _timed(timings, "background_final"):
         if last_bg_mask is not None and np.array_equal(final_full_mask, last_bg_mask):
             print("  Reusing iteration background (mask unchanged)...")
@@ -366,7 +397,13 @@ def process_image(
 
     # --- 5. Inverse Variance Map ---
     print("  (5/7) Calculating inverse variance map...")
-    variance_cfg["gain"] = gain
+    gain_map = amplifier_gain_map(sci_hdr, sci_shape, gain)
+    if gain_map is not None:
+        variance_cfg["gain"] = gain_map
+        header_info["GAIN_SRC"] = "GAINA+GAINB"
+    else:
+        variance_cfg["gain"] = gain
+        header_info["GAIN_SRC"] = _first_present_keyword(sci_hdr, variance_cfg.get("gain_keyword", "GAIN"))
     variance_cfg["read_noise"] = read_noise_e
     with _timed(timings, "variance"):
         inv_variance_map = calculate_inverse_variance(
@@ -375,7 +412,7 @@ def process_image(
             flat_data_full,
             final_bkg_rms_map,
             sci_data=sci_data_full,
-            obj_mask=final_obj_mask,
+            obj_mask=final_full_mask,
         )
     if inv_variance_map is None:
         return None, None, None, None, None, None
@@ -385,7 +422,14 @@ def process_image(
     with _timed(timings, "streaks"):
         if streak_cfg.get("enable", False):
             data_sub = sci_data_full - sky_map
-            streak_add_mask = detect_streaks(data_sub, final_bkg_rms_map, final_full_mask, streak_cfg)
+            # Elongated pixels are in the sky mask only. Leaving them in the
+            # streak exclusion would punch the trail out of the detector.
+            streak_exclude = interim_mask_bool | final_obj_mask
+            if detector_prior is not None and np.shape(detector_prior) == sci_shape:
+                streak_exclude = streak_exclude | np.asarray(detector_prior, dtype=bool)
+            streak_add_mask = detect_streaks(data_sub, final_bkg_rms_map, streak_exclude, streak_cfg)
+            if detector_prior is not None and np.shape(detector_prior) == sci_shape:
+                streak_add_mask = streak_add_mask & ~np.asarray(detector_prior, dtype=bool)
             streak_mask |= streak_add_mask
             final_mask_int[streak_add_mask] |= MASK_BITS["STREAK"]
             final_full_mask |= streak_add_mask

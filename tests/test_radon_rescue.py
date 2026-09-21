@@ -192,6 +192,26 @@ class TestRescueFindsItsOwnCase(unittest.TestCase):
         mask, _accepted, _debug = _detect_streaks_mrt_like(image, rms, None, rescue_config(bin=1))
         self.assertEqual(int(np.count_nonzero(mask[:, W - 110 : W - 90])), 0)
 
+    def test_a_bright_column_does_not_outrank_a_fainter_trail(self):
+        image, truth, rms = self._trail(8.0)
+        image = image.copy()
+        image[:, W // 2] += 80.0
+        mask, _accepted, debug = _detect_streaks_mrt_like(image, rms, None, rescue_config(bin=1, theta_step_deg=4.0))
+        self.assertGreaterEqual(debug["accepted_count"], 1)
+        recall = np.count_nonzero(mask & truth) / max(1, np.count_nonzero(truth))
+        self.assertGreater(recall, 0.3)
+        # The trail crosses this column. Away from that crossing the column is not a trail.
+        column = mask[:, W // 2].copy()
+        column[H // 2 - 40 : H // 2 + 40] = False
+        self.assertEqual(int(np.count_nonzero(column)), 0)
+
+    def test_bright_trail_recall_holds_at_bin_4(self):
+        image, truth, rms = self._trail(60.0)
+        mask, _accepted, debug = _detect_streaks_mrt_like(image, rms, None, rescue_config(bin=4, theta_step_deg=4.0))
+        self.assertGreaterEqual(debug["accepted_count"], 1)
+        recall = np.count_nonzero(mask & truth) / max(1, np.count_nonzero(truth))
+        self.assertGreaterEqual(recall, 0.75)
+
 
 if __name__ == "__main__":
     unittest.main()

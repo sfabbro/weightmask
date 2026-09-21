@@ -127,12 +127,14 @@ values (`INVALID_VARIANCE`).
 **Method.** Default `variance.method: theoretical`, in ADU⁻²:
 
 ```
-ivar = g² F² / (S g + r²)
+ivar = g² F² / (S g F + r²)
 ```
 
 `S` is sky in ADU, `F` the flat, `g` gain in e⁻/ADU, `r` read noise in e⁻.
-At `F = 1` this is Poisson plus read noise. At `F ≠ 1` it is an F²
-sensitivity weight, not the flat-fielded identity `g² F² / (S g F + r²)`.
+The sky term is `S g F` because a star sitting on a spatially varying flat
+(`tests/test_photometry_bias.py`) shifts the weighted aperture by more than
+that fixture's read-noise floor. At `F = 1` the two denominators agree.
+Omitting `variance.flat_fielded_poisson` keeps the older `S g` denominator.
 That expression is the core plane. Canonical `weightmask.yml` then adds
 `flat_rel_noise` (`(S g · rel)²` in the electron denominator, with `rel`
 increased where the flat is below its median) and `rescale_variance` (scale
@@ -147,8 +149,9 @@ applied by the MEF CLI only when the primary map is confidence
 rescale is a no-op. `WeightMapGenerator` does not apply it. The in-code
 fallback is `per_hdu`.
 
-Gain and read noise are one scalar per HDU (first present header keyword).
-Dual-amp `GAINA`/`GAINB` are not split.
+Gain and read noise are one scalar per HDU (first present header keyword,
+recorded as `GAIN_SRC`) unless both `GAINA` and `GAINB` exist and a section
+keyword splits the HDU. Then the variance plane uses that gain map.
 
 **Config.** `variance`, `confidence_params`, `output_params`.
 

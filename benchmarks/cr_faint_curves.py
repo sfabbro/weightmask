@@ -131,7 +131,17 @@ def main(argv=None):
             if isinstance(override.get("faint_cr"), dict):
                 cfg["faint_cr"] = {**cosmic_base["faint_cr"], **override["faint_cr"]}
             t0 = time.time()
-            flag = detect_cosmic_rays(injected, empty, saturation, gain, read_noise, cfg, bkg_rms_map=rms)
+            flag = detect_cosmic_rays(
+                injected,
+                empty,
+                saturation,
+                gain,
+                read_noise,
+                cfg,
+                bkg_rms_map=rms,
+                sky_map=sky,
+                header=header,
+            )
             dt = time.time() - t0
             single, worm, fp, total = score(flag, truth_single, truth_worm)
             print(f"  {name:18s} single={single:.3f} worm={worm:.3f} fp_px={fp:6d} total={total:6d} {dt:5.1f}s")

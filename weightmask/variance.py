@@ -4,6 +4,9 @@ import numpy as np
 from astropy.stats import mad_std
 from scipy.stats import linregress
 
+from .bad import _parse_section
+from .utils import rms_valid_mask
+
 
 def _calculate_empirical_noise_params(sci_data, obj_mask, patch_size, robust_sigma_clip):
     """
@@ -129,7 +132,76 @@ def _calculate_empirical_noise_params(sci_data, obj_mask, patch_size, robust_sig
         return None, None
 
 
-def _calculate_inverse_variance_theoretical(sky_map, flat_map, gain, read_noise_e, epsilon, flat_rel_noise=0.0):
+def amplifier_gain_map(header, shape, fallback):
+    """Per-pixel gain when both amplifiers and their sections are in the header.
+
+    Returns ``None`` unless ``GAINA`` and ``GAINB`` are both present and a
+    section pair (``DETSEC*``, ``DATASEC*``, or ``AMPSEC*``) splits the HDU.
+    Otherwise the caller keeps the single first-present gain keyword.
+    """
+    if header is None or shape is None or len(shape) != 2:
+        return None
+    get = getattr(header, "get", None)
+    if not callable(get):
+        return None
+
+    def _value(key):
+        try:
+            return get(key, None)
+        except Exception:
+            return None
+
+    try:
+        gain_a = float(_value("GAINA"))
+        gain_b = float(_value("GAINB"))
+    except (TypeError, ValueError):
+        return None
+    if not np.isfinite(gain_a) or not np.isfinite(gain_b):
+        return None
+
+    sec_a = sec_b = None
+    for prefix in ("DETSEC", "DATASEC", "AMPSEC"):
+        sec_a = _parse_section(_value(prefix + "A"))
+        sec_b = _parse_section(_value(prefix + "B"))
+        if sec_a is not None and sec_b is not None:
+            break
+    if sec_a is None or sec_b is None:
+        return None
+    try:
+        base = float(fallback)
+    except (TypeError, ValueError):
+        base = gain_a
+    gain = np.full(shape, base, dtype=np.float32)
+    h, w = shape
+    for section, value in ((sec_a, gain_a), (sec_b, gain_b)):
+        r0, r1, c0, c1 = section
+        r0, r1 = max(int(r0), 0), min(int(r1), h)
+        c0, c1 = max(int(c0), 0), min(int(c1), w)
+        if r1 > r0 and c1 > c0:
+            gain[r0:r1, c0:c1] = value
+    return gain
+
+
+def _mask_unmeasured_rms(inv_var, bkg_rms_map):
+    """Zero inverse variance where the background RMS was never measured.
+
+    The ``+inf`` sentinel means detection cannot judge those pixels. Leaving
+    them a full theoretical weight would still coadd an unmeasured column.
+    """
+    if inv_var is None or bkg_rms_map is None:
+        return inv_var
+
+    valid = rms_valid_mask(bkg_rms_map)
+    if valid is None or valid.shape != np.shape(inv_var) or bool(np.all(valid)):
+        return inv_var
+    out = np.array(inv_var, copy=True)
+    out[~valid] = 0
+    return out
+
+
+def _calculate_inverse_variance_theoretical(
+    sky_map, flat_map, gain, read_noise_e, epsilon, flat_rel_noise=0.0, flat_fielded_poisson=False
+):
     """Elixir-style F² coadd weight, in ADU⁻².
 
     Frozen 0.1 formula (sky ``S`` in ADU, flat ``F``, gain ``g`` in e⁻/ADU,
@@ -144,22 +216,34 @@ def _calculate_inverse_variance_theoretical(sky_map, flat_map, gain, read_noise_
     ``flat_rel_noise`` is an optional extra term ``(S g · rel)²`` in the
     electron denominator, with ``rel`` boosted where the flat is below its
     median. Zero disables it.
+
+    ``flat_fielded_poisson`` switches the sky term to ``S g F``, which is the
+    Poisson identity after the image has been divided by ``F``. Default off:
+    the 0.1 contract stays ``S g``.
     """
     valid_flat_mask = flat_map > epsilon
     safe_flat = np.where(valid_flat_mask, flat_map, epsilon)
     safe_sky = np.maximum(sky_map, 0.0)
+    gain = np.asarray(gain, dtype=np.float64)
 
     # Frozen 0.1: ivar = g² F² / (S g + RN²). Exact Poisson+RN at F=1.
-    sky_e = safe_sky * gain
-    denom = sky_e + read_noise_e**2
+    # Opt-in: denominator sky term is S g F for an already flat-fielded image.
+    poisson = safe_sky * gain * (safe_flat if flat_fielded_poisson else 1.0)
+    denom = poisson + read_noise_e**2
     if flat_rel_noise > 0:
         med_flat = float(np.median(safe_flat[valid_flat_mask])) if np.any(valid_flat_mask) else 1.0
         rel_map = flat_rel_noise / np.sqrt(np.clip(safe_flat / max(med_flat, epsilon), 0.1, None))
+        sky_e = safe_sky * gain
         denom = denom + (sky_e * rel_map) ** 2
     inv_variance = np.zeros_like(denom)
 
     valid_variance = denom > epsilon
-    inv_variance[valid_variance] = (gain**2 * safe_flat[valid_variance] ** 2) / denom[valid_variance]
+    gain2 = np.square(gain)
+    if np.shape(gain2) == inv_variance.shape:
+        numer = gain2[valid_variance] * safe_flat[valid_variance] ** 2
+    else:
+        numer = gain2 * safe_flat[valid_variance] ** 2
+    inv_variance[valid_variance] = numer / denom[valid_variance]
 
     # Mask out invalid regions
     inv_variance[~valid_flat_mask] = 0.0
@@ -251,7 +335,13 @@ def _calculate_inverse_variance_rms(bkg_rms_map, epsilon):
     return inv_variance.astype(np.float32)
 
 
-def _handle_empirical_fit(variance_cfg, sky_map, flat_map, sci_data, obj_mask, gain, read_noise_e, epsilon):
+def _poisson_flag(variance_cfg):
+    return bool(variance_cfg.get("flat_fielded_poisson", False))
+
+
+def _handle_empirical_fit(
+    variance_cfg, sky_map, flat_map, sci_data, obj_mask, gain, read_noise_e, epsilon, bkg_rms_map=None
+):
     if sci_data is None or obj_mask is None:
         warnings.warn(
             "Empirical fit method requires science data and object mask.",
@@ -267,22 +357,43 @@ def _handle_empirical_fit(variance_cfg, sky_map, flat_map, sci_data, obj_mask, g
     if emp_gain is None or emp_rn_e is None:
         print("  WARNING: Empirical fit failed. Falling back to theoretical method with default/header values.")
         inv_var = _calculate_inverse_variance_theoretical(
-            sky_map, flat_map, gain, read_noise_e, epsilon, variance_cfg.get("flat_rel_noise", 0.0)
+            sky_map,
+            flat_map,
+            gain,
+            read_noise_e,
+            epsilon,
+            variance_cfg.get("flat_rel_noise", 0.0),
+            flat_fielded_poisson=_poisson_flag(variance_cfg),
         )
     else:
         inv_var = _calculate_inverse_variance_theoretical(
-            sky_map, flat_map, emp_gain, emp_rn_e, epsilon, variance_cfg.get("flat_rel_noise", 0.0)
+            sky_map,
+            flat_map,
+            emp_gain,
+            emp_rn_e,
+            epsilon,
+            variance_cfg.get("flat_rel_noise", 0.0),
+            flat_fielded_poisson=_poisson_flag(variance_cfg),
         )
         gain = emp_gain  # For unbiasing below
-    return inv_var, gain
+    return _mask_unmeasured_rms(inv_var, bkg_rms_map), gain
 
 
-def _handle_theoretical(variance_cfg, sky_map, flat_map, gain, read_noise_e, epsilon):
+def _handle_theoretical(variance_cfg, sky_map, flat_map, gain, read_noise_e, epsilon, bkg_rms_map=None):
     if flat_map is None or sky_map is None:
         warnings.warn("Theoretical method requires flat and sky maps.", RuntimeWarning)
         return None
     rel = variance_cfg.get("flat_rel_noise", 0.0)
-    return _calculate_inverse_variance_theoretical(sky_map, flat_map, gain, read_noise_e, epsilon, rel)
+    inv_var = _calculate_inverse_variance_theoretical(
+        sky_map,
+        flat_map,
+        gain,
+        read_noise_e,
+        epsilon,
+        rel,
+        flat_fielded_poisson=_poisson_flag(variance_cfg),
+    )
+    return _mask_unmeasured_rms(inv_var, bkg_rms_map)
 
 
 def _apply_variance_post_processing(inv_var, variance_cfg, sci_data, sky_map, obj_mask, gain, epsilon):
@@ -334,9 +445,12 @@ def calculate_inverse_variance(variance_cfg, sky_map, flat_map, bkg_rms_map, sci
             gain,
             read_noise_e,
             epsilon,
+            bkg_rms_map=bkg_rms_map,
         )
     elif method == "theoretical":
-        inv_var = _handle_theoretical(variance_cfg, sky_map, flat_map, gain, read_noise_e, epsilon)
+        inv_var = _handle_theoretical(
+            variance_cfg, sky_map, flat_map, gain, read_noise_e, epsilon, bkg_rms_map=bkg_rms_map
+        )
     elif method == "rms_map":
         inv_var = _calculate_inverse_variance_rms(bkg_rms_map, epsilon)
     else:

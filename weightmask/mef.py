@@ -15,10 +15,12 @@ from . import __version__
 from .bad import _get_global_median, compute_flat_bad_mask_cached, detect_bad_pixels
 from .contract import (
     CONFIDENCE_SEMANTICS,
+    DEFAULT_ZERO_WEIGHT_BITS,
     INVERSE_VARIANCE_SEMANTICS,
     MASK_POLARITY,
     ArtifactMetadata,
     ProducerMetadata,
+    QualityBit,
 )
 from .process import _effective_tile_size, process_image
 
@@ -32,6 +34,7 @@ def process_hdu(
     flat_path: Optional[str] = None,
     hdu_badpix=None,
     precomputed_bad_mask: Optional[np.ndarray] = None,
+    detector_prior: Optional[np.ndarray] = None,
 ) -> Tuple[
     Optional[np.ndarray],
     Optional[np.ndarray],
@@ -89,8 +92,110 @@ def process_hdu(
             print(f"Skipping badpix mask: cannot read: {e}")
 
     return process_image(
-        sci_data_full, sci_hdr, flat_data_full, config, tile_size, bad_mask=bad_mask, badpix_mask=badpix_mask
+        sci_data_full,
+        sci_hdr,
+        flat_data_full,
+        config,
+        tile_size,
+        bad_mask=bad_mask,
+        badpix_mask=badpix_mask,
+        detector_prior=detector_prior,
     )
+
+
+def line_geometry(ys, xs, shape):
+    """CCD-local line of a streak: angle in degrees and offset from the chip centre.
+
+    The normal is sign-canonicalised so two copies of the same column compare
+    equal. A sky line that crosses two chips lands at different CCD-local
+    offsets, so this is the same distinction as the curator's chip-replica test.
+    """
+    ys = np.asarray(ys)
+    xs = np.asarray(xs)
+    if xs.size < 24:
+        return None
+    x = xs.astype(np.float64)
+    y = ys.astype(np.float64)
+    mx, my = float(x.mean()), float(y.mean())
+    xc, yc = x - mx, y - my
+    cxx = float(np.dot(xc, xc))
+    cyy = float(np.dot(yc, yc))
+    cxy = float(np.dot(xc, yc))
+    theta = 0.5 * float(np.arctan2(2.0 * cxy, cxx - cyy))
+    direction = np.array([np.cos(theta), np.sin(theta)], dtype=np.float64)
+    normal = np.array([-direction[1], direction[0]], dtype=np.float64)
+    h, w = shape
+    cx, cy = 0.5 * (w - 1), 0.5 * (h - 1)
+    offset = float(normal[0] * (mx - cx) + normal[1] * (my - cy))
+    if normal[0] < 0.0 or (normal[0] == 0.0 and normal[1] < 0.0):
+        offset = -offset
+    angle = float(np.degrees(np.arctan2(direction[1], direction[0])) % 180.0)
+    return {"offset_px": offset, "angle_deg": angle}
+
+
+def _angle_sep_deg(left, right):
+    sep = abs(float(left) - float(right)) % 180.0
+    return min(sep, 180.0 - sep)
+
+
+def replica_indices(geometries, tol_px=25.0, tol_deg=1.5):
+    """Indices whose CCD-local streak line is shared with another chip."""
+    replicas = set()
+    for i in range(len(geometries)):
+        left = geometries[i]
+        if left is None:
+            continue
+        for j in range(i + 1, len(geometries)):
+            right = geometries[j]
+            if right is None:
+                continue
+            if _angle_sep_deg(left["angle_deg"], right["angle_deg"]) > tol_deg:
+                continue
+            if abs(left["offset_px"] - right["offset_px"]) > tol_px:
+                continue
+            replicas.add(i)
+            replicas.add(j)
+    return replicas
+
+
+def apply_chip_replica_veto(records, tol_px=25.0, tol_deg=1.5):
+    """Clear STREAK on chips that repeat one CCD-local line.
+
+    ``records`` items may carry ``streak`` (bool), ``quality``, ``weight`` and
+    ``ivar``. Replica pixels lose the STREAK bit. Weight is restored from ivar
+    only where STREAK was the only zero-weight bit. Returns the cleared indices.
+    """
+    geoms = []
+    coords = []
+    for record in records:
+        streak = record.get("streak")
+        if streak is None:
+            geoms.append(None)
+            coords.append((np.array([], dtype=np.intp), np.array([], dtype=np.intp)))
+            continue
+        ys, xs = np.nonzero(streak)
+        geoms.append(line_geometry(ys, xs, streak.shape))
+        coords.append((ys, xs))
+    cleared = replica_indices(geoms, tol_px=tol_px, tol_deg=tol_deg)
+    streak_bit = np.uint32(QualityBit.STREAK)
+    other_bits = np.uint32(int(DEFAULT_ZERO_WEIGHT_BITS & ~QualityBit.STREAK))
+    for index in cleared:
+        record = records[index]
+        ys, xs = coords[index]
+        streak = record.get("streak")
+        if streak is not None and ys.size:
+            streak[ys, xs] = False
+        quality = record.get("quality")
+        if quality is None or ys.size == 0:
+            continue
+        only_streak = (quality[ys, xs] & streak_bit) != 0
+        only_streak &= (quality[ys, xs] & other_bits) == 0
+        quality[ys, xs] &= ~np.array(streak_bit, dtype=quality.dtype)
+        weight = record.get("weight")
+        ivar = record.get("ivar")
+        if weight is not None and ivar is not None and np.any(only_streak):
+            weight[ys[only_streak], xs[only_streak]] = ivar[ys[only_streak], xs[only_streak]]
+    return cleared
 
 
 # --- Main execution function called by entry point ---
@@ -530,6 +635,118 @@ def _open_hdu_handles(
         return None, None, None, None, f"HDU{i}", (lambda: None), str(e)
 
 
+def _streak_catalog(hdu_index, mask_data):
+    """Pixel coordinates of the STREAK bit. Small enough to keep after the HDU is flushed."""
+    if mask_data is None:
+        return None
+    ys, xs = np.nonzero((np.asarray(mask_data) & np.uint32(QualityBit.STREAK)) != 0)
+    if ys.size < 24:
+        return None
+    return {
+        "hdu": int(hdu_index),
+        "ys": np.asarray(ys, dtype=np.int32),
+        "xs": np.asarray(xs, dtype=np.int32),
+        "shape": tuple(np.shape(mask_data)),
+    }
+
+
+def _rewrite_hdu(fits_obj, pos, data, compress):
+    kwargs = {"compress": "RICE_1"} if compress else {}
+    fits_obj[pos].write(np.ascontiguousarray(data), **kwargs)
+
+
+def _clear_chip_replicas(catalogs, writers, config):
+    """Drop STREAK where the same CCD-local line was written on another chip.
+
+    Coordinates were recorded at flush time, so this does not hold the MEF's
+    arrays. Weight is restored from inverse variance only where STREAK was the
+    only zero-weight bit and the map product is a weight.
+    """
+    if len(catalogs) < 2:
+        return
+    geoms = [line_geometry(cat["ys"], cat["xs"], cat["shape"]) for cat in catalogs]
+    cleared = replica_indices(geoms)
+    if not cleared:
+        return
+    mask_writer = (writers or {}).get("mask")
+    if mask_writer is None or not getattr(mask_writer, "out_path", None):
+        return
+    output_format = str((config or {}).get("output_params", {}).get("output_map_format", "weight")).lower()
+    weight_format = output_format == "weight"
+    compress = bool((config or {}).get("output_params", {}).get("compress", False))
+    streak_bit = np.uint32(QualityBit.STREAK)
+    other_bits = np.uint32(int(DEFAULT_ZERO_WEIGHT_BITS & ~QualityBit.STREAK))
+    map_writer = writers.get("map") if weight_format else None
+    ivar_writer = writers.get("invvar") if weight_format else None
+    raw_writer = writers.get("weight_raw") if weight_format else None
+    ind_writer = writers.get("ind_streak")
+
+    def _open(writer):
+        if writer is None:
+            return None
+        return fitsio.FITS(writer.out_path, "rw")
+
+    handles = []
+    try:
+        fmask = fitsio.FITS(mask_writer.out_path, "rw")
+        handles.append(fmask)
+        fmap = _open(map_writer)
+        fivar = _open(ivar_writer)
+        fraw = _open(raw_writer)
+        find = _open(ind_writer)
+        handles.extend(handle for handle in (fmap, fivar, fraw, find) if handle is not None)
+        n_cleared = 0
+        for index in sorted(cleared):
+            cat = catalogs[index]
+            pos = mask_writer.positions.get(cat["hdu"])
+            if pos is None or pos >= len(fmask):
+                continue
+            data = np.array(fmask[pos].read(), copy=True)
+            ys, xs = cat["ys"], cat["xs"]
+            if ys.size == 0 or data.shape != cat["shape"]:
+                continue
+            pixels = data[ys, xs]
+            only = ((pixels & streak_bit) != 0) & ((pixels & other_bits) == 0)
+            data[ys, xs] = pixels & ~np.array(streak_bit, dtype=data.dtype)
+            _rewrite_hdu(fmask, pos, data, compress or str(mask_writer.out_path).endswith(".fz"))
+            if fmap is not None and fivar is not None and np.any(only):
+                wpos = map_writer.positions.get(cat["hdu"])
+                ipos = ivar_writer.positions.get(cat["hdu"])
+                if wpos is not None and ipos is not None and wpos < len(fmap) and ipos < len(fivar):
+                    weight = np.array(fmap[wpos].read(), copy=True)
+                    ivar = fivar[ipos].read()
+                    if weight.shape == data.shape and np.shape(ivar) == data.shape:
+                        weight[ys[only], xs[only]] = ivar[ys[only], xs[only]]
+                        _rewrite_hdu(fmap, wpos, weight.astype(np.float32, copy=False), compress)
+            if fraw is not None and fivar is not None and np.any(only):
+                rpos = raw_writer.positions.get(cat["hdu"])
+                ipos = ivar_writer.positions.get(cat["hdu"])
+                if rpos is not None and ipos is not None and rpos < len(fraw) and ipos < len(fivar):
+                    raw = np.array(fraw[rpos].read(), copy=True)
+                    ivar = fivar[ipos].read()
+                    if raw.shape == np.shape(ivar):
+                        raw[ys[only], xs[only]] = ivar[ys[only], xs[only]]
+                        _rewrite_hdu(fraw, rpos, raw.astype(np.float32, copy=False), compress)
+            if find is not None:
+                spos = ind_writer.positions.get(cat["hdu"])
+                if spos is not None and spos < len(find):
+                    ind = np.array(find[spos].read(), copy=True)
+                    if ind.shape == cat["shape"]:
+                        ind[ys, xs] = 0
+                        _rewrite_hdu(find, spos, ind.astype(np.uint8, copy=False), compress)
+            n_cleared += 1
+        if n_cleared:
+            print(f"  Chip-replica veto cleared STREAK on {n_cleared} HDUs.")
+    except OSError as exc:
+        print(f"  WARNING: chip-replica veto failed: {exc}")
+    finally:
+        for handle in handles:
+            try:
+                handle.close()
+            except Exception:
+                pass
+
+
 def process_all_hdus(
     hdus_to_process: list,
     hdul_input,
@@ -544,6 +761,7 @@ def process_all_hdus(
     input_path: Optional[str] = None,
     badpix_path: Optional[str] = None,
     dark_path: Optional[str] = None,
+    detector_priors: Optional[dict] = None,
 ) -> int:
     """Process every requested HDU, streaming each HDU's outputs to disk.
     Each HDU's maps are written to their output files as soon as they are
@@ -664,6 +882,7 @@ def process_all_hdus(
                 print(f"Skipping HDU {i}: {err or 'cannot access input HDU'}.")
                 return (i, (None, None, None, None, None, None), None, hdu_name)
             pre2 = _merge_dark(i, hdu_sci, pre)
+            prior = detector_priors.get(i) if isinstance(detector_priors, dict) else None
             result = process_hdu(
                 hdu_sci,
                 hdu_flat_obj,
@@ -673,6 +892,7 @@ def process_all_hdus(
                 flat_path=flat_path,
                 hdu_badpix=hdu_badpix_obj,
                 precomputed_bad_mask=pre2,
+                detector_prior=prior,
             )
             return (i, result, hdu_header_raw, hdu_name)
         except Exception as e:
@@ -682,6 +902,8 @@ def process_all_hdus(
             return (i, (None, None, None, None, None, None), None, f"HDU{i}")
         finally:
             close()
+
+    streak_catalogs: list = []
 
     def _emit(i, result, hdu_header_raw, hdu_name_raw):
         """Store and flush one HDU's products (releases its arrays immediately)."""
@@ -700,6 +922,9 @@ def process_all_hdus(
             bad_mask, sat_mask, cr_mask, obj_mask, streak_mask, nodata_mask = extract_individual_masks(
                 header_info, mask_data
             )
+            catalog = _streak_catalog(i, mask_data)
+            if catalog is not None:
+                streak_catalogs.append(catalog)
             process_success_count += 1
             hdu_name = hdu_name_raw if isinstance(hdu_name_raw, str) and hdu_name_raw else f"HDU{i}"
             hdu_header = hdu_header_raw
@@ -773,6 +998,7 @@ def process_all_hdus(
                     _i, _res, _hdr, _nm = i, (None, None, None, None, None, None), None, f"HDU{i}"
                 _emit(_i, _res, _hdr, _nm)
                 _submit_next()
+    _clear_chip_replicas(streak_catalogs, writers, config)
     if conf_scope == "per_exposure" and conf_samples:
         _rescale_confidence_to_global(paths, writers, conf_samples, conf_p99, config)
     return process_success_count

@@ -501,3 +501,15 @@ against the gates that produced it, so a label cannot be added without evidence.
    one `CubicSpline` per output row (4644 of them) and per mesh column. Off the
    default path (`sky_format: full`), but a banded-solve vectorization would
    remove it.
+
+## Fourth pass
+
+`pixi run science-gate` on 2026-09-21 wrote `test_outputs/harness/science-gate.md`
+(status failed). With the persistence prior, `score_trail_truth --detector streaks`
+scored artefact FP rate 0.033 (8 of 241) over 89 HDUs; trail recall is n/a.
+Injected continuous recall on `1013719p` HDU 1 was 0.552 and recall at 5 px was
+0.600, both under the synthetic floors 0.75 and 0.90, which is why the gate failed.
+Production two-pass cosmic-ray worm recall was 0.285 and single-pixel recall was
+0.200. `perf_megacam` on 2 HDUs of `1013719p` (no baseline compare) recorded streak
+time 69.542 s/HDU and 83.141 s/HDU overall, exposure wall 166.8 s. No speedup is
+claimed. `mrt_rescue_params.bin` stayed 1.

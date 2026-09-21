@@ -62,18 +62,51 @@ def _adjust_dynamic_objlim(config, existing_mask, default_objlim):
     return float(objlim)
 
 
-def _apply_psf_protection(crmask_bool, sci_data, config, gain, read_noise, bkg_rms_map):
+def _header_value(header, key):
+    if header is None:
+        return None
+    get = getattr(header, "get", None)
+    if not callable(get):
+        return None
+    try:
+        return get(key, None)
+    except Exception:
+        return None
+
+
+def _fwhm_from_header(header, default):
+    """Pixels from SEEING (arcsec) and a pixel scale, else ``default``."""
+    seeing = _header_value(header, "SEEING")
+    pix = _header_value(header, "PIXSCAL1")
+    if pix is None:
+        pix = _header_value(header, "PIXSCALE")
+    if pix is None:
+        pix = _header_value(header, "PIXSIZE")
+    try:
+        seeing_f = float(seeing)
+        pix_f = float(pix)
+    except (TypeError, ValueError):
+        return float(default)
+    if not np.isfinite(seeing_f) or not np.isfinite(pix_f) or pix_f <= 0 or seeing_f <= 0:
+        return float(default)
+    return seeing_f / pix_f
+
+
+def _apply_psf_protection(crmask_bool, sci_data, config, gain, read_noise, bkg_rms_map, sky_map=None, header=None):
     """Apply PSF-aware protection to prevent over-flagging star cores."""
     if not config.get("psf_aware", True):
         return crmask_bool
 
-    psf_fwhm = config.get("psf_fwhm_guess", 3.0)
-    print(f"    Applying PSF-aware protection (FWHM guess: {psf_fwhm:.1f} pix)")
+    psf_fwhm = _fwhm_from_header(header, config.get("psf_fwhm_guess", 3.0))
+    print(f"    Applying PSF-aware protection (FWHM: {psf_fwhm:.1f} pix)")
 
-    sampled = sci_data[::10, ::10]
-    finite_sampled = sampled[np.isfinite(sampled)]
-    sky_est = np.median(finite_sampled) if finite_sampled.size > 0 else 0.0
-    sci_sub = np.maximum(sci_data - sky_est, 0.0)
+    if sky_map is not None and np.shape(sky_map) == np.shape(sci_data):
+        sci_sub = np.maximum(np.asarray(sci_data, dtype=np.float32) - np.asarray(sky_map, dtype=np.float32), 0.0)
+    else:
+        sampled = sci_data[::10, ::10]
+        finite_sampled = sampled[np.isfinite(sampled)]
+        sky_est = np.median(finite_sampled) if finite_sampled.size > 0 else 0.0
+        sci_sub = np.maximum(sci_data - sky_est, 0.0)
 
     uniform_3x3 = np.ones((3, 3), dtype=np.float32)
     local_flux_sum = convolve(sci_sub, uniform_3x3, mode="constant", cval=0.0)
@@ -215,6 +248,8 @@ def detect_cosmic_rays(
     read_noise,
     config,
     bkg_rms_map=None,
+    sky_map=None,
+    header=None,
 ):
     """
     Detect cosmic rays in the science data.
@@ -282,7 +317,9 @@ def detect_cosmic_rays(
                 np.ascontiguousarray(crmask_bool.astype(bool)), sci_data, bkg_rms_map, faint_cfg
             )
         else:
-            crmask_bool = _apply_psf_protection(crmask_bool, sci_data, config, gain, read_noise, bkg_rms_map)
+            crmask_bool = _apply_psf_protection(
+                crmask_bool, sci_data, config, gain, read_noise, bkg_rms_map, sky_map=sky_map, header=header
+            )
             crmask_bool = _post_filter_components(crmask_bool.astype(bool), sci_data, bkg_rms_map, config)
 
         crmask_bool = _apply_morphological_dilation(crmask_bool, config)

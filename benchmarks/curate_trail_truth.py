@@ -677,6 +677,17 @@ def _same_ccd(left, right):
     return left.get("extver", -1) == right.get("extver", -1) and left.get("extver", -1) >= 0
 
 
+def persistent_axis_mask(frames, min_other=2, sigma=3.0):
+    """Columns and rows bright in at least ``min_other`` other frames of one CCD.
+
+    Thin wrapper so the curator and the pipeline share one rule. The frames
+    passed here are the other epochs, not the exposure being labelled.
+    """
+    from weightmask.streaks import persistent_axis_mask as _persistent_axis_mask
+
+    return _persistent_axis_mask(frames, min_other=min_other, sigma=sigma)
+
+
 def find_static_matches(candidate, others, tol_deg, tol_px, min_support_px):
     """Candidates that reappear at the same CCD-local line in another epoch."""
     matches = []

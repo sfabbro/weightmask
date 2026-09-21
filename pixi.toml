@@ -11,6 +11,7 @@ benchmark-synthetic = "python -m tests.benchmarks.run --suite synthetic_v2 --wit
 benchmark-megacam = "python -m tests.benchmarks.run --suite megacam_real"
 benchmark-acs = "python -m tests.benchmarks.run --suite acs_compare"
 example-complex = "python examples/complex_simulation_example.py"
+science-gate = "python benchmarks/science_gate.py"
 
 [dependencies]
 python = "3.13.*"

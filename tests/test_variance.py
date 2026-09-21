@@ -6,7 +6,9 @@ import numpy as np
 
 from weightmask.variance import (
     _calculate_inverse_variance_theoretical,
+    _rescale_variance_robust,
     _unbias_variance,
+    amplifier_gain_map,
     calculate_inverse_variance,
 )
 
@@ -102,9 +104,7 @@ class TestVariance(unittest.TestCase):
         sky_adu, gain, read_noise_e, rel0 = 8000.0, 1.5, 5.0, 0.003
         sky = np.array([[sky_adu, sky_adu]], dtype=np.float32)
         flat = np.array([[1.0, 0.25]], dtype=np.float32)
-        got = _calculate_inverse_variance_theoretical(
-            sky, flat, gain, read_noise_e, epsilon=1e-9, flat_rel_noise=rel0
-        )
+        got = _calculate_inverse_variance_theoretical(sky, flat, gain, read_noise_e, epsilon=1e-9, flat_rel_noise=rel0)
         med_flat = 0.625
         for i, flat_val in enumerate((1.0, 0.25)):
             rel = rel0 / np.sqrt(max(flat_val / med_flat, 0.1))
@@ -566,6 +566,58 @@ class TestVariance(unittest.TestCase):
         self.assertIsNotNone(unbiased_ivar)
         # Should retain background variance (0.04) rather than spiking to 1,000,000
         self.assertAlmostEqual(unbiased_ivar[0, 0], 1.0 / 25.0, places=5)
+
+    def test_sky_dominated_flat_fielded_weight_ratio_is_f(self):
+        """At F=0.7 and zero read noise, frozen weight is 0.7 times the photon-noise weight."""
+        sky = np.array([[1000.0]], dtype=np.float32)
+        flat = np.array([[0.7]], dtype=np.float32)
+        frozen = _calculate_inverse_variance_theoretical(sky, flat, 1.5, 0.0, 1e-9, flat_fielded_poisson=False)
+        photon = _calculate_inverse_variance_theoretical(sky, flat, 1.5, 0.0, 1e-9, flat_fielded_poisson=True)
+        self.assertAlmostEqual(float(frozen[0, 0] / photon[0, 0]), 0.7, places=5)
+
+    def test_theoretical_infinite_rms_has_zero_weight(self):
+        sky = np.full((8, 8), 100.0, dtype=np.float32)
+        flat = np.ones((8, 8), dtype=np.float32)
+        rms = np.ones((8, 8), dtype=np.float32)
+        rms[:, 3] = np.inf
+        inv = calculate_inverse_variance(
+            {"method": "theoretical", "gain": 1.5, "read_noise": 5.0, "rescale_variance": False},
+            sky,
+            flat,
+            rms,
+        )
+        self.assertEqual(float(inv[0, 3]), 0.0)
+        self.assertGreater(float(inv[0, 0]), 0.0)
+
+    def test_rescale_ignores_masked_defect_outliers(self):
+        rng = np.random.default_rng(0)
+        shape = (40, 40)
+        sci = rng.normal(0.0, 1.0, shape).astype(np.float32)
+        sci[:, :12] = 50.0
+        sky = np.zeros(shape, dtype=np.float32)
+        inv = np.ones(shape, dtype=np.float32)
+        masked = np.zeros(shape, dtype=bool)
+        masked[:, :12] = True
+        kept = _rescale_variance_robust(inv, sci, sky, masked, 1e-9)
+        contaminated = _rescale_variance_robust(inv, sci, sky, np.zeros(shape, dtype=bool), 1e-9)
+        self.assertAlmostEqual(float(kept[20, 20]), 1.0, delta=0.25)
+        self.assertLess(float(contaminated[20, 20]), float(kept[20, 20]))
+
+    def test_dual_amplifier_gain_map_splits_the_hdu(self):
+        header = {
+            "GAINA": 1.0,
+            "GAINB": 2.0,
+            "DETSECA": "[1:4,1:4]",
+            "DETSECB": "[5:8,1:4]",
+        }
+        gain = amplifier_gain_map(header, (4, 8), fallback=1.5)
+        self.assertIsNotNone(gain)
+        self.assertTrue(np.all(gain[:, :4] == 1.0))
+        self.assertTrue(np.all(gain[:, 4:] == 2.0))
+        sky = np.full((4, 8), 100.0, dtype=np.float32)
+        flat = np.ones((4, 8), dtype=np.float32)
+        inv = _calculate_inverse_variance_theoretical(sky, flat, gain, 0.0, 1e-9)
+        self.assertAlmostEqual(float(inv[0, 4] / inv[0, 0]), 2.0, places=4)
 
 
 if __name__ == "__main__":

@@ -9,11 +9,13 @@ import sys
 import time
 
 import fitsio
+import numpy as np
 import yaml
 
 from . import __version__
 from .mef import process_all_hdus
 from .process import validate_config
+from .streaks import persistent_axis_mask
 from .utils import clean_config_dict, extract_hdu_spec
 
 
@@ -123,6 +125,16 @@ def parse_arguments(argv=None) -> argparse.Namespace:
         help="Also write per-component mask FITS files.",
     )
     run.add_argument(
+        "--persistence",
+        nargs="+",
+        default=None,
+        help=(
+            "Other science MEFs of the same detectors. A column or row that is "
+            "bright on at least two of them is excluded from STREAK. A single-file "
+            "run without this flag does not apply that prior."
+        ),
+    )
+    run.add_argument(
         "--nproc",
         "--max-workers",
         dest="max_workers",
@@ -170,7 +182,91 @@ def validate_input_files(args: argparse.Namespace) -> bool:
             print(f"ERROR: Bad pixel mask file validation failed: {args.badpix_mask}")
             return False
 
+    for path in getattr(args, "persistence", None) or []:
+        if not os.path.exists(path):
+            print(f"ERROR: Persistence exposure not found: {path}")
+            return False
+        if not validate_fits_file(path):
+            print(f"ERROR: Persistence exposure validation failed: {path}")
+            return False
+
     return True
+
+
+def _ccd_name(header):
+    if header is None:
+        return None
+    get = getattr(header, "get", None)
+    for key in ("CCDNAME", "CCDNAM"):
+        try:
+            value = get(key) if callable(get) else header[key]
+        except Exception:
+            value = None
+        if value is None:
+            continue
+        text = str(value).strip()
+        if text:
+            return text
+    return None
+
+
+def _image_shape(header):
+    try:
+        nx = int(header["NAXIS1"])
+        ny = int(header["NAXIS2"])
+    except Exception:
+        return None
+    if header.get("NAXIS", 2) != 2 or nx <= 0 or ny <= 0:
+        return None
+    return (ny, nx)
+
+
+def build_persistence_priors(science_path, hdus, other_paths, min_other=2):
+    """Per-HDU column/row prior from other exposures of the same CCD.
+
+    ponytail: each other file is re-read once per CCD name. A survey-scale run
+    should stream one pass into scratch instead.
+    """
+    names = {}
+    shapes = {}
+    with fitsio.FITS(science_path, "r") as science:
+        for index in hdus:
+            if index >= len(science):
+                continue
+            header = science[index].read_header()
+            name = _ccd_name(header)
+            shape = _image_shape(header)
+            if name and shape:
+                names[index] = name
+                shapes[index] = shape
+    by_name = {}
+    for index, name in names.items():
+        by_name.setdefault(name, []).append(index)
+
+    priors = {}
+    for name, indexes in by_name.items():
+        shape = shapes[indexes[0]]
+        frames = []
+        for path in other_paths:
+            with fitsio.FITS(path, "r") as handle:
+                for ext in range(len(handle)):
+                    try:
+                        header = handle[ext].read_header()
+                    except Exception:
+                        continue
+                    if _ccd_name(header) != name:
+                        continue
+                    data = np.ascontiguousarray(handle[ext].read(), dtype=np.float32)
+                    if data.shape == shape:
+                        frames.append(data)
+                    break
+        if len(frames) < int(min_other):
+            continue
+        mask = persistent_axis_mask(frames, min_other=min_other)
+        for index in indexes:
+            if shapes[index] == mask.shape:
+                priors[index] = mask
+    return priors
 
 
 def _find_default_config() -> str:
@@ -392,6 +488,12 @@ def run_pipeline(argv=None) -> int:
             _cleanup_hdul(hdul_input, hdul_flat, None, hdul_dark)
             return 1
 
+    detector_priors = None
+    persistence = getattr(args, "persistence", None) or []
+    if persistence:
+        detector_priors = build_persistence_priors(input_path, hdus_to_process, persistence)
+        print(f"Persistence prior for {len(detector_priors)} HDU(s) from {len(persistence)} other exposure(s).")
+
     process_success_count = process_all_hdus(
         hdus_to_process,
         hdul_input,
@@ -406,6 +508,7 @@ def run_pipeline(argv=None) -> int:
         input_path=input_path,
         badpix_path=badpix_path,
         dark_path=dark_path,
+        detector_priors=detector_priors,
     )
 
     _cleanup_hdul(hdul_input, hdul_flat, hdul_badpix, hdul_dark)

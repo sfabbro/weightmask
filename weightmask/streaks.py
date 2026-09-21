@@ -14,6 +14,67 @@ from skimage.transform import probabilistic_hough_line
 from .utils import rms_or_robust, rms_valid_mask, robust_rms
 
 
+def _profile_outliers(profile, sigma):
+    """True where a 1-D profile exceeds ``sigma`` robust standard deviations."""
+    med = float(np.median(profile))
+    mad = 1.4826 * float(np.median(np.abs(profile - med)))
+    if not np.isfinite(mad) or mad <= 1e-12:
+        mad = 1e-12
+    return np.asarray(profile) > med + float(sigma) * mad
+
+
+def persistent_axis_mask(frames, min_other=2, sigma=3.0):
+    """Columns and rows that are bright outliers in at least ``min_other`` frames.
+
+    ``frames`` are other exposures of one CCD (not the frame being masked). An
+    axis is detector-fixed when its median is a robust outlier in that many
+    frames — the same count the trail curator requires of other epochs. A trail
+    that exists in only one exposure does not qualify.
+    """
+    arrays = [np.asarray(frame, dtype=np.float64) for frame in frames]
+    if not arrays:
+        raise ValueError("persistent_axis_mask needs at least one frame")
+    shape = arrays[0].shape
+    if any(frame.shape != shape for frame in arrays):
+        raise ValueError("persistent_axis_mask frames must share a shape")
+    if len(shape) != 2:
+        raise ValueError("persistent_axis_mask frames must be 2-D")
+    col_hits = np.zeros(shape[1], dtype=np.int16)
+    row_hits = np.zeros(shape[0], dtype=np.int16)
+    for frame in arrays:
+        col_hits += _profile_outliers(np.median(frame, axis=0), sigma).astype(np.int16)
+        row_hits += _profile_outliers(np.median(frame, axis=1), sigma).astype(np.int16)
+    mask = np.zeros(shape, dtype=bool)
+    hot_cols = np.nonzero(col_hits >= int(min_other))[0]
+    hot_rows = np.nonzero(row_hits >= int(min_other))[0]
+    if hot_cols.size:
+        mask[:, hot_cols] = True
+    if hot_rows.size:
+        mask[hot_rows, :] = True
+    return mask
+
+
+def _subtract_hot_axis_bands(image, sigma=3.0):
+    """Remove columns and rows whose median is a robust outlier.
+
+    An oblique trail hits each column in a few rows, so it does not move that
+    column's median. A bright detector column does, and those columns otherwise
+    take every Radon top-k slot. Only the outlier axes are subtracted.
+    """
+    out = np.array(image, dtype=np.float32, copy=True)
+    for axis in (0, 1):
+        profile = np.median(out, axis=axis)
+        hot = _profile_outliers(profile, sigma)
+        if not np.any(hot):
+            continue
+        band = profile[hot].astype(np.float32)
+        if axis == 0:
+            out[:, hot] -= band
+        else:
+            out[hot, :] -= band[:, None]
+    return np.clip(out, 0.0, None)
+
+
 def _normalize_angle_deg(angle_deg):
     """Normalize an angle to the [0, 180) degree range."""
     return (angle_deg + 180.0) % 180.0
@@ -1131,6 +1192,9 @@ def _detect_streaks_mrt_like(data_sub, bkg_rms_map, existing_mask, config):
     normalized = np.clip(normalized, 0.0, None)
     normalized -= np.nanmedian(normalized)
     normalized = np.clip(normalized, 0.0, None)
+    # Column/row bands outrank trails in a global top-k. Subtract them before
+    # the transform; the strip refiner still sees the original image.
+    normalized = _subtract_hot_axis_bands(normalized)
 
     # Binning is the single biggest cost lever here (the transform is quadratic
     # in the padded side). The peak it finds is confirmed at full resolution by
@@ -1201,33 +1265,44 @@ def _detect_streaks_mrt_like(data_sub, bkg_rms_map, existing_mask, config):
         score_peak = float(snr[rho_idx, theta_idx])
         if not np.isfinite(score_peak) or score_peak < peak_threshold:
             continue
-        rho = float(rho_coords[rho_idx]) * bin_factor
+        rho0 = float(rho_coords[rho_idx]) * bin_factor
         theta_deg = float(thetas[theta_idx])
-        if any(abs(theta_deg - t0) < 2.0 and abs(rho - r0) < 20.0 for r0, t0 in used):
-            continue
+        # ``bin`` quantises rho. A bright trail then fails ``max_support_width``
+        # because the strip is a few pixels off centre. Search ±bin at full res;
+        # bin 1 keeps the single sample the unbinned peak already named.
+        deltas = (0.0,) if bin_factor <= 1 else tuple(float(d) for d in range(-int(bin_factor), int(bin_factor) + 1))
+        chosen = None
+        for delta in deltas:
+            rho = rho0 + delta
+            if any(abs(theta_deg - t0) < 2.0 and abs(rho - r0) < 20.0 for r0, t0 in used):
+                continue
 
-        # ``_candidate_from_rho_theta`` speaks the Hesse convention used by
-        # ``hough_line`` (theta = the line's normal direction, rho = the signed
-        # distance along that normal). ``radon`` parameterises the same line
-        # reflected: theta_radon = 90 - phi where phi is the line's own angle.
-        # Feeding radon coordinates straight in therefore built the *mirror* of
-        # the candidate line -- harmless near theta = 0, where the two agree, but
-        # for an oblique line the strip refiner was handed a line that does not
-        # exist in the image and rejected it with `no_support`. That is why this
-        # rescue could only ever propose the near-axis column artefacts.
-        # Calibrated on injected lines at phi = 0/22.9/45/90/140 deg: the
-        # conversion below reproduces all of them to within the rho sampling.
-        candidate = _candidate_from_rho_theta(-rho, 180.0 - theta_deg, data_sub.shape)
-        if candidate is None:
+            # ``_candidate_from_rho_theta`` speaks the Hesse convention used by
+            # ``hough_line`` (theta = the line's normal direction, rho = the signed
+            # distance along that normal). ``radon`` parameterises the same line
+            # reflected: theta_radon = 90 - phi where phi is the line's own angle.
+            # Feeding radon coordinates straight in therefore built the *mirror* of
+            # the candidate line -- harmless near theta = 0, where the two agree, but
+            # for an oblique line the strip refiner was handed a line that does not
+            # exist in the image and rejected it with `no_support`. That is why this
+            # rescue could only ever propose the near-axis column artefacts.
+            # Calibrated on injected lines at phi = 0/22.9/45/90/140 deg: the
+            # conversion below reproduces all of them to within the rho sampling.
+            candidate = _candidate_from_rho_theta(-rho, 180.0 - theta_deg, data_sub.shape)
+            if candidate is None:
+                continue
+            refined, refine_info = _refine_trail_mask(
+                data_sub, bkg_rms_map, candidate, mask_cfg, existing_mask=existing_mask
+            )
+            conf = _score_candidate(candidate, refined, refine_info, existing_mask)
+            if conf >= confidence_threshold and np.count_nonzero(refined) > 0 and (chosen is None or conf > chosen[0]):
+                chosen = (conf, rho, refined)
+        if chosen is None:
             continue
-        refined, refine_info = _refine_trail_mask(
-            data_sub, bkg_rms_map, candidate, mask_cfg, existing_mask=existing_mask
-        )
-        conf = _score_candidate(candidate, refined, refine_info, existing_mask)
-        if conf >= confidence_threshold:
-            streak_mask |= refined
-            accepted.append({"rho": rho, "theta_deg": theta_deg, "peak_snr": score_peak, "confidence": conf})
-            used.append((rho, theta_deg))
+        conf, rho, refined = chosen
+        streak_mask |= refined
+        accepted.append({"rho": rho, "theta_deg": theta_deg, "peak_snr": score_peak, "confidence": conf})
+        used.append((rho, theta_deg))
 
     return (
         streak_mask,
@@ -1637,6 +1712,50 @@ def _detect_trails_sparse_ransac(data_sub, bkg_rms_map, existing_mask, config):
     return trail_mask
 
 
+def _gate_mask_by_profile(mask, max_half_width=6.0, min_pixels=24):
+    """Keep pixels that lie on a thin line. Drop a component that is too wide.
+
+    The Hough or Radon vote is a proposal. A component is a streak only when its
+    pixels concentrate about one axis within ``max_half_width``. The returned
+    mask is that band, not the whole voted corridor.
+    """
+    labeled, n_components = label(np.asarray(mask, dtype=bool), connectivity=2, return_num=True)
+    if n_components == 0:
+        return np.zeros(np.shape(mask), dtype=bool)
+    out = np.zeros(labeled.shape, dtype=bool)
+    for index in range(1, n_components + 1):
+        ys, xs = np.nonzero(labeled == index)
+        if ys.size < int(min_pixels):
+            continue
+        y = ys.astype(np.float64)
+        x = xs.astype(np.float64)
+        yc = y - y.mean()
+        xc = x - x.mean()
+        cov_xx = float(np.dot(xc, xc))
+        cov_yy = float(np.dot(yc, yc))
+        cov_xy = float(np.dot(xc, yc))
+        theta = 0.5 * float(np.arctan2(2.0 * cov_xy, cov_xx - cov_yy))
+        direction = np.array([np.cos(theta), np.sin(theta)], dtype=np.float64)
+        normal = np.array([-direction[1], direction[0]], dtype=np.float64)
+        transverse = xc * normal[0] + yc * normal[1]
+        along = xc * direction[0] + yc * direction[1]
+        med = float(np.median(transverse))
+        mad = 1.4826 * float(np.median(np.abs(transverse - med)))
+        if not np.isfinite(mad) or mad < 0.5:
+            mad = 0.5
+        if mad > float(max_half_width):
+            continue
+        span = float(along.max() - along.min())
+        if span < 4.0 * max(mad, 1.0):
+            continue
+        half = min(float(max_half_width), max(2.0 * mad, 1.5))
+        keep = np.abs(transverse - med) <= half
+        if int(np.count_nonzero(keep)) < int(min_pixels):
+            continue
+        out[ys[keep], xs[keep]] = True
+    return out
+
+
 def detect_streaks(data_sub, bkg_rms_map, existing_mask, config):
     """
     Detect linear streaks via the production ``auto_ground`` path plus optional sparse RANSAC.
@@ -1766,6 +1885,12 @@ def detect_streaks(data_sub, bkg_rms_map, existing_mask, config):
         debug_info["sparse_ransac"] = int(np.count_nonzero(sparse_mask))
     else:
         debug_info["sparse_ransac"] = 0
+
+    if config.get("profile_accept", True):
+        mask_cfg = config.get("mask_params", {})
+        half_width = float(mask_cfg.get("max_support_width", 12)) / 2.0
+        min_pixels = int(mask_cfg.get("min_mask_pixels", 24))
+        streak_mask_bool = _gate_mask_by_profile(streak_mask_bool, max_half_width=half_width, min_pixels=min_pixels)
 
     if existing_mask is not None:
         num_new_pixels = int(np.count_nonzero(streak_mask_bool & (~existing_mask)))

@@ -33,6 +33,7 @@ import sys
 import time
 from concurrent.futures import ProcessPoolExecutor
 
+import fitsio
 import numpy as np
 
 MODULE_DIR = os.path.dirname(os.path.abspath(__file__))
@@ -103,7 +104,8 @@ def score_hdu(job):
 
     from weightmask.background import estimate_background
 
-    path, hdu, entries, config_path, detectors, corridor_px, quiet = job
+    path, hdu, entries, config_path, detectors, corridor_px, quiet = job[:7]
+    apply_persistence = bool(job[7]) if len(job) > 7 else False
     out = {"exposure": entries[0]["exposure"], "hdu": int(hdu), "results": {}, "error": None}
     try:
         with fitsio.FITS(path) as handle:
@@ -114,6 +116,10 @@ def score_hdu(job):
             streak_cfg = dict(config["streak_masking"])
             streak_cfg["enable"] = True
             existing = np.zeros(science.shape, dtype=bool)
+            if apply_persistence:
+                prior = _persistence_prior(path, header, science.shape)
+                if prior is not None:
+                    existing |= prior
             sky, rms = estimate_background(science, existing, config["sep_background"])
             data_sub = science - sky
         # Rasterise every band once: the detectors share them.
@@ -151,6 +157,49 @@ def score_hdu(job):
     except Exception as exc:  # pragma: no cover - surfaced, not swallowed
         out["error"] = f"{type(exc).__name__}: {exc}"
     return out
+
+
+def _ccd_name(header):
+    for key in ("CCDNAME", "CCDNAM"):
+        if key in header and str(header[key]).strip():
+            return str(header[key]).strip()
+    return None
+
+
+def _persistence_prior(path, header, shape):
+    """Columns and rows bright on at least two sibling exposures of this CCD."""
+    from weightmask.streaks import persistent_axis_mask
+
+    name = _ccd_name(header)
+    if not name:
+        return None
+    directory = os.path.dirname(os.path.abspath(path))
+    frames = []
+    for fname in sorted(os.listdir(directory)):
+        lower = fname.lower()
+        if not (lower.endswith(".fits") or lower.endswith(".fz")):
+            continue
+        other = os.path.join(directory, fname)
+        if os.path.abspath(other) == os.path.abspath(path):
+            continue
+        try:
+            with fitsio.FITS(other) as handle:
+                for ext in range(len(handle)):
+                    try:
+                        other_header = handle[ext].read_header()
+                    except Exception:
+                        continue
+                    if _ccd_name(other_header) != name:
+                        continue
+                    data = np.ascontiguousarray(handle[ext].read(), dtype=np.float32)
+                    if data.shape == shape:
+                        frames.append(data)
+                    break
+        except Exception:
+            continue
+    if len(frames) < 2:
+        return None
+    return persistent_axis_mask(frames, min_other=2)
 
 
 def entry_key(entry) -> str:
@@ -227,6 +276,11 @@ def main(argv=None):
     parser.add_argument("--exposures", help="comma-separated subset")
     parser.add_argument("--workers", type=int, default=4)
     parser.add_argument("--report", default=DEFAULT_REPORT)
+    parser.add_argument(
+        "--apply-persistence",
+        action="store_true",
+        help="Exclude columns/rows bright on two other same-CCD exposures in this directory.",
+    )
     parser.add_argument("--quiet", action="store_true", default=True)
     parser.add_argument("--verbose", dest="quiet", action="store_false")
     args = parser.parse_args(argv)
@@ -251,7 +305,10 @@ def main(argv=None):
             missing.add(exposure)
             continue
         plan.append(((exposure, hdu), entries))
-        jobs.append((path, hdu, entries, args.config, detectors, args.corridor_px, args.quiet))
+        job = (path, hdu, entries, args.config, detectors, args.corridor_px, args.quiet)
+        if args.apply_persistence:
+            job = (*job, True)
+        jobs.append(job)
 
     if missing:
         print(f"WARNING: no science file for exposure(s): {', '.join(sorted(missing))}", file=sys.stderr)

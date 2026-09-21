@@ -20,7 +20,8 @@ is false, `default_gain` is 1.0 e⁻/ADU, and `default_rdnoise` is 0 e⁻. Copy
 the YAML. `WeightMapGenerator` raises `ValueError` on invalid config.
 
 Each HDU uses one gain and one read-noise value (first present header keyword
-in the configured lists). Dual-amp `GAINA`/`GAINB` are not split.
+in the configured lists) unless both `GAINA` and `GAINB` exist and a section
+keyword splits the HDU. Then the variance plane uses that gain map.
 
 ## Command
 
@@ -122,14 +123,11 @@ streak_masking:
     sigma_rel_floor: 0.001
 ```
 
-`skip_when_prescreen_confirmed` skips the full-resolution multi-scale Canny/Hough
-sweep when the cheap binned-Hough prescreen has already accepted a trail in the same
-HDU. It cannot suppress a field where the sweep is the stage that finds the trail,
-because it only fires once the prescreen has already confirmed one; what it does
-depend on is the sweep adding nothing to an HDU the prescreen has already accepted.
-Measured on real MegaCam HDUs the streak mask is bit-identical either way on a clean
-field, a bright-trail field, and a bright+faint field where the second trail is the
-adversarial case. Set it to false to keep the sweep unconditional.
+`skip_when_prescreen_confirmed` skips the full-resolution Canny/Hough sweep when
+the binned-Hough prescreen has already accepted a trail. Turning it off on
+`1013719p` HDU 1 did not recover the missed injected trails: the sweep returned
+no candidates. `profile_accept` keeps only components that concentrate about a
+fitted line narrower than `mask_params.max_support_width`.
 
 `mrt_rescue_params` is a Radon rescue for faint trails, and it is the most expensive
 thing in the stage. `bin` mean-bins the projection image before the transform; the
@@ -176,12 +174,14 @@ Compatibility dispatch: `weightmask reconstruct-sky sky_mesh.fits -o sky_full.fi
 Default `variance.method: theoretical`. The core plane is
 
 ```
-ivar = g² F² / (S g + RN²)
+ivar = g² F² / (S g F + RN²)
 ```
 
-F² sensitivity weight (same convention used in coadds). Exact Poisson plus
-read noise at `F = 1`. At vignette (`F ≠ 1`) this is a sensitivity weight, not
-`g² F² / (S g F + RN²)`. Canonical `weightmask.yml` then adds
+Flat-fielded Poisson weight. Exact Poisson plus read noise at `F = 1`.
+Canonical `weightmask.yml` sets `variance.flat_fielded_poisson: true` because
+a spatially varying flat moved a weighted aperture by more than the fixture
+read-noise floor. Omitting the key keeps the older `S g` denominator.
+Canonical `weightmask.yml` then adds
 `flat_rel_noise: 0.003` and `rescale_variance: true`. Omit those
 keys and you get the bare formula.
 

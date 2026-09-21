@@ -123,16 +123,26 @@ def detect_objects(data_sub, bkg_rms_map, existing_mask, config):
         seed_thresh = float(clean_config.get("seed_thresh_factor", 1.25)) * extract_thresh
         seed_objects = _run_sep_extract(d_sub, b_rms, m_in, seed_thresh, min_area, clean_config, segmentation_map=False)
         seed_mask = np.zeros_like(object_mask, dtype=bool)
+        elongated_seed = np.zeros_like(object_mask, dtype=bool)
         if len(seed_objects) > 0:
             seed_scaled_a = np.maximum(seed_objects["a"], 1.0)
             seed_scaled_b = np.maximum(seed_objects["b"], 1.0)
-            _apply_vectorized_ellipse_mask(
-                seed_mask,
-                seed_objects,
-                seed_scaled_a,
-                seed_scaled_b,
-                max(1.5, float(clean_config.get("ellipse_k", 2.0)) * 0.8),
-            )
+            seed_k = max(1.5, float(clean_config.get("ellipse_k", 2.0)) * 0.8)
+            _apply_vectorized_ellipse_mask(seed_mask, seed_objects, seed_scaled_a, seed_scaled_b, seed_k)
+            # A bright bar is swallowed by its own seed ellipse, so the second
+            # extract never sees it. Keep those pixels for the sky mask here.
+            if clean_config.get("handoff_elongated_to_streak", True):
+                with np.errstate(divide="ignore", invalid="ignore"):
+                    seed_elong = seed_objects["a"] / np.maximum(seed_objects["b"], 1e-9)
+                keep_seed = seed_elong >= float(clean_config.get("max_elongation", 3.0))
+                if np.any(keep_seed):
+                    _apply_vectorized_ellipse_mask(
+                        elongated_seed,
+                        seed_objects[keep_seed],
+                        seed_scaled_a[keep_seed],
+                        seed_scaled_b[keep_seed],
+                        seed_k,
+                    )
 
         second_pass_mask = seed_mask | (m_in if m_in is not None else np.zeros_like(seed_mask))
         objects, segmap = _run_sep_extract(
@@ -167,6 +177,21 @@ def detect_objects(data_sub, bkg_rms_map, existing_mask, config):
         print(
             f"  Detected {len(objects)} objects ({len(keep_objects)} kept for masking, thresh={extract_thresh:.1f} sigma)."
         )
+
+        elongated_mask = np.zeros(data_sub.shape, dtype=bool)
+        elongated_mask |= elongated_seed
+        if clean_config.get("handoff_elongated_to_streak", True) and segmap is not None and len(objects) > 0:
+            dropped = np.arange(1, len(objects) + 1)
+            with np.errstate(divide="ignore", invalid="ignore"):
+                elong = objects["a"] / np.maximum(objects["b"], 1e-9)
+            dropped = dropped[elong >= float(clean_config.get("max_elongation", 3.0))]
+            max_label = int(np.max(segmap))
+            if max_label > 0 and dropped.size:
+                lookup = np.zeros(max_label + 1, dtype=bool)
+                ok = dropped[(dropped >= 0) & (dropped <= max_label)]
+                lookup[ok] = True
+                elongated_mask |= lookup[segmap]
+        clean_config["_elongated_for_sky"] = elongated_mask
 
         if len(keep_objects) > 0:
             base_k = float(clean_config.get("ellipse_k", 2.0))

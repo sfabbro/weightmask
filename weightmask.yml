@@ -110,6 +110,7 @@ streak_masking:
   enable: true                   # STREAK bit; production mode is auto_ground only
   mode: "auto_ground"            # Canny/Hough + strip refine + Radon rescue + optional RANSAC
   dilation_radius: 2             # pixels; grow accepted trails
+  profile_accept: true           # keep only the fitted line; drop components wider than max_support_width
   debug: false                   # extra streak diagnostics
   retry_without_existing_mask: true  # retry if the first pass looks like a masked-star false positive
   retry_if_area_fraction_exceeds: 0.03  # retry when the trail covers more than this of the CCD
@@ -141,10 +142,10 @@ streak_masking:
     skip_when_prescreen_confirmed: true
                                  # skip the full-resolution multi-scale Canny/Hough
                                  # sweep when the binned-Hough prescreen already
-                                 # accepted a trail. Measured on real MegaCam HDUs:
-                                 # bit-identical streak masks (0 differing pixels)
-                                 # on a clean field, a bright-trail field, and a
-                                 # bright+faint field, for -24.5 s per CCD.
+                                 # accepted a trail. Re-measured 2026-09-21 on
+                                 # 1013719p HDU 1 with this off: satdet returned
+                                 # 0 candidates and the two missed trails stayed
+                                 # at recall 0, for +29 s.
   houghpeak_params:
     enable: true                 # binned Hough-peak extractor
     bin: 4                       # spatial binning before the peak search
@@ -208,7 +209,9 @@ streak_masking:
 
 variance:
   method: "theoretical"          # "theoretical" (default), "rms_map", or "empirical_fit"
-  # Frozen 0.1: ivar = g^2 F^2 / (S*g + RN^2). Poisson+RN at F=1; F^2 sensitivity weight otherwise.
+  # ivar = g^2 F^2 / (S*g*F + RN^2). A spatially varying flat moved aperture flux
+  # by more than the fixture read-noise floor, so the sky term is S*g*F.
+  flat_fielded_poisson: true
   gain_keyword: ["GAIN", "GAINA", "GAINB", "CCDGAIN"]  # e-/ADU; first present header wins
   rdnoise_keyword: ["RDNOISE", "RDNOIS", "RON"]        # e-; first present header wins
   default_gain: 1.5              # e-/ADU; used only if no gain keyword is present
