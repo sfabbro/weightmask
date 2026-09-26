@@ -51,7 +51,11 @@ def generate_weight_and_confidence(inv_variance_map, final_mask_int, config):
     # --- 2. Create Confidence Map (Normalized Weight Map) ---
     print("  Calculating continuous confidence map (normalized weight map)...")
     conf_dtype_str = conf_cfg.get("dtype", "float32")
-    conf_dtype = getattr(np, conf_dtype_str, np.float32)  # Default to float32
+    conf_dtype = {
+        "float16": np.float16,
+        "float32": np.float32,
+        "float64": np.float64,
+    }.get(conf_dtype_str, np.float32)  # whitelist; default float32
 
     confidence_map = product.confidence
     if np.any(weight_map > 0):

@@ -282,24 +282,25 @@ def process_image(
     final_mask_int[nodata_mask] |= MASK_BITS["NO_DATA"]
 
     print("  (1.1/7) Detecting saturation on the full image...")
+    sat_cfg = dict(config.get("saturation", {}))
     with _timed(timings, "saturation"):
         saturation_level, sat_method_used, sat_mask = detect_saturated_pixels(
-            sci_data_full, sci_hdr, config.get("saturation", {})
+            sci_data_full, sci_hdr, sat_cfg
         )
     final_mask_int[sat_mask] |= MASK_BITS["SAT"]
     header_info["SAT_LVL"], header_info["SAT_METH"] = saturation_level, sat_method_used
 
     # --- Full Image Processing Steps ---
     interim_mask_bool = final_mask_int > 0
+    sep_bg_cfg = dict(config.get("sep_background", {}))
     # Calculate preliminary background RMS for CR and Bleed masking
     print("  Calculating preliminary background RMS...")
     with _timed(timings, "background_prelim"):
         prelim_bkg_map, prelim_bkg_rms = estimate_background(
-            sci_data_full, interim_mask_bool, config.get("sep_background", {})
+            sci_data_full, interim_mask_bool, sep_bg_cfg
         )
 
     # --- 1.5 Bleed Trail (Blooming) Masking ---
-    sat_cfg = dict(config.get("saturation", {}))
     with _timed(timings, "bleed"):
         if sat_cfg.get("mask_bleed_trails", True):
             print("  (1.5/7) Growing Bleed Trails for saturated stars...")
@@ -347,7 +348,6 @@ def process_image(
 
     # --- 3. Iterative Background and Object Detection ---
     print("  (3/7) Starting iterative Background/Object detection...")
-    sep_bg_cfg = dict(config.get("sep_background", {}))
     object_cfg = dict(config.get("sep_objects", {}))
     iterations = sep_bg_cfg.get("iterations", 2)
     current_obj_mask = np.zeros(sci_shape, dtype=bool)

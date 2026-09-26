@@ -631,13 +631,13 @@ def _build_satdet_candidates(segments, data_sub, shape, cfg, existing_mask, prep
         # Transverse scatter of member midpoints around the representative
         # line: a real trail's segments agree to ~±3px, while percolation
         # phantoms spray across the corridor. Reject the spray.
-        _pts = np.asarray(cluster["segments"], dtype=np.float32).reshape(-1, 2)
+        seg_pts = np.asarray(cluster["segments"], dtype=np.float32).reshape(-1, 2)
         _d = rep["direction"]
-        _rel = _pts - rep["midpoint"]
+        _rel = seg_pts - rep["midpoint"]
         _rms = float(np.sqrt(np.mean((_rel[:, 0] * _d[1] - _rel[:, 1] * _d[0]) ** 2)))
         if _rms > float(cfg.get("max_transverse_rms", 8.0)):
             continue
-        raw_endpoints = np.asarray(cluster["segments"], dtype=np.float32).reshape(-1, 2)
+        raw_endpoints = seg_pts
         raw_edge_touches = len(_edges_touched(raw_endpoints, shape, edge_buffer))
         raw_span = rep["raw_span"]
         segment_density = len(cluster["segments"]) / max(raw_span, 1.0)
@@ -1445,10 +1445,9 @@ def _detect_streaks_houghpeaks(data_sub, bkg_rms_map, existing_mask, config):
     bh, bw = h // bfac, w // bfac
     if bh < 16 or bw < 16:
         return np.zeros(data_sub.shape, dtype=bool), [], {"peaks": 0}
-    _tw, _th_trim = w - bfac * bw, h - bfac * bh
-    binned = data_sub[: bh * bfac, : bw * bfac].reshape(bh, bfac, bw, bfac).mean(axis=(1, 3))
+    binned = _bin_array(data_sub, bfac)
     if bkg_rms_map is not None:
-        brms = bkg_rms_map[: bh * bfac, : bw * bfac].reshape(bh, bfac, bw, bfac).mean(axis=(1, 3))
+        brms = _bin_array(bkg_rms_map, bfac)
         snr = binned / np.maximum(brms / bfac, 1e-6)
     else:
         snr = binned

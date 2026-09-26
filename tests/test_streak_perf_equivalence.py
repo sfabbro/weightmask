@@ -198,6 +198,81 @@ class TestStreakImageCache(unittest.TestCase):
         np.testing.assert_array_equal(primary, fresh_primary)
         np.testing.assert_array_equal(retry, fresh_retry)
 
+    def test_multiscale_extraction_rescales_each_source_once(self):
+        """The scale-independent normalization must not be repeated per sigma."""
+        data = np.arange(48 * 64, dtype=np.float32).reshape(48, 64)
+        config = dict(_streak_config()["satdet_params"])
+        config["gaussian_sigmas"] = [0.75, 1.0, 1.5]
+        prepared_core = streaks._streak_image_core(data)
+
+        with mock.patch.object(streaks, "_robust_scale_image", wraps=streaks._robust_scale_image) as scale_spy:
+            streaks._extract_multiscale_segments(data, None, config, prepared_core=prepared_core)
+
+        self.assertEqual(scale_spy.call_count, 2)
+
+    def test_satdet_skips_full_core_when_no_cluster_qualifies(self):
+        """No candidate means no reason to pay for the full-resolution preparation."""
+        data = np.zeros((32, 40), dtype=np.float32)
+        rms = np.ones_like(data)
+        existing_mask = np.zeros_like(data, dtype=bool)
+        config = _streak_config()
+        config["satdet_params"]["bin_factor"] = 2
+        config["satdet_params"]["min_cluster_segments"] = 10**9
+        segments = [((2.0, 2.0), (20.0, 20.0))]
+
+        def zero_core(value):
+            return np.zeros_like(value, dtype=np.float32)
+
+        with mock.patch.object(streaks, "_streak_image_core", side_effect=zero_core) as core_spy:
+            with mock.patch.object(
+                streaks,
+                "_extract_multiscale_segments",
+                return_value=(segments, []),
+            ):
+                result, _accepted, _debug = streaks._detect_streaks_satdet(
+                    data,
+                    rms,
+                    existing_mask,
+                    config,
+                    cache=streaks._StreakImageCache(),
+                )
+
+        self.assertEqual(int(np.count_nonzero(result)), 0)
+        # Only the binned prescreen core is needed; the full-resolution core is lazy.
+        self.assertEqual(core_spy.call_count, 1)
+
+    def test_empty_exclusion_mask_does_not_trigger_an_identical_retry(self):
+        """With no excluded pixels, retrying without the mask repeats the same pass."""
+        data = np.zeros((32, 40), dtype=np.float32)
+        rms = np.ones_like(data)
+        config = _streak_config()
+        config["mrt_rescue_params"] = {**config["mrt_rescue_params"], "enable": False}
+        config["enable_sparse_ransac"] = False
+        config["profile_accept"] = False
+        calls = []
+
+        def empty_result(value):
+            return np.zeros(value.shape, dtype=bool), [], {"candidates": 0, "accepted_count": 0}
+
+        def satdet_count(data_sub, _rms, existing, _config, cache=None, prescreen_confirmed=False):
+            calls.append(existing is not None and bool(np.any(existing)))
+            return empty_result(data_sub)
+
+        with mock.patch.object(streaks, "_detect_streaks_houghpeaks", side_effect=lambda *a: empty_result(a[0])):
+            with mock.patch.object(streaks, "_detect_streaks_contours", side_effect=lambda *a: empty_result(a[0])):
+                with mock.patch.object(streaks, "_detect_streaks_satdet", side_effect=satdet_count):
+                    detect_streaks(data, rms, np.zeros_like(data, dtype=bool), config)
+        self.assertEqual(calls, [False])
+
+        calls.clear()
+        occupied = np.zeros_like(data, dtype=bool)
+        occupied[0, 0] = True
+        with mock.patch.object(streaks, "_detect_streaks_houghpeaks", side_effect=lambda *a: empty_result(a[0])):
+            with mock.patch.object(streaks, "_detect_streaks_contours", side_effect=lambda *a: empty_result(a[0])):
+                with mock.patch.object(streaks, "_detect_streaks_satdet", side_effect=satdet_count):
+                    detect_streaks(data, rms, occupied, config)
+        self.assertEqual(calls, [True, False])
+
     def test_detect_streaks_is_unchanged_when_cores_are_never_shared(self):
         data, rms, existing_mask = _streak_scene()
         config = _streak_config()

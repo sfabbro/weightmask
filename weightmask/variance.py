@@ -2,7 +2,7 @@ import warnings
 
 import numpy as np
 from astropy.stats import mad_std
-from scipy.stats import linregress
+from scipy.stats import iqr, linregress
 
 from .bad import _parse_section
 from .utils import rms_valid_mask
@@ -58,8 +58,7 @@ def _calculate_empirical_noise_params(sci_data, obj_mask, patch_size, robust_sig
         if valid_sci_blocks.shape[0] > 0:
             patch_medians_arr = np.nanmedian(valid_sci_blocks, axis=1)
             # Vectorized MAD calculation using nanmedian
-            abs_dev = np.abs(valid_sci_blocks - patch_medians_arr[:, np.newaxis])
-            patch_stds_arr = np.nanmedian(abs_dev, axis=1) * 1.4826022185056018
+            patch_stds_arr = mad_std(valid_sci_blocks, axis=1, ignore_nan=True)
 
             valid_var_mask = patch_stds_arr > 1e-6
             patch_variances.extend((patch_stds_arr[valid_var_mask] ** 2).tolist())
@@ -273,12 +272,11 @@ def _rescale_variance_robust(inv_variance, sci_data, sky_map, obj_mask, epsilon)
     if snr.size < 100:
         return inv_variance
 
-    # ⚡ Bolt: Subsample large arrays before calculating global robust statistics
+    # Subsample large arrays before calculating global robust statistics
     step = max(1, snr.size // 100000)
 
     # Use Interquartile Range for robust stdev
-    q1, q3 = np.percentile(snr[::step], (25, 75))
-    robust_stdev = 0.7413 * (q3 - q1)
+    robust_stdev = 0.7413 * iqr(snr[::step])
 
     if robust_stdev > 0:
         scale_factor = 1.0 / (robust_stdev**2)
