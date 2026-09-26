@@ -222,9 +222,7 @@ def process_image(
     Optional[dict],
 ]:
     """Processes a single Science image to generate all mask and map products."""
-    import time
-
-    hdu_start_time = time.time()
+    hdu_start_time = _time.time()
     sci_shape = sci_data_full.shape
     using_unit_flat = True
     eff_tile = _effective_tile_size(tile_size, sci_shape)
@@ -473,7 +471,7 @@ def process_image(
         "nodata": nodata_mask,
     }
 
-    hdu_elapsed = time.time() - hdu_start_time
+    hdu_elapsed = _time.time() - hdu_start_time
     timings["hdu_total"] = float(hdu_elapsed)
     _top = sorted(
         (

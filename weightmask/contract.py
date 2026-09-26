@@ -201,7 +201,7 @@ def _json_header_cards(legacy_key: str, prefix: str, value: Mapping[str, Any]) -
     encoded = json.dumps(value, sort_keys=True, separators=(",", ":"))
     if len(encoded) <= _FITS_HEADER_VALUE_CHARS:
         return {legacy_key: encoded}
-    # ponytail: fixed-size cards avoid a dependency on FITS CONTINUE support.
+    # Fixed-size cards avoid a dependency on FITS CONTINUE support.
     chunks = [
         encoded[index : index + _FITS_HEADER_VALUE_CHARS] for index in range(0, len(encoded), _FITS_HEADER_VALUE_CHARS)
     ]
@@ -270,7 +270,7 @@ def quality_bits_from_names(names: list[str] | tuple[str, ...] | set[str]) -> Qu
 
 def _bounded_percentile(values: np.ndarray, percentile: float) -> float:
     """Calculate a deterministic percentile without survey-scale global work."""
-    # ponytail: regular striding caps percentile memory/work at 100k values;
+    # Regular striding caps percentile memory/work at 100k values;
     # upgrade to a streaming quantile estimator only if this ceiling is insufficient.
     step = max(1, (values.size + MAX_CONFIDENCE_SAMPLES - 1) // MAX_CONFIDENCE_SAMPLES)
     return float(np.percentile(values[::step], percentile))

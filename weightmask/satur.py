@@ -35,7 +35,7 @@ def estimate_saturation_robust_clump(data, min_adu=None, max_adu=None):
             # Start analysis above the 99th percentile, but ensure we don't start too high
             # if the field is sparse.
 
-            # ⚡ Bolt: Subsample large arrays before calculating global robust statistics
+            # Subsample large arrays before calculating global robust statistics
             step = max(1, finite_data.size // 100000)
             sampled_data = finite_data[::step]
 
@@ -104,10 +104,7 @@ def estimate_saturation_robust_clump(data, min_adu=None, max_adu=None):
         return float(estimated_level)
 
     except Exception as e:
-        import traceback
-
         print(f"  Robust Clump analysis failed with error: {e}")
-        print(traceback.format_exc())
         return None
 
 
@@ -355,7 +352,7 @@ def grow_bleed_trails(sci_data, sat_mask, sky_map, bkg_rms_map, config):
         min_x, max_x = np.min(sat_cols), np.max(sat_cols)
         sliced_sat_mask = sat_mask[:, min_x : max_x + 1]
 
-        # ⚡ Bolt: Extract configuration lookups and pre-allocate fallback arrays outside the loop
+        # Extract configuration lookups and pre-allocate fallback arrays outside the loop
         # to avoid redundant dict lookups and allocations inside the tight iteration over saturation segments
         bleed_thresh_sigma = config.get("bleed_thresh_sigma", 5.0)
         max_grow = config.get("bleed_grow_vertical", 50)

@@ -4,7 +4,7 @@ import numpy as np
 import sep
 from astropy.stats import mad_std
 from scipy import linalg
-from scipy.ndimage import median_filter
+from scipy.ndimage import gaussian_filter, median_filter
 
 
 def _estimate_global_sep(sci_data, mask):
@@ -40,8 +40,6 @@ def _check_and_fix_edge_artifacts(bkg_map, sci_data_shape):
     for edge_region in edge_regions:
         edge_median = np.median(edge_region)
         if abs(edge_median - center_median) > 50:
-            from scipy.ndimage import gaussian_filter
-
             bkg_map = gaussian_filter(bkg_map, sigma=2.0)
             print("    Applied Gaussian smoothing to reduce edge artifacts")
             break
@@ -227,8 +225,8 @@ def sky_to_mesh(sky_map, box):
 
 def reconstruct_sky_mesh(mesh, shape, box):
     """Rebuild full-res sky from mesh (SEP node phase + natural cubic)."""
-    # ponytail: scipy CubicSpline, not SEP C bicubic; sub-ADU on MegaPrime.
-    # Swap back to a SEP port if bit-identical back() is required.
+    # scipy CubicSpline rather than SEP's C bicubic; agree to sub-ADU on MegaPrime.
+    # Swap back to a SEP port if bit-identical back() is ever required.
     from scipy.interpolate import CubicSpline
 
     box = _as_box(box)

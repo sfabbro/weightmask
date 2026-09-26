@@ -119,10 +119,7 @@ def _detect_bad_columns_derivative(flat_data, config, global_med):
                 print("    No bad columns detected.")
 
     except Exception as e:
-        import traceback
-
         print(f"  WARNING: Bad column detection failed: {e}. Skipping.")
-        print(traceback.format_exc())
 
     return column_mask_bool
 

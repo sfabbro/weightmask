@@ -32,7 +32,7 @@ def _calculate_empirical_noise_params(sci_data, obj_mask, patch_size, robust_sig
     n_patches_y = ny_trunc // patch_size
     n_patches_x = nx_trunc // patch_size
 
-    # ⚡ Bolt: Vectorize patch calculation by reshaping views to avoid explicit Python loops over coordinates
+    # Vectorize patch calculation by reshaping views to avoid explicit Python loops over coordinates
     if n_patches_y > 0 and n_patches_x > 0:
         sci_blocks = (
             sci_data[:ny_trunc, :nx_trunc]
