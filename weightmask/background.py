@@ -11,7 +11,7 @@ def _estimate_global_sep(sci_data, mask):
     """Estimate a single global background using a single SEP box."""
     try:
         bkg = sep.Background(sci_data, mask=mask, bw=sci_data.shape[1], bh=sci_data.shape[0])
-        if bkg.globalback == 0 and np.any(~mask):
+        if np.isclose(bkg.globalback, 0.0) and np.any(~mask):
             return None, None
         bkg_map = np.full(sci_data.shape, bkg.globalback, dtype=np.float32)
         bkg_rms_map = np.full(sci_data.shape, bkg.globalrms, dtype=np.float32)
@@ -131,7 +131,7 @@ def _estimate_smooth_surface(sci_data, mask, config):
     sample_y = y_idx[valid]
     sample_x = x_idx[valid]
     sample_v = sci_data[valid].astype(np.float32)
-    step = max(1, sample_v.size // 50000)
+    step = max(1, sample_v.size // 100000)
     sample_y = sample_y[::step]
     sample_x = sample_x[::step]
     sample_v = sample_v[::step]

@@ -11,7 +11,7 @@ import numpy as np
 import yaml
 
 from weightmask.contract import QualityBit
-from weightmask.mef import apply_chip_replica_veto, process_all_hdus
+from weightmask.mef import line_geometry, process_all_hdus, replica_indices
 
 
 def _column(shape, x):
@@ -32,22 +32,13 @@ class TestChipReplicaGeometry(unittest.TestCase):
         shape = (64, 48)
         column = _column(shape, 20)
         diagonal = _diagonal(shape)
-
-        def _quality(streak):
-            quality = np.zeros(shape, dtype=np.uint32)
-            quality[streak] = np.uint32(QualityBit.STREAK)
-            return quality
-
-        records = [
-            {"streak": column.copy(), "quality": _quality(column)},
-            {"streak": column.copy(), "quality": _quality(column)},
-            {"streak": diagonal.copy(), "quality": _quality(diagonal)},
+        geoms = [
+            line_geometry(*np.nonzero(column), shape),
+            line_geometry(*np.nonzero(column), shape),
+            line_geometry(*np.nonzero(diagonal), shape),
         ]
-        cleared = apply_chip_replica_veto(records)
+        cleared = replica_indices(geoms)
         self.assertEqual(cleared, {0, 1})
-        self.assertFalse(bool(np.any(records[0]["streak"])))
-        self.assertFalse(bool(np.any(records[1]["quality"] & int(QualityBit.STREAK))))
-        self.assertTrue(bool(np.any(records[2]["streak"])))
 
 
 class TestChipReplicaOnDisk(unittest.TestCase):

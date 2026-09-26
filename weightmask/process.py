@@ -29,7 +29,9 @@ def _timed(store: dict, key: str):
 
 def validate_config(config: dict) -> bool:
     """Validate configuration parameters."""
-    required_sections = [
+    # These sections all have defaults, so a config omitting them still validates;
+    # they are flagged for visibility, not enforced.
+    optional_sections = [
         "flat_masking",
         "saturation",
         "sep_background",
@@ -40,10 +42,10 @@ def validate_config(config: dict) -> bool:
         "confidence_params",
         "output_params",
     ]
-    allowed_sections = set(required_sections) | {"dark_masking"}
-    for section in required_sections:
+    allowed_sections = set(optional_sections) | {"dark_masking"}
+    for section in optional_sections:
         if section not in config:
-            print(f"WARNING: Required configuration section '{section}' missing.")
+            print(f"WARNING: Configuration section '{section}' missing; defaults will be used.")
 
     extra_sections = sorted(set(config) - allowed_sections)
     if extra_sections:
@@ -153,13 +155,13 @@ def _first_present_keyword(header, key_cfg):
             continue
         try:
             v = get(k, None) if callable(get) else None
-        except Exception:
+        except (TypeError, AttributeError, KeyError):
             v = None
         if v is None:
             try:
                 if k in header:
                     v = header[k]
-            except Exception:
+            except (TypeError, AttributeError, KeyError):
                 v = None
         if v is not None:
             return k
@@ -177,13 +179,13 @@ def _header_lookup(header, key_cfg, default):
             continue
         try:
             v = get(k, None) if callable(get) else header.get(k, None) if hasattr(header, "get") else None
-        except Exception:
+        except (TypeError, AttributeError, KeyError):
             v = None
         if v is None:
             try:
                 if k in header:
                     v = header[k]
-            except Exception:
+            except (TypeError, AttributeError, KeyError):
                 v = None
         if v is not None:
             return v
@@ -199,7 +201,7 @@ def _effective_tile_size(tile_size, shape) -> int:
         min_dim = int(min(shape))
     except Exception:
         return max(16, t)
-    return max(16, min(t, max(1, min_dim // 2)))
+    return min(max(16, max(1, min_dim // 2)), min_dim)
 
 
 def process_image(
@@ -252,7 +254,7 @@ def process_image(
     with _timed(timings, "bad_flat"):
         if bad_mask is None:
             bad_mask = np.zeros(sci_shape, dtype=bool)
-            if flat_data_full is not None and not using_unit_flat:
+            if not using_unit_flat:
                 # Compute flat bad mask ONCE for the full HDU (replaces per-tile + cache)
                 print("    Computing flat bad-pixel mask (full HDU)...")
                 flat_bad_mask = compute_flat_bad_mask(flat_data_full, config.get("flat_masking", {}), eff_tile)
@@ -297,7 +299,7 @@ def process_image(
         )
 
     # --- 1.5 Bleed Trail (Blooming) Masking ---
-    sat_cfg = config.get("saturation", {})
+    sat_cfg = dict(config.get("saturation", {}))
     with _timed(timings, "bleed"):
         if sat_cfg.get("mask_bleed_trails", True):
             print("  (1.5/7) Growing Bleed Trails for saturated stars...")
@@ -310,7 +312,7 @@ def process_image(
 
     # --- 2. First-Pass Cosmic Ray Detection ---
     print("  (2/7) Running first-pass Cosmic Ray detection...")
-    cosmic_cfg = config.get("cosmic_ray", {})
+    cosmic_cfg = dict(config.get("cosmic_ray", {}))
     variance_cfg = dict(config.get("variance", {}))
     gain_raw = _header_lookup(sci_hdr, variance_cfg.get("gain_keyword", "GAIN"), variance_cfg.get("default_gain", 1.0))
     rdnoise_raw = _header_lookup(
@@ -345,7 +347,7 @@ def process_image(
 
     # --- 3. Iterative Background and Object Detection ---
     print("  (3/7) Starting iterative Background/Object detection...")
-    sep_bg_cfg = config.get("sep_background", {})
+    sep_bg_cfg = dict(config.get("sep_background", {}))
     object_cfg = dict(config.get("sep_objects", {}))
     iterations = sep_bg_cfg.get("iterations", 2)
     current_obj_mask = np.zeros(sci_shape, dtype=bool)
@@ -418,7 +420,7 @@ def process_image(
         return None, None, None, None, None, None
     # --- 6. Streak Detection ---
     print("  (6/7) Detecting streaks...")
-    streak_cfg = config.get("streak_masking", {})
+    streak_cfg = dict(config.get("streak_masking", {}))
     with _timed(timings, "streaks"):
         if streak_cfg.get("enable", False):
             data_sub = sci_data_full - sky_map

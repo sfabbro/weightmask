@@ -232,8 +232,11 @@ def _extract_multiscale_segments(data_sub, existing_mask, cfg, prepared_core=Non
     all_segments = []
     debug_scales = []
     for source_idx, (source_name, source_image) in enumerate(source_images):
+        # Rescaling depends on the source image and exclusion mask, not on sigma.
+        # Keep one normalized source image while processing all its scales.
+        scaled_source = _robust_scale_image(source_image, work_mask, percentiles)
         for idx, sigma in enumerate(gaussian_sigmas):
-            scaled = _robust_scale_image(source_image, work_mask, percentiles)
+            scaled = scaled_source
             if sigma > 0:
                 scaled = ndi.gaussian_filter(scaled, sigma)
             edges = canny(scaled, sigma=0.0, low_threshold=canny_low, high_threshold=canny_high)
@@ -267,6 +270,8 @@ def _extract_multiscale_segments(data_sub, existing_mask, cfg, prepared_core=Non
 # once (``_region_perimeters``) replaces a Python loop over the ~10^5 tiny
 # components of a real CCD edge mask with shifted-array comparisons, yielding
 # perimeters identical to skimage's.
+_EDGE_BUFFER_DEFAULT = 32
+
 _PERIMETER_DIAGONAL_OFFSETS = ((-1, -1), (-1, 1), (1, -1), (1, 1))
 _PERIMETER_ORTHOGONAL_OFFSETS = ((-1, 0), (1, 0), (0, -1), (0, 1))
 _PERIMETER_WEIGHTS = np.zeros(50, dtype=np.float64)
@@ -543,6 +548,17 @@ def _edges_touched(endpoints, shape, edge_buffer):
     return touched
 
 
+def _adjust_confidence_for_mask(confidence_threshold, existing_mask):
+    """Raise the accept threshold in proportion to the excluded-pixel fraction.
+
+    A heavily masked image has fewer independent pixels to confirm a trail, so
+    the confidence bar is relaxed (capped) to avoid rejecting real streaks.
+    """
+    if existing_mask is not None:
+        return confidence_threshold + min(0.25, 20.0 * float(np.mean(existing_mask)))
+    return confidence_threshold
+
+
 def _line_corridor_mask(endpoints, shape, radius):
     """Return the (rr, cc) pixel coordinates of a corridor around a line.
 
@@ -573,14 +589,19 @@ def _line_corridor_mask(endpoints, shape, radius):
     return grr + r0, gcc + c0
 
 
-def _build_satdet_candidates(segments, data_sub, shape, cfg, existing_mask, prepared_core=None):
-    """Cluster and filter Hough segments into plausible trail candidates."""
+def _build_satdet_candidates(segments, data_sub, shape, cfg, existing_mask, prepared_core=None, cache=None):
+    """Cluster and filter Hough segments into plausible trail candidates.
+
+    The full-resolution preparation is needed only for the corridor response.
+    Defer it until a cluster survives the cheap geometry and mask gates so an
+    Hough-only pass with no viable candidates does not pay that cost.
+    """
     clusters = _cluster_segments(
         segments,
         float(cfg.get("cluster_angle_tol_deg", 3.0)),
         float(cfg.get("cluster_rho_tol_px", 30.0)),
     )
-    edge_buffer = int(cfg.get("edge_buffer", 32))
+    edge_buffer = int(cfg.get("edge_buffer", _EDGE_BUFFER_DEFAULT))
     min_segments = int(cfg.get("min_cluster_segments", 3))
     max_existing_mask_fraction = float(cfg.get("max_existing_mask_fraction", 0.6))
     max_candidates = int(cfg.get("max_candidates", 8))
@@ -588,7 +609,7 @@ def _build_satdet_candidates(segments, data_sub, shape, cfg, existing_mask, prep
     min_edge_touches = int(cfg.get("min_edge_touches", 1))
     min_segment_density = float(cfg.get("min_segment_density", 0.015))
     corridor_radius = int(cfg.get("candidate_corridor_radius", 12))
-    prepared = _prepare_streak_image(data_sub, existing_mask, core=prepared_core)
+    prepared = None
     candidates = []
 
     # Only ``max_candidates`` clusters survive the final sort, but every
@@ -635,6 +656,10 @@ def _build_satdet_candidates(segments, data_sub, shape, cfg, existing_mask, prep
         if masked_fraction > max_existing_mask_fraction:
             continue
 
+        if prepared is None:
+            if prepared_core is None:
+                prepared_core = cache.core(data_sub) if cache is not None else _streak_image_core(data_sub)
+            prepared = _prepare_streak_image(data_sub, existing_mask, core=prepared_core)
         corridor_signal = prepared[corridor_rr, corridor_cc]
         corridor_signal = corridor_signal[np.isfinite(corridor_signal)]
         if corridor_signal.size > 0:
@@ -656,6 +681,7 @@ def _build_satdet_candidates(segments, data_sub, shape, cfg, existing_mask, prep
                 "corridor_overlap": float(masked_fraction),
                 "corridor_response": corridor_response,
                 "corridor_mean": corridor_mean,
+                "source": "satdet",
             }
         )
 
@@ -738,8 +764,19 @@ def _largest_near_center(mask_1d):
     return labels == best_label
 
 
-def _largest_contiguous_run(mask_1d):
-    """Return only the longest contiguous run in a 1D mask."""
+def _largest_contiguous_run(mask_1d, max_gap=0, min_run_length=1):
+    """Return the longest coherent group of runs in a 1D mask.
+
+    ``max_gap`` is the largest number of false samples allowed between two
+    support runs before they are treated as unrelated. ``min_run_length``
+    discards isolated short runs before grouping, which keeps a few noise pixels
+    from joining otherwise separate fragments. The selected runs are returned
+    without filling their gaps, so this preserves the measured support while
+    preventing a faint-but-real dashed trail from being truncated to its
+    longest bright fragment. With ``max_gap=0`` and the default minimum run
+    length, this retains the historical longest-contiguous-run behavior.
+    """
+    mask_1d = np.asarray(mask_1d, dtype=bool)
     if not np.any(mask_1d):
         return mask_1d
 
@@ -747,8 +784,34 @@ def _largest_contiguous_run(mask_1d):
     if n <= 1:
         return mask_1d
 
-    best_label = 1 + np.argmax([np.count_nonzero(labels == idx) for idx in range(1, n + 1)])
-    return labels == best_label
+    runs = []
+    for label_idx in range(1, n + 1):
+        indices = np.flatnonzero(labels == label_idx)
+        runs.append((int(indices[0]), int(indices[-1]), int(indices.size)))
+
+    minimum = max(1, int(min_run_length))
+    if minimum > 1:
+        runs = [run for run in runs if run[2] >= minimum]
+        if not runs:
+            return np.zeros_like(mask_1d)
+
+    gap = max(0, int(max_gap))
+    groups = []
+    for start, end, count in runs:
+        if groups and start - groups[-1][1] - 1 <= gap:
+            groups[-1] = (groups[-1][0], end, groups[-1][2] + count)
+        else:
+            groups.append((start, end, count))
+
+    # Match the old primary criterion (number of true samples), with span and
+    # earliest start as deterministic tie-breakers.
+    best = max(groups, key=lambda group: (group[2], group[1] - group[0] + 1, -group[0]))
+    keep = np.zeros_like(mask_1d)
+    best_start, best_end, _best_count = best
+    for start, end, count in runs:
+        if count >= minimum and start >= best_start and end <= best_end:
+            keep[start : end + 1] = True
+    return keep
 
 
 def _refit_endpoints_from_strip(strip, centered, inside):
@@ -845,6 +908,12 @@ def _refine_trail_mask(data_sub, bkg_rms_map, candidate, mask_cfg, existing_mask
     min_row_hit_fraction = float(mask_cfg.get("min_row_hit_fraction", 0.5))
     min_col_hit_fraction = float(mask_cfg.get("min_col_hit_fraction", 0.2))
     max_support_width = int(mask_cfg.get("max_support_width", 16))
+    # Only the full-span Hough-peak candidate has independent line evidence
+    # strong enough to bridge intermittent support. Contour candidates can
+    # follow curved star/galaxy structure; extending those across gaps creates
+    # long false-positive trails.
+    max_row_gap = int(mask_cfg.get("max_row_gap", 0)) if candidate.get("source") == "houghpeaks" else 0
+    min_row_run = int(mask_cfg.get("min_row_run", 0)) if max_row_gap > 0 else 0
 
     def _support_count(centered, inside, bg_std):
         # Padded support width for one sampled geometry (argmin criterion).
@@ -1013,7 +1082,7 @@ def _refine_trail_mask(data_sub, bkg_rms_map, candidate, mask_cfg, existing_mask
     hot_pixels = hot_pixels & support_cols[np.newaxis, :]
     row_hits = np.any(hot_pixels, axis=1)
     row_hits = ndi.binary_closing(row_hits, structure=np.ones(2 * padding + 1, dtype=bool))
-    row_hits = _largest_contiguous_run(row_hits)
+    row_hits = _largest_contiguous_run(row_hits, max_gap=max_row_gap, min_run_length=min_row_run)
     if np.count_nonzero(row_hits) < min_row_hits:
         return np.zeros(data_sub.shape, dtype=bool), {
             "support_width": int(np.count_nonzero(support_cols)),
@@ -1104,7 +1173,7 @@ def _candidate_from_rho_theta(rho, theta_deg, shape):
         "clipped_endpoints": clipped,
         "span": float(span),
         "raw_span": float(span),
-        "edge_touches": len(_edges_touched(clipped, shape, int(16))),
+        "edge_touches": len(_edges_touched(clipped, shape, _EDGE_BUFFER_DEFAULT)),
     }
 
 
@@ -1190,7 +1259,9 @@ def _detect_streaks_mrt_like(data_sub, bkg_rms_map, existing_mask, config):
     if existing_mask is not None:
         normalized = np.where(existing_mask, 0.0, normalized)
     normalized = np.clip(normalized, 0.0, None)
-    normalized -= np.nanmedian(normalized)
+    med = np.nanmedian(normalized)
+    if np.isfinite(med):
+        normalized -= med
     normalized = np.clip(normalized, 0.0, None)
     # Column/row bands outrank trails in a global top-k. Subtract them before
     # the transform; the strip refiner still sees the original image.
@@ -1291,6 +1362,7 @@ def _detect_streaks_mrt_like(data_sub, bkg_rms_map, existing_mask, config):
             candidate = _candidate_from_rho_theta(-rho, 180.0 - theta_deg, data_sub.shape)
             if candidate is None:
                 continue
+            candidate["source"] = "mrt"
             refined, refine_info = _refine_trail_mask(
                 data_sub, bkg_rms_map, candidate, mask_cfg, existing_mask=existing_mask
             )
@@ -1365,10 +1437,9 @@ def _detect_streaks_houghpeaks(data_sub, bkg_rms_map, existing_mask, config):
     thresh_sig = float(cfg.get("thresh_sig", 2.5))
     min_votes = int(cfg.get("min_votes", 100))
     max_candidates = int(cfg.get("max_candidates", 6))
-    confidence_threshold = float(config.get("satdet_params", {}).get("confidence_threshold", 0.40))
+    confidence_threshold = float(config.get("houghpeak_params", {}).get("confidence_threshold", 0.40))
     min_refined_mask_pixels = int(mask_cfg.get("min_mask_pixels", 64))
-    if existing_mask is not None:
-        confidence_threshold += min(0.25, 20.0 * float(np.mean(existing_mask)))
+    confidence_threshold = _adjust_confidence_for_mask(confidence_threshold, existing_mask)
 
     h, w = data_sub.shape
     bh, bw = h // bfac, w // bfac
@@ -1418,6 +1489,7 @@ def _detect_streaks_houghpeaks(data_sub, bkg_rms_map, existing_mask, config):
             candidate = _candidate_from_rho_theta(rho, theta_deg, data_sub.shape)
             if candidate is None:
                 continue
+            candidate["source"] = "houghpeaks"
             refined, refine_info = _refine_trail_mask(
                 data_sub, bkg_rms_map, candidate, mask_cfg, existing_mask=existing_mask
             )
@@ -1441,7 +1513,6 @@ def _contour_candidates(data_sub, existing_mask, bkg_rms_map, config):
     from skimage import measure as _measure
 
     cfg = config.get("contour_params", {})
-    config.get("mask_params", {})
     thresh_sig = float(cfg.get("thresh_sig", 2.5))
     min_span = float(cfg.get("min_span", 150.0))
     shape_cut = float(cfg.get("shape_cut", 0.2))
@@ -1507,8 +1578,9 @@ def _contour_candidates(data_sub, existing_mask, bkg_rms_map, config):
                 "clipped_endpoints": seg,
                 "span": float(np.hypot(ex1 - ex0, ey1 - ey0)),
                 "raw_span": span,
-                "edge_touches": len(_edges_touched(clipped, data_sub.shape, 16)),
+                "edge_touches": len(_edges_touched(clipped, data_sub.shape, _EDGE_BUFFER_DEFAULT)),
                 "corridor_overlap": 0.0,
+                "source": "contours",
             }
         )
     return out
@@ -1520,10 +1592,9 @@ def _detect_streaks_contours(data_sub, bkg_rms_map, existing_mask, config):
     mask_cfg = config.get("mask_params", {})
     if not cfg.get("enable", True):
         return np.zeros(data_sub.shape, dtype=bool), [], {"candidates": 0}
-    confidence_threshold = float(config.get("satdet_params", {}).get("confidence_threshold", 0.40))
+    confidence_threshold = float(config.get("contour_params", {}).get("confidence_threshold", 0.40))
     min_refined_mask_pixels = int(mask_cfg.get("min_mask_pixels", 64))
-    if existing_mask is not None:
-        confidence_threshold += min(0.25, 20.0 * float(np.mean(existing_mask)))
+    confidence_threshold = _adjust_confidence_for_mask(confidence_threshold, existing_mask)
     print("--> Contour-morphology candidate search...")
     candidates = _contour_candidates(data_sub, existing_mask, bkg_rms_map, config)
     print(f"    Contour stage proposed {len(candidates)} candidate(s).")
@@ -1561,8 +1632,7 @@ def _detect_streaks_satdet(data_sub, bkg_rms_map, existing_mask, config, cache=N
     min_refined_mask_pixels = int(mask_cfg.get("min_mask_pixels", 64))
     confidence_threshold = float(cfg.get("confidence_threshold", 0.40))
     min_segment_accept = int(cfg.get("min_segment_accept", 3))
-    if existing_mask is not None:
-        confidence_threshold += min(0.25, 20.0 * float(np.mean(existing_mask)))
+    confidence_threshold = _adjust_confidence_for_mask(confidence_threshold, existing_mask)
 
     if prescreen_confirmed and bool(cfg.get("skip_when_prescreen_confirmed", False)):
         print("    satdet sweep skipped: the binned Hough prescreen already confirmed a trail.")
@@ -1606,7 +1676,7 @@ def _detect_streaks_satdet(data_sub, bkg_rms_map, existing_mask, config, cache=N
         return np.zeros(data_sub.shape, dtype=bool), [], {"scales": debug_scales, "accepted_count": 0}
 
     candidates = _build_satdet_candidates(
-        segments, data_sub, data_sub.shape, cfg, existing_mask, prepared_core=cache.core(data_sub)
+        segments, data_sub, data_sub.shape, cfg, existing_mask, cache=cache
     )
     streak_mask = np.zeros(data_sub.shape, dtype=bool)
     accepted = []
@@ -1682,7 +1752,7 @@ def _detect_trails_sparse_ransac(data_sub, bkg_rms_map, existing_mask, config):
             )
         except Exception as e:
             print(f"    Sparse RANSAC failed: {e}")
-            break
+            continue
 
         if inliers is None or np.count_nonzero(inliers) < min_inliers:
             break
@@ -1816,12 +1886,13 @@ def detect_streaks(data_sub, bkg_rms_map, existing_mask, config):
             config.get("retry_if_area_fraction_exceeds", 0.03)
         ) or np.median(support_widths) > float(config.get("retry_if_support_width_exceeds", 10.0))
     # Same all-primary rule for the unmasked retry: skip it when houghpeaks /
-    # contours already accepted trails. The suspicious-phantom recovery below
-    # is untouched, as is the retry when no primary stage accepted anything.
+    # contours already accepted trails. An all-False mask is not an exclusion,
+    # so retrying without it would repeat the same deterministic satdet pass.
+    has_existing_exclusions = existing_mask is not None and bool(np.any(existing_mask))
     if (
         low_confidence
         and n_early_accepted == 0
-        and existing_mask is not None
+        and has_existing_exclusions
         and config.get("retry_without_existing_mask", True)
     ):
         print(f"    [streak] retrying satdet without existing mask (t+{time.time() - streak_t0:.1f}s)...")
@@ -1830,14 +1901,18 @@ def detect_streaks(data_sub, bkg_rms_map, existing_mask, config):
             streak_mask_bool |= retry_mask
         debug_info["retry_unmasked"] = {"accepted": retry_accepted, **retry_debug}
         low_confidence = low_confidence and len(retry_accepted) == 0
-    elif suspicious_primary and existing_mask is not None and config.get("retry_without_existing_mask", True):
+    elif suspicious_primary and has_existing_exclusions and config.get("retry_without_existing_mask", True):
         print(f"    [streak] retrying satdet without existing mask (t+{time.time() - streak_t0:.1f}s)...")
         retry_mask, retry_accepted, retry_debug = _detect_streaks_satdet(data_sub, bkg_rms_map, None, config, cache)
         retry_pixels = int(np.count_nonzero(retry_mask))
         primary_pixels = int(np.count_nonzero(satdet_mask))
         if len(retry_accepted) > 0 and retry_pixels > 0 and retry_pixels < primary_pixels:
-            streak_mask_bool = retry_mask.copy()
+            # Replace the suspicious satdet contribution with the cleaner retry,
+            # preserving any houghpeaks/contours accepts already OR'd in.
+            streak_mask_bool &= ~satdet_mask
+            streak_mask_bool |= retry_mask
         debug_info["retry_unmasked"] = {"accepted": retry_accepted, **retry_debug}
+        low_confidence = low_confidence and len(retry_accepted) == 0
     min_streak_px = int(config.get("mask_params", {}).get("min_mask_pixels", 64))
     n_primary_total = (
         n_early_accepted + len(accepted) + len(debug_info.get("retry_unmasked", {}).get("accepted", []) or [])
@@ -1856,20 +1931,12 @@ def detect_streaks(data_sub, bkg_rms_map, existing_mask, config):
     run_sparse_ransac = bool(config.get("enable_sparse_ransac", True))
     if config.get("sparse_on_primary_weak_only", True):
         primary_accept_count = n_early_accepted
-        primary_debug = debug_info.get("primary", {})
-        if isinstance(primary_debug, dict):
-            accepted_value = primary_debug.get("accepted", [])
-            if isinstance(accepted_value, list):
-                primary_accept_count += len(accepted_value)
-            elif isinstance(primary_debug.get("accepted"), int):
-                primary_accept_count += int(primary_debug["accepted"])
-        retry_debug = debug_info.get("retry_unmasked", {})
-        if isinstance(retry_debug, dict):
-            accepted_value = retry_debug.get("accepted", [])
-            if isinstance(accepted_value, list):
-                primary_accept_count += len(accepted_value)
-            elif isinstance(retry_debug.get("accepted"), int):
-                primary_accept_count += int(retry_debug["accepted"])
+        primary_info = debug_info.get("primary", {})
+        if isinstance(primary_info, dict) and isinstance(primary_info.get("accepted"), list):
+            primary_accept_count += len(primary_info["accepted"])
+        retry_info = debug_info.get("retry_unmasked", {})
+        if isinstance(retry_info, dict) and isinstance(retry_info.get("accepted"), list):
+            primary_accept_count += len(retry_info["accepted"])
         run_sparse_ransac = run_sparse_ransac and (
             np.count_nonzero(streak_mask_bool) < int(config.get("mask_params", {}).get("min_mask_pixels", 64))
             or primary_accept_count == 0
@@ -1888,8 +1955,8 @@ def detect_streaks(data_sub, bkg_rms_map, existing_mask, config):
 
     if config.get("profile_accept", True):
         mask_cfg = config.get("mask_params", {})
-        half_width = float(mask_cfg.get("max_support_width", 12)) / 2.0
-        min_pixels = int(mask_cfg.get("min_mask_pixels", 24))
+        half_width = float(mask_cfg.get("max_support_width", 16)) / 2.0
+        min_pixels = int(mask_cfg.get("min_mask_pixels", 64))
         streak_mask_bool = _gate_mask_by_profile(streak_mask_bool, max_half_width=half_width, min_pixels=min_pixels)
 
     if existing_mask is not None:
@@ -1902,8 +1969,5 @@ def detect_streaks(data_sub, bkg_rms_map, existing_mask, config):
         print(f"  Final streak mask includes {num_new_pixels} new pixels (Mode: {mode}, {streak_elapsed:.1f}s).")
     else:
         print(f"  No new streak pixels added by mode '{mode}' ({streak_elapsed:.1f}s).")
-
-    if config.get("debug", False):
-        config["_last_run"] = debug_info
 
     return streak_mask_bool

@@ -21,7 +21,7 @@ def parse_args(argv=None) -> argparse.Namespace:
             "Examples:\n"
             "  weightmask-reconstruct-sky sky_mesh.fits -o sky_full.fits\n"
             "  weightmask-reconstruct-sky sky_mesh.fits -o sky_full.fits --hdu 1\n"
-            "  weightmask reconstruct-sky sky_mesh.fits -o sky_full.fits\n"
+            "  weightmask-reconstruct-sky sky_mesh.fits -o sky_full.fits\n"
             "\n"
             "See docs/usage.md and docs/algorithms.md. This is a separate program, "
             "not a weightmask flag."
@@ -122,7 +122,7 @@ def reconstruct_sky_fits(input_path: str, output_path: str, hdu: int | None = No
             print("  weightmask-reconstruct-sky <mesh.fits> -o <full.fits>")
             return 1
 
-        os.makedirs(os.path.dirname(os.path.abspath(output_path)) or ".", exist_ok=True)
+        os.makedirs(os.path.dirname(os.path.abspath(output_path)), exist_ok=True)
         if len(jobs) == 1:
             fitsio.write(output_path, jobs[0][0], header=jobs[0][1], clobber=True)
         else:

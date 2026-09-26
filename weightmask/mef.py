@@ -50,7 +50,7 @@ def process_hdu(
     try:
         sci_data_full = np.ascontiguousarray(hdu_sci.read().astype(np.float32))
         sci_hdr = hdu_sci.read_header()
-    except OSError as e:
+    except (OSError, fitsio.FITSFormatError) as e:
         print(f"Skipping HDU: Cannot read science data: {e}")
         return None, None, None, None, None, None
 
@@ -58,7 +58,7 @@ def process_hdu(
     if hdu_flat is not None:
         try:
             flat_data_full = np.ascontiguousarray(hdu_flat.read().astype(np.float32))
-        except OSError as e:
+        except (OSError, fitsio.FITSFormatError) as e:
             print(f"Skipping HDU: Cannot read flat data: {e}")
             return None, None, None, None, None, None
 
@@ -158,72 +158,13 @@ def replica_indices(geometries, tol_px=25.0, tol_deg=1.5):
     return replicas
 
 
-def apply_chip_replica_veto(records, tol_px=25.0, tol_deg=1.5):
-    """Clear STREAK on chips that repeat one CCD-local line.
-
-    ``records`` items may carry ``streak`` (bool), ``quality``, ``weight`` and
-    ``ivar``. Replica pixels lose the STREAK bit. Weight is restored from ivar
-    only where STREAK was the only zero-weight bit. Returns the cleared indices.
-    """
-    geoms = []
-    coords = []
-    for record in records:
-        streak = record.get("streak")
-        if streak is None:
-            geoms.append(None)
-            coords.append((np.array([], dtype=np.intp), np.array([], dtype=np.intp)))
-            continue
-        ys, xs = np.nonzero(streak)
-        geoms.append(line_geometry(ys, xs, streak.shape))
-        coords.append((ys, xs))
-    cleared = replica_indices(geoms, tol_px=tol_px, tol_deg=tol_deg)
-    streak_bit = np.uint32(QualityBit.STREAK)
-    other_bits = np.uint32(int(DEFAULT_ZERO_WEIGHT_BITS & ~QualityBit.STREAK))
-    for index in cleared:
-        record = records[index]
-        ys, xs = coords[index]
-        streak = record.get("streak")
-        if streak is not None and ys.size:
-            streak[ys, xs] = False
-        quality = record.get("quality")
-        if quality is None or ys.size == 0:
-            continue
-        only_streak = (quality[ys, xs] & streak_bit) != 0
-        only_streak &= (quality[ys, xs] & other_bits) == 0
-        quality[ys, xs] &= ~np.array(streak_bit, dtype=quality.dtype)
-        weight = record.get("weight")
-        ivar = record.get("ivar")
-        if weight is not None and ivar is not None and np.any(only_streak):
-            weight[ys[only_streak], xs[only_streak]] = ivar[ys[only_streak], xs[only_streak]]
-    return cleared
-
-
-# --- Main execution function called by entry point ---
-
-
 def extract_individual_masks(header_info: dict, mask_data):
-    shape = mask_data.shape if mask_data is not None else (0, 0)
-    if header_info and "individual_masks" in header_info:
-        individual_masks = header_info["individual_masks"]
-        bad_mask = individual_masks.get("bad", np.zeros(shape, dtype=bool)) if mask_data is not None else np.array([])
-        sat_mask = individual_masks.get("sat", np.zeros(shape, dtype=bool)) if mask_data is not None else np.array([])
-        cr_mask = individual_masks.get("cr", np.zeros(shape, dtype=bool)) if mask_data is not None else np.array([])
-        obj_mask = individual_masks.get("obj", np.zeros(shape, dtype=bool)) if mask_data is not None else np.array([])
-        streak_mask = (
-            individual_masks.get("streak", np.zeros(shape, dtype=bool)) if mask_data is not None else np.array([])
-        )
-        nodata_mask = (
-            individual_masks.get("nodata", np.zeros(shape, dtype=bool)) if mask_data is not None else np.array([])
-        )
-    else:
-        bad_mask = np.zeros(shape, dtype=bool) if mask_data is not None else np.array([])
-        sat_mask = np.zeros(shape, dtype=bool) if mask_data is not None else np.array([])
-        cr_mask = np.zeros(shape, dtype=bool) if mask_data is not None else np.array([])
-        obj_mask = np.zeros(shape, dtype=bool) if mask_data is not None else np.array([])
-        streak_mask = np.zeros(shape, dtype=bool) if mask_data is not None else np.array([])
-        nodata_mask = np.zeros(shape, dtype=bool) if mask_data is not None else np.array([])
-
-    return bad_mask, sat_mask, cr_mask, obj_mask, streak_mask, nodata_mask
+    keys = ("bad", "sat", "cr", "obj", "streak", "nodata")
+    source = header_info.get("individual_masks", {}) if header_info else {}
+    if mask_data is None:
+        return tuple(np.array([]) for _ in keys)
+    shape = mask_data.shape
+    return tuple(source.get(k, np.zeros(shape, dtype=bool)) for k in keys)
 
 
 def _store_individual_masks(
@@ -673,7 +614,12 @@ def _clear_chip_replicas(catalogs, writers, config):
         return
     output_format = str((config or {}).get("output_params", {}).get("output_map_format", "weight")).lower()
     weight_format = output_format == "weight"
-    compress = bool((config or {}).get("output_params", {}).get("compress", False))
+    # Resolve compression once for every product HDU: explicit config OR the
+    # fpack convention that a .fz file carries RICE-compressed HDUs. All products
+    # share the same output dir/base, so they are .fz together or not at all.
+    compress = bool((config or {}).get("output_params", {}).get("compress", False)) or str(
+        mask_writer.out_path
+    ).endswith(".fz")
     streak_bit = np.uint32(QualityBit.STREAK)
     other_bits = np.uint32(int(DEFAULT_ZERO_WEIGHT_BITS & ~QualityBit.STREAK))
     map_writer = writers.get("map") if weight_format else None
@@ -708,7 +654,7 @@ def _clear_chip_replicas(catalogs, writers, config):
             pixels = data[ys, xs]
             only = ((pixels & streak_bit) != 0) & ((pixels & other_bits) == 0)
             data[ys, xs] = pixels & ~np.array(streak_bit, dtype=data.dtype)
-            _rewrite_hdu(fmask, pos, data, compress or str(mask_writer.out_path).endswith(".fz"))
+            _rewrite_hdu(fmask, pos, data, compress)
             if fmap is not None and fivar is not None and np.any(only):
                 wpos = map_writer.positions.get(cat["hdu"])
                 ipos = ivar_writer.positions.get(cat["hdu"])
@@ -844,7 +790,7 @@ def process_all_hdus(
             try:
                 dark_data = np.ascontiguousarray(dark_hdu.read().astype(np.float32))
                 dark_hot = detect_bad_pixels(dark_data, dark_cfg_global, using_unit_flat=False)
-                sci_shape = hdu_sci.read().shape
+                sci_shape = tuple(hdu_sci.get_dims())
                 if dark_hot.shape != sci_shape:
                     print(f"    Skipping dark mask for HDU {i}: shape mismatch.")
                 else:
@@ -864,9 +810,6 @@ def process_all_hdus(
 
     def _compute_one(i):
         pre = flat_bad_masks.get(i) if flat_bad_masks else None
-
-        def close():
-            return None
 
         try:
             hdu_sci, hdu_flat_obj, hdu_badpix_obj, hdu_header_raw, hdu_name, close, err = _open_hdu_handles(

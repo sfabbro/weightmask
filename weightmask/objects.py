@@ -191,6 +191,9 @@ def detect_objects(data_sub, bkg_rms_map, existing_mask, config):
                 ok = dropped[(dropped >= 0) & (dropped <= max_label)]
                 lookup[ok] = True
                 elongated_mask |= lookup[segmap]
+        # Elongation handoff: the caller (process_image) reads this back from the
+        # same config dict to build the sky-only mask. This mutation is the
+        # intentional side channel, not an accident -- do not "clean" it.
         clean_config["_elongated_for_sky"] = elongated_mask
 
         if len(keep_objects) > 0:

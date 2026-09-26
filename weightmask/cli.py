@@ -7,6 +7,7 @@ import argparse
 import os
 import sys
 import time
+from typing import Optional
 
 import fitsio
 import numpy as np
@@ -259,6 +260,8 @@ def build_persistence_priors(science_path, hdus, other_paths, min_other=2):
                     data = np.ascontiguousarray(handle[ext].read(), dtype=np.float32)
                     if data.shape == shape:
                         frames.append(data)
+                    # Only the first extension matching this CCD name is used, so a
+                    # CCD appearing in multiple HDUs is not double-counted.
                     break
         if len(frames) < int(min_other):
             continue
@@ -269,7 +272,7 @@ def build_persistence_priors(science_path, hdus, other_paths, min_other=2):
     return priors
 
 
-def _find_default_config() -> str:
+def _find_default_config() -> Optional[str]:
     default_configs = ["weightmask.yml", "config.yml", ".weightmask.yml"]
     for cfg in default_configs:
         if os.path.exists(cfg):
@@ -343,15 +346,15 @@ def determine_output_paths(args: argparse.Namespace, input_path: str, config: di
     output_dir = os.path.dirname(out_map_path)
     base_out = os.path.splitext(os.path.basename(out_map_path))[0]
     out_mask_path = (
-        args.output_mask or os.path.join(output_dir, f"{base_out}.mask.fits") if args.output_mask is not None else None
+        args.output_mask if args.output_mask is not None else os.path.join(output_dir, f"{base_out}.mask.fits")
     )
     out_invvar_path = (
-        args.output_invvar or os.path.join(output_dir, f"{base_out}.ivar.fits")
+        args.output_invvar
         if args.output_invvar is not None
-        else None
+        else os.path.join(output_dir, f"{base_out}.ivar.fits")
     )
     out_sky_path = (
-        args.output_sky or os.path.join(output_dir, f"{base_out}.sky.fits") if args.output_sky is not None else None
+        args.output_sky if args.output_sky is not None else os.path.join(output_dir, f"{base_out}.sky.fits")
     )
     out_weight_raw_path = args.output_weight_raw
 
@@ -376,7 +379,7 @@ def determine_output_paths(args: argparse.Namespace, input_path: str, config: di
     }
 
 
-def open_fits_files(input_path: str, flat_path: str):
+def open_fits_files(input_path: str, flat_path: Optional[str]):
     try:
         hdul_input = fitsio.FITS(input_path, "r")
         hdul_flat = fitsio.FITS(flat_path, "r") if flat_path else None
@@ -412,7 +415,8 @@ def get_hdus_to_process(hdul_input, input_hdu: int) -> list:
                 info = hdu.get_info()
                 if info.get("hdutype") == 0 and info.get("ndims") == 2:
                     hdus.append(idx)
-            except Exception:
+            except Exception as e:
+                print(f"  WARNING: skipping HDU {idx}: get_info() failed: {e}")
                 continue
         if not hdus:
             print("ERROR: No suitable Image HDUs found.")

@@ -118,6 +118,8 @@ def _calculate_empirical_noise_params(sci_data, obj_mask, patch_size, robust_sig
         # Derive gain and read noise from fit parameters
         empirical_gain = 1.0 / slope
         # Read noise in ADU is sqrt of intercept (variance at zero signal)
+        if intercept < 0:
+            print(f"    WARNING: variance fit intercept {intercept:.4g} is negative; clamping read noise to 0.")
         read_noise_adu = np.sqrt(max(0, intercept))
         # Convert read noise to electrons
         empirical_read_noise_e = read_noise_adu * empirical_gain
@@ -305,6 +307,10 @@ def _unbias_variance(inv_variance, sci_data, sky_map, gain, epsilon):
 
         # If var_bg is positive, unbiasing succeeded.
         # If var_bg <= epsilon, var_total was already background-only; retain var_total.
+        n_negative = int(np.count_nonzero(valid & (var_bg <= epsilon)))
+        if n_negative:
+            frac = n_negative / max(int(np.count_nonzero(valid)), 1)
+            print(f"    WARNING: variance unbiasing negative on {n_negative} pixels ({frac:.1%}); retained total variance.")
         effective_var = np.where(var_bg > epsilon, var_bg, var_total)
         new_inv_variance = np.where(
             valid & np.isfinite(effective_var) & (effective_var > 0),
@@ -312,6 +318,9 @@ def _unbias_variance(inv_variance, sci_data, sky_map, gain, epsilon):
             0.0,
         )
 
+    n_nonfinite = int(np.count_nonzero(~np.isfinite(new_inv_variance)))
+    if n_nonfinite:
+        print(f"    WARNING: {n_nonfinite} non-finite inverse-variance pixels set to 0.")
     new_inv_variance[~np.isfinite(new_inv_variance)] = 0.0
     return new_inv_variance.astype(np.float32)
 

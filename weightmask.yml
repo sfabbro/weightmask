@@ -77,13 +77,20 @@ cosmic_ray:
   min_component_contrast_sigma: 4.0  # keep a CR island only if peak SNR exceeds this
   faint_cr:
     enable: true                 # second, fainter pass for elongated multi-pixel hits
-    sigclip: 5.0                 # looser L.A.Cosmic threshold
+    enhancement: "lacosmic"      # lacosmic (default) or opt-in residual prototype
+    sigclip: 5.0                 # stricter L.A.Cosmic brightness threshold than the primary pass
     objlim_boost: 1.5            # multiply objlim on this pass
     niter: 1                     # one extra astroscrappy pass
     min_component_area: 3        # drop single/double-pixel noise
     max_component_area: 12       # still reject large islands
     min_elongation: 2.0          # keep only elongated "worms"
     min_contrast_sigma: 4.0      # vs local sky RMS
+    residual:
+      threshold_sig: 4.0         # residual threshold for the opt-in sparse path
+      min_component_area: 4
+      max_component_area: 12
+      min_elongation: 4.0
+      min_contrast_sigma: 4.0
 
 sep_objects:
   extract_thresh: 3.0            # SEP detection threshold in sky-RMS units
@@ -195,6 +202,8 @@ streak_masking:
     min_row_hit_fraction: 0.20   # fraction of rows that must contain mask
     min_col_hit_fraction: 0.10   # fraction of columns that must contain mask
     max_support_width: 12        # pixels; reject if the refined trail is wider
+    max_row_gap: 0               # opt-in gap bridge for full-span Hough candidates (samples)
+    min_row_run: 0               # when bridging, ignore runs shorter than this many samples
   enable_sparse_ransac: true     # dashed-trail recovery on residual bright pixels
   sparse_on_primary_weak_only: true  # run RANSAC only when primary confidence is low
   sparse_ransac_params:

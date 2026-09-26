@@ -37,14 +37,11 @@ def generate_weight_and_confidence(inv_variance_map, final_mask_int, config):
     if mask_detected:
         print("    NOTE: Detected objects will be masked (zero weight).")
 
-    # The legacy API used an out-of-range percentile to request max-based
-    # normalization.  Keep that behavior while the contract API stays strict.
-    contract_percentile = normalize_percentile if 0 < normalize_percentile <= 100 else 100.0
     product = build_weight_product(
         inv_variance_map,
         final_mask_int,
         exclude_detected=mask_detected,
-        confidence_percentile=contract_percentile,
+        confidence_percentile=normalize_percentile,
         producer=ProducerMetadata(version=__version__),
     )
     weight_map = product.weight

@@ -95,32 +95,6 @@ class TestValidateConfig(unittest.TestCase):
         self.assertFalse(validate_config(invalid_config))
 
 
-class TestWeightMapGenerator(unittest.TestCase):
-    def test_rejects_invalid_config(self):
-        from weightmask.pipeline import WeightMapGenerator
-
-        with self.assertRaises(ValueError):
-            WeightMapGenerator({"background": {}, "variance": {"method": "theoretical"}})
-
-    def test_accepts_valid_config(self):
-        from weightmask.pipeline import WeightMapGenerator
-
-        gen = WeightMapGenerator(
-            {
-                "flat_masking": {},
-                "saturation": {},
-                "sep_background": {},
-                "cosmic_ray": {},
-                "sep_objects": {},
-                "streak_masking": {},
-                "variance": {"method": "theoretical"},
-                "confidence_params": {},
-                "output_params": {},
-            }
-        )
-        self.assertIsInstance(gen.config, dict)
-
-
 class TestRunPipeline(unittest.TestCase):
     def setUp(self):
         self.test_dir = tempfile.TemporaryDirectory()

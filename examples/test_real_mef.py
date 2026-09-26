@@ -5,7 +5,7 @@ sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))  # 
 import yaml
 from astropy.io import fits
 
-from weightmask.pipeline import WeightMapGenerator  # noqa: E402
+from weightmask.process import process_image  # noqa: E402
 
 
 def evaluate_real_mef():
@@ -21,9 +21,6 @@ def evaluate_real_mef():
     with open(config_path, "r") as f:
         config = yaml.safe_load(f)
 
-    # Instantiate the pipeline
-    wg = WeightMapGenerator(config)
-
     with fits.open(fits_path) as hdul:
         # CFHT MEFs usually have 36 or 40 science extensions. We'll just test on extension 1 and 2.
         for ext_idx in [1, 2]:
@@ -34,18 +31,14 @@ def evaluate_real_mef():
             print(f"Data shape: {data.shape}")
             print(f"Gain: {header.get('GAIN', 'N/A')}, Readnoise: {header.get('RDNOISE', 'N/A')}")
 
-            # The pipeline handles background subtraction internally
-            result = wg.process(data, header=header)
+            mask_data, _inv_var, weight_map, _conf, _sky, _info = process_image(data, header, None, config)
 
-            wmap = result["weight_map"]
-            flag_map = result["flag_map"]
+            if weight_map is None:
+                print("Processing failed for this extension.")
+                continue
 
-            bkg_rms = result.get("bkg_rms_map")
-            if bkg_rms is not None:
-                print(f"Global Background RMS approx: {bkg_rms.mean():.2f}")
-
-            print(f"Done. Calculated weight map min/max: {wmap.min():.2e} / {wmap.max():.2e}")
-            print(f"Total masked pixels: {(flag_map > 0).sum()} / {flag_map.size}")
+            print(f"Done. Calculated weight map min/max: {weight_map.min():.2e} / {weight_map.max():.2e}")
+            print(f"Total masked pixels: {(mask_data > 0).sum()} / {mask_data.size}")
 
 
 if __name__ == "__main__":
