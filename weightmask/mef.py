@@ -869,7 +869,7 @@ def process_all_hdus(
             if catalog is not None:
                 streak_catalogs.append(catalog)
             process_success_count += 1
-            hdu_name = hdu_name_raw if isinstance(hdu_name_raw, str) and hdu_name_raw else f"HDU{i}"
+            hdu_name = hdu_name_raw
             hdu_header = hdu_header_raw
             if hdu_header is None:
                 hdu_header = fitsio.FITSHDR()

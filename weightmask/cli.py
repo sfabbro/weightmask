@@ -225,8 +225,10 @@ def _image_shape(header):
 def build_persistence_priors(science_path, hdus, other_paths, min_other=2):
     """Per-HDU column/row prior from other exposures of the same CCD.
 
-    ponytail: each other file is re-read once per CCD name. A survey-scale run
-    should stream one pass into scratch instead.
+    Each other file is streamed once and its extensions are dispatched to the
+    matching CCD name, so the cost is one pass per file rather than one per
+    (CCD name, file) pair. Each (name, file) pair contributes at most one
+    frame: the first name-matching extension with a compatible shape.
     """
     names = {}
     shapes = {}
@@ -244,25 +246,31 @@ def build_persistence_priors(science_path, hdus, other_paths, min_other=2):
     for index, name in names.items():
         by_name.setdefault(name, []).append(index)
 
+    name_shape = {name: shapes[indexes[0]] for name, indexes in by_name.items()}
+
+    # Stream each other file once, dispatching extensions to the matching CCD
+    # name. Each (name, file) pair contributes at most one frame: the first
+    # name-matching extension with a compatible shape.
+    frames_by_name = {name: [] for name in by_name}
+    for path in other_paths:
+        with fitsio.FITS(path, "r") as handle:
+            seen = set()
+            for ext in range(len(handle)):
+                try:
+                    header = handle[ext].read_header()
+                except Exception:
+                    continue
+                name = _ccd_name(header)
+                if name not in name_shape or name in seen:
+                    continue
+                seen.add(name)
+                data = np.ascontiguousarray(handle[ext].read(), dtype=np.float32)
+                if data.shape == name_shape[name]:
+                    frames_by_name[name].append(data)
+
     priors = {}
     for name, indexes in by_name.items():
-        shape = shapes[indexes[0]]
-        frames = []
-        for path in other_paths:
-            with fitsio.FITS(path, "r") as handle:
-                for ext in range(len(handle)):
-                    try:
-                        header = handle[ext].read_header()
-                    except Exception:
-                        continue
-                    if _ccd_name(header) != name:
-                        continue
-                    data = np.ascontiguousarray(handle[ext].read(), dtype=np.float32)
-                    if data.shape == shape:
-                        frames.append(data)
-                    # Only the first extension matching this CCD name is used, so a
-                    # CCD appearing in multiple HDUs is not double-counted.
-                    break
+        frames = frames_by_name[name]
         if len(frames) < int(min_other):
             continue
         mask = persistent_axis_mask(frames, min_other=min_other)
