@@ -642,6 +642,27 @@ def _aggregate_report(per_exp: list[dict], total_wall: float, *, extra_header: d
             "mean_per_hdu_s": float(v / n_hdus) if n_hdus else 0.0,
             "share": float(share),
         }
+
+    # ``total_wall`` times only the work done in *this* process, but resumed
+    # exposures contribute their pixels and per-HDU stage times from an earlier
+    # run. Dividing one by the other yields a throughput that is off by orders
+    # of magnitude (a fully-resumed run reported 6.4e7 Mpix/s against a true
+    # 0.073), so refuse to report it rather than print a physical impossibility.
+    n_resumed = sum(1 for e in per_exp if e.get("resumed"))
+    warnings: list[str] = []
+    if n_resumed:
+        warnings.append(
+            f"{n_resumed}/{len(per_exp)} exposures were resumed from checkpoint: "
+            f"total_wall_s covers only this process, so throughput is not reported"
+        )
+    if not n_resumed and total_wall > 0 and hdu_wall > 1.5 * total_wall:
+        warnings.append(
+            f"hdu_wall_s={hdu_wall:.1f} exceeds 1.5x total_wall_s={total_wall:.1f}; "
+            f"the sequential pass and the per-HDU stage totals disagree"
+        )
+    throughput_comparable = not n_resumed
+    mpix_per_s = float(mpix_total / total_wall) if (throughput_comparable and total_wall > 0) else None
+
     header = {
         "arch": platform.machine(),
         "platform": platform.platform(),
@@ -657,7 +678,9 @@ def _aggregate_report(per_exp: list[dict], total_wall: float, *, extra_header: d
         "total_wall_s": float(total_wall),
         "hdu_wall_s": float(hdu_wall),
         "mpix_total": float(mpix_total),
-        "mpix_per_s": float(mpix_total / total_wall) if total_wall > 0 else 0.0,
+        "mpix_per_s": mpix_per_s,
+        "n_resumed_exposures": int(n_resumed),
+        "warnings": warnings,
         "stages": stages,
         "per_exposure": per_exp,
         "cpu_basis": "delta-v2",
@@ -666,14 +689,20 @@ def _aggregate_report(per_exp: list[dict], total_wall: float, *, extra_header: d
 
 def _write_markdown(report: dict, sweep: dict, cprofile_note: str, *, out_md=None) -> None:
     hdr = report["header"]
+    mpix_per_s = report.get("mpix_per_s")
+    throughput = f"{mpix_per_s:.3f}" if mpix_per_s is not None else "n/a"
     lines = [
         "# MegaCam per-stage profile",
         "",
         f"arch={hdr.get('arch')} cpu={hdr.get('cpu_count')} platform={hdr.get('platform')} config={hdr.get('config')}",
         f"exposures={hdr.get('n_exposures')} hdus={hdr.get('n_hdus')} "
         f"total_wall={report['total_wall_s']:.1f}s hdu_wall={report['hdu_wall_s']:.1f}s "
-        f"mpix={report['mpix_total']:.1f} mpix/s={report['mpix_per_s']:.3f}",
+        f"mpix={report['mpix_total']:.1f} mpix/s={throughput}",
         "",
+    ]
+    for warning in report.get("warnings") or []:
+        lines += [f"> **WARNING:** {warning}", ""]
+    lines += [
         "## Per-stage totals",
         "",
         "| stage | total_s | mean_per_hdu_s | share |",
@@ -944,7 +973,11 @@ def main(argv=None) -> int:
     for rec in records:
         if rec["safe_id"] in done:
             print(f"--- exposure {rec['safe_id']} (checkpointed, skipping) ---")
-            per_exp.append(done[rec["safe_id"]])
+            cached = dict(done[rec["safe_id"]])
+            # Tag it: a resumed record contributes pixels and stage times to the
+            # report, but none of this process's wall clock.
+            cached["resumed"] = True
+            per_exp.append(cached)
             continue
         print(f"--- exposure {rec['safe_id']} ---")
         per_exp.append(
