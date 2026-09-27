@@ -6,6 +6,8 @@ being present, current or writable, so these tests pin the key sensitivity and
 each fallback path.
 """
 
+import contextlib
+import io
 import os
 import tempfile
 import unittest
@@ -78,6 +80,23 @@ class TestFlatBadMaskCache(unittest.TestCase):
         self.assertEqual(spy.call_count, 1)
         np.testing.assert_array_equal(first, second)
         self.assertTrue(os.path.exists(self._cache_file()))
+
+    def test_unwritable_cache_dir_warns_instead_of_failing_silently(self):
+        """A read-only cache location must not hide a repeated ~20 s/HDU cost.
+
+        The usual cause is a read-only mount (VOSpace) where the cache cannot
+        live next to the flat. The result is still correct, so nothing failed --
+        but every later run recomputes, and used to say nothing at all.
+        """
+        flat = _flat()
+        cfg = {**self.cfg, "bad_mask_cache_dir": "/proc/definitely-not-writable"}
+        buf = io.StringIO()
+        with contextlib.redirect_stdout(buf):
+            mask = bad.compute_flat_bad_mask_cached(flat, cfg, 1024, flat_path=self.flat_path, hdu_index=3)
+        log = buf.getvalue()
+        self.assertEqual(mask.shape, flat.shape)
+        self.assertIn("could not cache the flat bad-pixel mask", log)
+        self.assertIn("bad_mask_cache_dir", log)
 
     def test_disabled_cache_recomputes(self):
         flat = _flat()

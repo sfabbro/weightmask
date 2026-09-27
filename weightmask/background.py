@@ -245,7 +245,10 @@ def reconstruct_sky_mesh(mesh, shape, box):
     if nx > 1:
         out = CubicSpline(node_x, cols, bc_type="natural", axis=1)(xs)
     else:
-        out = cols
+        # One node column: there is nothing to interpolate along x, but the
+        # result still has to span the full width. Returning `cols` gave
+        # (h, 1) and silently wrote a wrong-shaped sky product.
+        out = np.repeat(cols, w, axis=1)
     return np.ascontiguousarray(out, dtype=np.float32)
 
 

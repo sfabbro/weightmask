@@ -108,6 +108,22 @@ class TestSkyMeshRoundtrip(unittest.TestCase):
         with self.assertRaises(ValueError):
             parse_sky_mesh_header({"SKYH": 10, "SKYW": 10})
 
+    def test_single_node_column_mesh_reconstructs_at_full_width(self):
+        """A mesh narrower than one box has one node column, not one output column.
+
+        Reachable whenever the HDU is narrower than the mesh box (a 30 px wide
+        HDU with box 32 gives a (125, 1) mesh). The reconstruction used to
+        return (h, 1), silently writing a wrong-shaped sky FITS product.
+        """
+        from weightmask.background import reconstruct_sky_mesh, sky_to_mesh
+
+        for shape, box in (((4000, 30), 32), ((4000, 200), 128), ((300, 200), 128)):
+            sky = np.full(shape, 1234.0, dtype=np.float32)
+            mesh, cards = sky_to_mesh(sky, box)
+            rec = reconstruct_sky_mesh(mesh, shape, box)
+            self.assertEqual(rec.shape, shape, f"shape={shape} box={box} mesh={mesh.shape}")
+            np.testing.assert_allclose(rec, 1234.0, atol=1e-3)
+
     def test_megaprime_scale_roundtrip_sub_adu(self):
         """Pin MegaPrime CCD geometry in CI (SEP back -> mesh -> reconstruct)."""
         import sep

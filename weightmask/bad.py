@@ -274,8 +274,16 @@ def compute_flat_bad_mask_cached(flat_data, flat_cfg, tile_size=1024, *, flat_pa
         with open(tmp_path, "wb") as handle:
             np.save(handle, bad_mask)
         os.replace(tmp_path, cache_file)  # atomic: concurrent readers see one or the other
-    except OSError:
-        pass
+    except OSError as exc:
+        # Results are still correct, but the ~20 s/HDU median filter will be
+        # recomputed on every run from here on. The usual cause is a read-only
+        # mount (VOSpace), where the cache cannot live next to the flat, so
+        # say so instead of failing silently.
+        print(
+            f"    WARNING: could not cache the flat bad-pixel mask ({exc}). "
+            f"Set flat_masking.bad_mask_cache_dir to a writable path, or expect this "
+            f"computation to repeat on every run."
+        )
     return bad_mask
 
 
