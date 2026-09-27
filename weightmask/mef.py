@@ -15,6 +15,7 @@ from . import __version__
 from .bad import _get_global_median, compute_flat_bad_mask_cached, detect_bad_pixels
 from .contract import (
     CONFIDENCE_SEMANTICS,
+    CONFIDENCE_SEMANTICS_SCALED,
     DEFAULT_ZERO_WEIGHT_BITS,
     INVERSE_VARIANCE_SEMANTICS,
     MASK_POLARITY,
@@ -318,7 +319,12 @@ def _store_output_maps(
     if paths["out_map_path"]:
         output_format = config.get("output_params", {}).get("output_map_format", "weight").lower()
         map_data = confidence_map if output_format == "confidence" else weight_map
-        semantics = CONFIDENCE_SEMANTICS if output_format == "confidence" else "masked_inverse_variance"
+        if output_format != "confidence":
+            semantics = "masked_inverse_variance"
+        elif config.get("confidence_params", {}).get("scale_to_100", False):
+            semantics = CONFIDENCE_SEMANTICS_SCALED
+        else:
+            semantics = CONFIDENCE_SEMANTICS
         _assign_map_if_valid(
             output_data,
             i,
@@ -397,6 +403,10 @@ def _rescale_confidence_to_global(paths, writers, conf_samples, conf_p99, config
     # compressing. fitsio ignores/ warns about a placeholder value.
     compress = bool((config or {}).get("output_params", {}).get("compress", False)) or str(map_path).endswith(".fz")
     write_kwargs = {"compress": "RICE_1"} if compress else {}
+    # Clip to the range the map is actually in. With `scale_to_100` the file
+    # holds 0-100, so clipping at 1.0 would flatten every value above 1% of the
+    # normalisation to exactly 1.0 and silently destroy the map.
+    upper = 100.0 if (config or {}).get("confidence_params", {}).get("scale_to_100", False) else 1.0
     try:
         with fitsio.FITS(map_path, "rw") as f:
             for hdu_index, factor in factors.items():
@@ -404,7 +414,7 @@ def _rescale_confidence_to_global(paths, writers, conf_samples, conf_p99, config
                 if pos is None or pos >= len(f):
                     continue
                 data = f[pos].read()
-                f[pos].write(np.clip(data * factor, 0.0, 1.0).astype(np.float32, copy=False), **write_kwargs)
+                f[pos].write(np.clip(data * factor, 0.0, upper).astype(np.float32, copy=False), **write_kwargs)
     except OSError as e:
         print(f"  WARNING: confidence global rescale failed: {e}")
         return

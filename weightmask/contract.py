@@ -19,6 +19,9 @@ MASK_POLARITY = "set_means_flagged"
 # Frozen 0.1 plane: g²F²/(Sg+RN²). Exact Poisson+RN at F=1; Elixir-style F² coadd weight otherwise.
 INVERSE_VARIANCE_SEMANTICS = "flat_fielded_poisson_weight"
 CONFIDENCE_SEMANTICS = "normalized_weight_0_to_1"
+# `confidence_params.scale_to_100` multiplies the map by 100 before it is
+# written, so the card must describe the range the file actually holds.
+CONFIDENCE_SEMANTICS_SCALED = "normalized_weight_0_to_100"
 MAX_CONFIDENCE_SAMPLES = 100_000
 _FITS_HEADER_VALUE_CHARS = 60
 

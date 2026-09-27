@@ -4,6 +4,37 @@
 
 ### Correctness and performance audit (bugs found and fixed)
 
+Continuation of the audit below, covering the MEF/CLI input layer:
+
+- **Fixed: a silent unit flat.** A flat MEF shorter than the science MEF left
+  `hdu_flat_obj = None`, so `process_image` substituted `F = 1` and printed one
+  `INFO` line. Every affected CCD got unflat-fielded weights and the run still
+  reported success. A short flat or keep-map now fails the HDU with a reason
+  and writes no products. This also exposed a flaw in an existing test that had
+  been passing *because* of the bug (science written with an empty primary
+  against a single-image flat, off by one).
+- **Fixed: a silent dark.** A dark frame shorter than the science MEF was
+  ignored with no log output at all, losing dark-derived hot-pixel rejection.
+- **Fixed: `scale_to_100` produced a mislabelled, then destroyed, product.**
+  With `confidence_params.scale_to_100: true` the file holds 0-100 but the
+  header claimed `normalized_weight_0_to_1`; and because
+  `normalize_scope: per_exposure` is the default, the global rescale then ran
+  `np.clip(data * factor, 0, 1)` over it, flattening everything above 1 % of
+  the normalisation to exactly 1.0. The clip now follows the map's actual range
+  and the semantics card is `normalized_weight_0_to_100` when scaled.
+- **Fixed: `detect_objects` raised `UnboundLocalError` on every frame with zero
+  detections**, reporting a normal outcome as `ERROR: Object detection failed`.
+  The returned mask was always correct, which is why the existing
+  empty-input test never caught it — it asserts the mask, not the log.
+- **Fixed: `"--5"` in a config value aborted config loading** with a traceback
+  instead of passing through as a string.
+
+The two boldest claims from the review that preceded these — that
+`ellipse_k: 3.0` empties the `DETECTED` mask, and that `amplifier_gain_map`
+cannot handle a `fitsio.FITSHDR` — were both measured and refuted.
+
+### Correctness and performance audit (round one)
+
 A two-round review of every module except `streaks.py` (which is 65 % of per-CCD wall time
 and is being left for its own round). Both rounds were about checking that an optimisation
 is actually behaviour-preserving, which turned out to matter more than the optimisations.

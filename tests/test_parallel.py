@@ -248,6 +248,50 @@ class TestParallelEquivalence(unittest.TestCase):
             self.assertIn("dark frame", log)
             self.assertIn("No dark hot-pixel mask", log)
 
+    def test_scale_to_100_survives_rescale_and_is_labelled_honestly(self):
+        """A 0-100 confidence map must not be clipped to 1.0 or labelled 0-1.
+
+        `normalize_scope: per_exposure` is the shipped default, so with
+        `scale_to_100: true` the global rescale used to run
+        `np.clip(data*factor, 0, 1)` over a 0-100 file, flattening everything
+        above 1% of the normalisation to 1.0, while the header still claimed
+        `normalized_weight_0_to_1`.
+        """
+        from weightmask.contract import CONFIDENCE_SEMANTICS_SCALED
+
+        shape = (48, 48)
+        with tempfile.TemporaryDirectory() as tmp:
+            sp = os.path.join(tmp, "sci.fits")
+            fp = os.path.join(tmp, "flat.fits")
+            rng = np.random.default_rng(5)
+            fitsio.write(sp, None, clobber=True)
+            with fitsio.FITS(sp, "rw") as handle:
+                for level in (1000.0, 4000.0):  # different p99 per HDU
+                    handle.write((level + 30 * rng.standard_normal(shape)).astype(np.float32))
+            _write_flat(fp, 2, shape=shape)
+            paths = {
+                "out_map_path": os.path.join(tmp, "o.conf.fits"),
+                "out_mask_path": None,
+                "out_invvar_path": None,
+                "out_sky_path": None,
+                "out_weight_raw_path": None,
+                "individual_mask_paths": {},
+            }
+            args = Namespace(tile_size=1024, individual_masks=False, max_workers=1)
+            cfg = _load_cfg()
+            cfg["streak_masking"]["enable"] = False
+            cfg["output_params"]["output_map_format"] = "confidence"
+            cfg["confidence_params"]["scale_to_100"] = True
+            with fitsio.FITS(sp) as hi, fitsio.FITS(fp) as hf:
+                n = process_all_hdus([1, 2], hi, hf, cfg, paths, args, flat_path=fp, input_path=sp)
+            self.assertEqual(n, 2)
+            with fitsio.FITS(paths["out_map_path"]) as f:
+                maps = [f[1].read(), f[2].read()]
+                semantics = f[1].read_header().get("WMSEM")
+            for m in maps:
+                self.assertGreater(float(np.max(m)), 1.5, "0-100 map was clipped flat")
+            self.assertEqual(semantics, CONFIDENCE_SEMANTICS_SCALED)
+
     def test_resolve_workers(self):
         import os as _os
 
