@@ -287,5 +287,7 @@ def detect_objects(data_sub, bkg_rms_map, existing_mask, config):
             obj_add_mask = object_mask & (~m_orig)
         return obj_add_mask
     except Exception as e:
-        print(f"  ERROR: SEP extraction failed: {e}")
+        # Not necessarily SEP: the ellipse/halo/dilation work in this body can
+        # raise too, so name the stage rather than the library.
+        print(f"  ERROR: Object detection failed: {e}")
         return np.zeros(data_sub.shape, dtype=bool)

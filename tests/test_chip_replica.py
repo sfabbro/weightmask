@@ -80,6 +80,63 @@ class TestChipReplicaOnDisk(unittest.TestCase):
             self.assertFalse(bool(np.any(masks[0] & bit)))
             self.assertFalse(bool(np.any(masks[1] & bit)))
 
+    def test_raw_weight_restore_does_not_depend_on_the_weight_map(self):
+        """The raw-weight branch must resolve its own ivar position.
+
+        With ``out_weight_raw_path`` set but no weight map, the raw branch used
+        to read an ``ipos`` that was only ever assigned inside the weight-map
+        branch: a NameError on the first HDU, or a restore from the previous
+        HDU's inverse variance on later ones.
+        """
+        shape = (48, 48)
+
+        def column_streak(data_sub, _rms, _existing, _cfg):
+            return _column(data_sub.shape, data_sub.shape[1] // 2)
+
+        with tempfile.TemporaryDirectory() as tmp:
+            science = os.path.join(tmp, "sci.fits")
+            flat = os.path.join(tmp, "flat.fits")
+            rng = np.random.default_rng(1)
+            images = [(1000 + 10 * rng.standard_normal(shape)).astype(np.float32) for _ in range(3)]
+            fitsio.write(science, images[0], clobber=True)
+            with fitsio.FITS(science, "rw") as handle:
+                for image in images[1:]:
+                    handle.write(image)
+            fitsio.write(flat, np.ones(shape, dtype=np.float32), clobber=True)
+            with fitsio.FITS(flat, "rw") as handle:
+                for _ in images:
+                    handle.write(np.ones(shape, dtype=np.float32))
+            paths = {
+                "out_map_path": None,  # no weight map: the raw branch stands alone
+                "out_mask_path": os.path.join(tmp, "o.mask.fits"),
+                "out_invvar_path": os.path.join(tmp, "o.ivar.fits"),
+                "out_sky_path": None,
+                "out_weight_raw_path": os.path.join(tmp, "o.raw.fits"),
+                "individual_mask_paths": {},
+            }
+            args = Namespace(tile_size=32, individual_masks=False, max_workers=1)
+            cfg = yaml.safe_load(open("weightmask.yml"))
+            cfg["streak_masking"]["enable"] = True
+            with patch("weightmask.process.detect_streaks", side_effect=column_streak):
+                with fitsio.FITS(science) as hdul, fitsio.FITS(flat) as hdul_flat:
+                    n = process_all_hdus(
+                        list(range(3)),
+                        hdul,
+                        hdul_flat,
+                        cfg,
+                        paths,
+                        args,
+                        flat_path=flat,
+                        input_path=science,
+                    )
+            self.assertEqual(n, 3)
+            with fitsio.FITS(paths["out_weight_raw_path"]) as handle:
+                raw = [handle[i].read() for i in range(len(handle))]
+            self.assertEqual(len(raw), 3)
+            # Each HDU's raw weight must be its own, not a copy of its neighbour's.
+            for i in range(1, 3):
+                self.assertFalse(np.array_equal(raw[i], raw[0]))
+
 
 if __name__ == "__main__":
     unittest.main()

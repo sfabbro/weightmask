@@ -669,25 +669,27 @@ def _clear_chip_replicas(catalogs, writers, config):
             _rewrite_hdu(fmask, pos, data, compress)
             # The mask is already rewritten above, so a failed weight restore
             # leaves STREAK cleared but the weight map still zeroed there.
-            # Only the regular weight map is tracked; with no weight map
-            # requested there is nothing to restore and nothing to warn about.
+            # Only the regular weight map is tracked: with no weight map
+            # requested there is nothing to restore and nothing to report.
             needs_restore = bool(np.any(only))
             needs_map_restore = needs_restore and fmap is not None
             weight_restored = not needs_map_restore
             if needs_map_restore:
-                if fivar is not None:
-                    wpos = map_writer.positions.get(cat["hdu"])
-                    ipos = ivar_writer.positions.get(cat["hdu"])
-                    if wpos is not None and ipos is not None and wpos < len(fmap) and ipos < len(fivar):
-                        weight = fmap[wpos].read()
-                        ivar = fivar[ipos].read()
-                        if weight.shape == data.shape and np.shape(ivar) == data.shape:
-                            weight[ys[only], xs[only]] = ivar[ys[only], xs[only]]
-                            _rewrite_hdu(fmap, wpos, weight.astype(np.float32, copy=False), compress)
-                        else:
-                            weight_restored = False
-                    else:
-                        weight_restored = False
+                wpos = map_writer.positions.get(cat["hdu"])
+                ipos = ivar_writer.positions.get(cat["hdu"])
+                if (
+                    fivar is not None
+                    and wpos is not None
+                    and ipos is not None
+                    and wpos < len(fmap)
+                    and ipos < len(fivar)
+                ):
+                    weight = fmap[wpos].read()
+                    ivar = fivar[ipos].read()
+                    weight_restored = weight.shape == data.shape and np.shape(ivar) == data.shape
+                    if weight_restored:
+                        weight[ys[only], xs[only]] = ivar[ys[only], xs[only]]
+                        _rewrite_hdu(fmap, wpos, weight.astype(np.float32, copy=False), compress)
             if needs_restore and fraw is not None and fivar is not None:
                 rpos = raw_writer.positions.get(cat["hdu"])
                 ipos = ivar_writer.positions.get(cat["hdu"])
@@ -705,7 +707,10 @@ def _clear_chip_replicas(catalogs, writers, config):
                         ind[ys, xs] = 0
                         _rewrite_hdu(find, spos, ind.astype(np.uint8, copy=False), compress)
             if not weight_restored:
-                print(f"  WARNING: chip-replica veto cleared STREAK on HDU {cat['hdu']} but weight restore failed.")
+                print(
+                    f"  WARNING: chip-replica veto cleared STREAK on HDU {cat['hdu']} "
+                    f"but the weight map could not be restored there."
+                )
             n_cleared += 1
         if n_cleared:
             print(f"  Chip-replica veto cleared STREAK on {n_cleared} HDUs.")
