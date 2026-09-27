@@ -560,16 +560,10 @@ def _open_hdu_handles(
                     # A flat MEF shorter than the science MEF must not degrade
                     # to "no flat": process_image would substitute a unit flat
                     # and emit unflat-fielded weights that look successful.
+                    # Build the reason before close(), which closes ff.
+                    reason = f"flat {fl_path} has {len(ff)} HDU(s), need index {i}"
                     close()
-                    return (
-                        None,
-                        None,
-                        None,
-                        None,
-                        f"HDU{i}",
-                        close,
-                        f"flat {fl_path} has {len(ff)} HDU(s), need index {i}",
-                    )
+                    return None, None, None, None, f"HDU{i}", close, reason
                 hdu_flat_obj = ff[i]
             else:
                 hdu_flat_obj = _hdu_at(hdul_flat, i)
@@ -577,8 +571,9 @@ def _open_hdu_handles(
                 fb = fitsio.FITS(bp_path, "r")
                 opened.append(fb)
                 if i >= len(fb):
+                    reason = f"keep-map {bp_path} has {len(fb)} HDU(s), need index {i}"
                     close()
-                    return None, None, None, None, f"HDU{i}", close, f"keep-map {bp_path} has {len(fb)} HDU(s), need index {i}"
+                    return None, None, None, None, f"HDU{i}", close, reason
                 hdu_badpix_obj = fb[i]
             else:
                 hdu_badpix_obj = _hdu_at(hdul_badpix, i)
@@ -825,13 +820,24 @@ def process_all_hdus(
                     if i < len(fd_local):
                         dark_hdu = fd_local[i]
                     else:
+                        print(
+                            f"    WARNING: dark frame {dk_path_u} has {len(fd_local)} HDU(s), "
+                            f"none for index {i}. No dark hot-pixel mask for this CCD."
+                        )
                         dark_hdu = None
                 except Exception as e:
                     print(f"    WARNING: dark frame HDU {i} unavailable: {e}. Skipping dark mask.")
                     dark_hdu = None
             elif hdul_dark is not None:
                 try:
-                    dark_hdu = hdul_dark[i] if i < len(hdul_dark) else None
+                    if i < len(hdul_dark):
+                        dark_hdu = hdul_dark[i]
+                    else:
+                        print(
+                            f"    WARNING: dark frame has {len(hdul_dark)} HDU(s), "
+                            f"none for index {i}. No dark hot-pixel mask for this CCD."
+                        )
+                        dark_hdu = None
                 except Exception as e:
                     print(f"    WARNING: dark frame HDU {i} unavailable: {e}. Skipping dark mask.")
                     dark_hdu = None

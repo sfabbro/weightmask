@@ -4,6 +4,8 @@ Threaded 36/40-HDU MEFs must match single-thread output byte-identically;
 dead-CCD MEFs must not assume 36; single-HDU files use the per-file path.
 """
 
+import contextlib
+import io
 import os
 import tempfile
 import unittest
@@ -173,6 +175,78 @@ class TestParallelEquivalence(unittest.TestCase):
                     [1, 2, 3], hi, hf, cfg, paths, args, flat_path=fp, input_path=sp
                 )
             self.assertEqual(n, 0)
+
+    def test_short_flat_mef_reports_why(self):
+        """The failure must name the length mismatch, not a downstream error."""
+        with tempfile.TemporaryDirectory() as tmp:
+            sp = os.path.join(tmp, "sci.fits")
+            fp = os.path.join(tmp, "flat_one.fits")
+            shape = (48, 48)
+            _write_mef(sp, 3, shape=shape)
+            fitsio.write(fp, np.full(shape, 0.5, dtype=np.float32), clobber=True)
+            paths = {
+                "out_map_path": os.path.join(tmp, "o.weight.fits"),
+                "out_mask_path": os.path.join(tmp, "o.mask.fits"),
+                "out_invvar_path": None,
+                "out_sky_path": None,
+                "out_weight_raw_path": None,
+                "individual_mask_paths": {},
+            }
+            args = Namespace(tile_size=1024, individual_masks=False, max_workers=1)
+            cfg = _load_cfg()
+            buf = io.StringIO()
+            with fitsio.FITS(sp) as hi, fitsio.FITS(fp) as hf:
+                with contextlib.redirect_stdout(buf):
+                    process_all_hdus([1, 2, 3], hi, hf, cfg, paths, args, flat_path=fp, input_path=sp)
+            log = buf.getvalue()
+            self.assertIn("flat", log)
+            self.assertIn("HDU(s), need index", log)
+            # The old bug: the reason was a downstream TypeError from calling
+            # len() on an already-closed fitsio handle.
+            self.assertNotIn("NoneType", log)
+
+    def test_short_dark_mef_warns_instead_of_silently_skipping(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            sp = os.path.join(tmp, "sci.fits")
+            fp = os.path.join(tmp, "flat.fits")
+            dp = os.path.join(tmp, "dark_one.fits")
+            shape = (48, 48)
+            _write_mef(sp, 3, shape=shape)
+            _write_flat(fp, 3, shape=shape)
+            fitsio.write(dp, None, clobber=True)
+            with fitsio.FITS(dp, "rw") as handle:
+                handle.write(np.full(shape, 100.0, dtype=np.float32))
+            paths = {
+                "out_map_path": os.path.join(tmp, "o.weight.fits"),
+                "out_mask_path": os.path.join(tmp, "o.mask.fits"),
+                "out_invvar_path": None,
+                "out_sky_path": None,
+                "out_weight_raw_path": None,
+                "individual_mask_paths": {},
+            }
+            args = Namespace(tile_size=1024, individual_masks=False, max_workers=1)
+            cfg = _load_cfg()
+            buf = io.StringIO()
+            # The *_path arguments are filename overrides for an already-open
+            # handle, not standalone inputs: the handle must be passed too, as
+            # the CLI does.
+            with fitsio.FITS(sp) as hi, fitsio.FITS(fp) as hf, fitsio.FITS(dp) as hd:
+                with contextlib.redirect_stdout(buf):
+                    process_all_hdus(
+                        [1, 2, 3],
+                        hi,
+                        hf,
+                        cfg,
+                        paths,
+                        args,
+                        flat_path=fp,
+                        input_path=sp,
+                        hdul_dark=hd,
+                        dark_path=dp,
+                    )
+            log = buf.getvalue()
+            self.assertIn("dark frame", log)
+            self.assertIn("No dark hot-pixel mask", log)
 
     def test_resolve_workers(self):
         import os as _os
