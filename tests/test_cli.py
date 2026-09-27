@@ -390,6 +390,36 @@ class TestValidateInputFiles(unittest.TestCase):
             args.input_file = f"{sp}[7]"
             self.assertTrue(validate_input_files(args))
 
+    def test_partial_run_exits_nonzero_and_says_so(self):
+        """A missing CCD must not be reported as a successful run.
+
+        run_pipeline returned 0 whenever at least one HDU succeeded, so a run
+        with a failed CCD wrote fewer data extensions than there are science
+        HDUs and still exited 0. From the first skipped HDU onward, extension
+        position no longer matches the science HDU.
+        """
+        with tempfile.TemporaryDirectory() as tmp:
+            sp = os.path.join(tmp, "s.fits")
+            big, odd = (32, 32), (24, 24)
+            fitsio.write(sp, None, clobber=True)
+            with fitsio.FITS(sp, "rw") as handle:
+                for i in range(3):
+                    handle.write(np.full(big, 1000.0, dtype=np.float32), header={"CCDID": f"CCD{i}"})
+            fp = os.path.join(tmp, "f.fits")
+            fitsio.write(fp, None, clobber=True)
+            with fitsio.FITS(fp, "rw") as handle:
+                handle.write(np.ones(big, dtype=np.float32))
+                handle.write(np.ones(odd, dtype=np.float32))  # shape mismatch -> HDU 2 fails
+                handle.write(np.ones(big, dtype=np.float32))
+            out = os.path.join(tmp, "o.fits")
+            buf = io.StringIO()
+            with contextlib.redirect_stdout(buf):
+                code = run_pipeline([sp, "-o", out, "--flat_image", fp])
+            log = buf.getvalue()
+            self.assertNotEqual(code, 0, "a partial run must not exit 0")
+            self.assertIn("only 2 of 3 HDUs", log)
+            self.assertIn("EXTNAME", log)
+
     def test_hdu_spec_on_an_auxiliary_input_is_rejected(self):
         # A flat/dark/keep-map is matched to each science HDU by index, so an
         # explicit [N] has no meaning and used to be parsed into a variable

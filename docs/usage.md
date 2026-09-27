@@ -93,6 +93,13 @@ weightmask science.fits --config weightmask.yml \
 - `--output_invvar`: sanitized inverse-variance plane.
 - `--output_sky`: sky map (`output_params.sky_format: full`) or compact mesh
   (`sky_format: mesh`).
+
+On a complete run, data extension *k* is the product for science HDU *k*, and
+`EXTNAME` records the CCD identifier (falling back to the HDU index). If any HDU
+fails, the run **exits non-zero** and says how many were written: the products
+then hold fewer data extensions than there are science HDUs, so extension
+position no longer lines up. Use `EXTNAME` to identify a product's source HDU
+rather than its position.
 - `--output_weight_raw`: unnormalized masked inverse variance if it should
   differ from the primary map.
 - `--individual_masks`: one FITS file per component (bad, sat, cr, obj, streak).

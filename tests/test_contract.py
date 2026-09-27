@@ -14,6 +14,7 @@ from weightmask.contract import (
     ArtifactMetadata,
     ProducerMetadata,
     QualityBit,
+    WeightMaskProduct,
     build_weight_product,
     quality_bit_names,
     quality_bits_from_names,
@@ -73,6 +74,38 @@ def test_build_weight_product_does_not_mutate_the_callers_quality_mask():
     # The product itself must still carry the INVALID_VARIANCE marks.
     assert (product.quality_mask[0, 1] & QualityBit.INVALID_VARIANCE) != 0
     assert (product.quality_mask[1, 1] & QualityBit.INVALID_VARIANCE) != 0
+
+
+def test_quality_mask_wider_than_uint32_is_refused_not_truncated():
+    """A flag at bit >= 32 must not be laundered into a full-weight pixel."""
+    wide = np.array([[0, 1 << 40]], dtype=np.int64)
+    with pytest.raises(ValueError, match="wider than uint32"):
+        build_weight_product(np.ones((1, 2)), wide)
+    # uint32 and narrower are still fine.
+    narrow = np.array([[0, 1]], dtype=np.uint8)
+    assert build_weight_product(np.ones((1, 2)), narrow).quality_mask[0, 1] == 1
+
+
+def test_non_finite_weight_and_confidence_are_rejected():
+    """`x < 0` is False for NaN, so the range test alone lets it through."""
+    shape = (2, 2)
+    for bad in (np.nan, np.inf):
+        with pytest.raises(ValueError, match="weight must be finite"):
+            WeightMaskProduct(
+                np.zeros(shape, np.uint32),
+                np.zeros(shape, np.float32),
+                np.full(shape, bad, np.float32),
+                np.zeros(shape, np.float32),
+                {},
+            )
+        with pytest.raises(ValueError, match="confidence must be finite"):
+            WeightMaskProduct(
+                np.zeros(shape, np.uint32),
+                np.zeros(shape, np.float32),
+                np.zeros(shape, np.float32),
+                np.full(shape, bad, np.float32),
+                {},
+            )
 
 
 def test_quality_bits_round_trip_through_integer_mask():

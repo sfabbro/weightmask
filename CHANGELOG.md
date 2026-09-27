@@ -24,6 +24,19 @@ Continuation of the audit below, covering the MEF/CLI input layer:
   normal case for a read-only VOSpace flat, where the cache cannot live next to
   the file) produced no output at all, while the ~20 s/HDU median filter was
   recomputed on every run. It now warns and names `bad_mask_cache_dir`.
+- **Fixed: a partial run exited 0.** `run_pipeline` only failed when *nothing* was
+  processed, so a run with a failed CCD wrote fewer data extensions than there
+  were science HDUs and still reported success — and from the first skipped HDU
+  onward, extension position no longer matched the science HDU. A short run now
+  exits non-zero and says how many were written; `EXTNAME` is documented as the
+  authoritative source index.
+- **Fixed: the contract could launder a mask or a non-finite weight.**
+  `canonical_quality_mask` cast an `int64` mask with `astype`, wrapping modulo
+  2^32, so any flag at bit >= 32 vanished and that pixel was given **full
+  weight** — the exact failure the quality mask exists to prevent. Wider-than-
+  uint32 inputs are now refused. `WeightMaskProduct` also accepted `inf` and
+  `NaN` weights, because `x < 0` is False for both; the validator now requires
+  finite weight and confidence.
 - **Documented:** the persistence prior is a prior on the *streak detector* only.
   Those pixels are withheld from streak detection so detector-fixed structure is
   not reported as a trail; they are not bad pixels, keep their normal weight and

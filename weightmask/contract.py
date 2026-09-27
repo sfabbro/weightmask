@@ -252,6 +252,12 @@ class WeightMaskProduct:
             raise TypeError("WeightMaskProduct weight must have a float dtype")
         if not np.issubdtype(self.confidence.dtype, np.floating):
             raise TypeError("WeightMaskProduct confidence must have a float dtype")
+        # `x < 0` is False for NaN, so a plain range test lets non-finite
+        # values through. inf also passes `weight < 0`.
+        if not np.all(np.isfinite(self.weight)):
+            raise ValueError("WeightMaskProduct weight must be finite")
+        if not np.all(np.isfinite(self.confidence)):
+            raise ValueError("WeightMaskProduct confidence must be finite")
         if np.any(self.weight < 0):
             raise ValueError("WeightMaskProduct weight must be non-negative")
         if np.any((self.confidence < 0) | (self.confidence > 1)):
@@ -270,6 +276,14 @@ def canonical_quality_mask(mask: np.ndarray, shape: tuple[int, ...]) -> np.ndarr
         raise ValueError(f"quality mask shape {array.shape} does not match data shape {shape}")
     if not np.issubdtype(array.dtype, np.integer):
         raise TypeError("quality mask must have an integer dtype")
+    if array.dtype.itemsize > 4:
+        # astype would wrap modulo 2**32, silently dropping any flag at bit 32
+        # or above -- so that pixel would lose its quality bits and be given
+        # full weight. Refuse rather than launder the caller's mask.
+        raise ValueError(
+            f"quality mask dtype {array.dtype} is wider than uint32; bits at 32 and above "
+            f"would be silently discarded by the uint32 contract representation"
+        )
     return array.astype(np.uint32, copy=True)
 
 

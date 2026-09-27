@@ -556,6 +556,20 @@ def run_pipeline(argv=None) -> int:
         print("\nNo HDUs processed successfully. No output files written.")
         return 1
 
+    if process_success_count != len(hdus_to_process):
+        # A partial run is not a successful run. The products are written, but
+        # a CCD is missing, so pairing them by position against the science MEF
+        # is wrong from the first skipped HDU onward. Fail the exit code and
+        # say so; the EXTNAMEs remain the authoritative source index.
+        print(
+            f"\nERROR: only {process_success_count} of {len(hdus_to_process)} HDUs were "
+            f"processed. The output products are incomplete: they hold "
+            f"{process_success_count} data extension(s) for {len(hdus_to_process)} science "
+            f"HDU(s), so extension position no longer matches the science HDU. Use EXTNAME to "
+            f"identify a product's source HDU, or fix the failing HDU and re-run."
+        )
+        return 1
+
     print(f"\nPipeline finished in {time.time() - start_pipeline_time:.2f} seconds.")
     return 0
 
