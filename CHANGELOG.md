@@ -2,6 +2,74 @@
 
 ## Unreleased
 
+### Correctness and performance audit (bugs found and fixed)
+
+A two-round review of every module except `streaks.py` (which is 65 % of per-CCD wall time
+and is being left for its own round). Both rounds were about checking that an optimisation
+is actually behaviour-preserving, which turned out to matter more than the optimisations.
+
+**Three latent bugs, each invisible to the test suite as it stood:**
+
+- **Flat field silently dropped.** An attempt to skip re-reading the flat when the bad-pixel
+  mask was precomputed was wrong: `process_image` uses the flat as the *actual* flat field
+  for the variance/weight math, not just for the bad mask, so skipping it substituted a
+  unit flat and disabled flat-fielding on every parallel run. Undetectable by the suite
+  because every test flat is an array of ones. Pinned by
+  `test_process_hdu_still_passes_the_real_flat_when_bad_mask_is_precomputed`.
+- **`build_weight_product` mutated the caller's quality mask.** A `copy=False` cast in
+  `canonical_quality_mask` aliased a `uint32` input, so the `INVALID_VARIANCE` pass wrote
+  bits into the caller's array -- including the mask that gets written to disk. The copy is
+  load-bearing and is now documented as such; pinned by
+  `test_build_weight_product_does_not_mutate_the_callers_quality_mask`.
+- **Stale inverse-variance position in the chip-replica veto.** The raw-weight branch reused
+  an `ipos` that was only assigned inside the weight-map branch, so
+  `--out-weight-raw` without a weight map raised `NameError` on the first HDU or restored
+  from the *previous* HDU on later ones. Pinned by
+  `test_raw_weight_restore_does_not_depend_on_the_weight_map`.
+
+**Performance (all verified output-preserving):**
+
+- **Saturation: 1285 ms -> 47 ms per 9.8 Mpix amp.** `estimate_saturation_robust_clump`
+  built its 100-bin histogram with `np.histogram(finite_data, bins=<edges>)`. With explicit
+  bin edges numpy sorts the entire input while discarding everything outside the edge
+  range -- sorting 9,811,968 float32 values in order to count the 510 that lie in the
+  saturation tail. Restricting to the tail first and binning only that is exact (counts are
+  integers, so there is no summation order to preserve), asserted equal to `np.histogram`
+  over 300 fuzzed bin-edge cases. `_estimate_plateau_tail` already did this; the two are
+  now consistent. This stage was *absent* from the cProfile rather than cheap, because at
+  ~1.3 s/amp it fell below the top-35 cutoff.
+- **Sky mesh: 4.4x, bit-identical.** `reconstruct_sky_mesh` built one `CubicSpline` object
+  per column and per row; the `axis=0`/`axis=1` vector form is the same spline evaluated
+  in bulk. Note this is the mesh<->full-res inverse used when reading a stored sky product,
+  not the per-CCD path.
+- `variance`: `np.divide(..., where=)` instead of boolean fancy-indexing, which also stops
+  dividing by zero outside the valid region.
+- `mef`: dropped redundant `np.array(..., copy=True)` around FITS reads in the chip-replica
+  veto and used `astype(copy=False)` on reads. `fitsio.read()` returns an owning, writable
+  array for both plain and RICE_1 tile-compressed images, so this is not an mmap alias.
+- `satur`: the finite-pixel sample is computed once and threaded through instead of
+  re-running `np.isfinite` in each of the three estimators.
+
+**Debuggability:**
+
+- The perf harness could report a physically impossible throughput. `--resume` appends each
+  checkpointed exposure to the report (so its pixels and stage times count) but `continue`s
+  without running it, while `total_wall` times only the checkpoint walk: the committed
+  `test_outputs/perf/megacam_perf_after.md` shows `total_wall=0.0s` (really 5.479e-5s, hidden
+  by the `:.1f` format) beside `mpix/s=64442323.708`, against a true 0.073. Throughput is now
+  refused rather than faked, resumed records are tagged, and `hdu_wall_s > 1.5x total_wall_s`
+  raises a disagreement warning. Those "after" artifacts were a mixed-provenance measurement,
+  so the earlier round's headline perf numbers are re-measured rather than trusted.
+- `cosmics` reports which astroscrappy pass failed instead of one generic message, and the
+  faint-CR enhancement mode is validated before any detection so a bad config value raises
+  instead of being swallowed. `objects` likewise names the failing SEP pass.
+- Previously silent skip paths now warn: chip-replica position/shape mismatches, missing
+  individual masks, an invalid global confidence p99, unavailable dark HDUs, unusable
+  GAIN/RDNOISE headers, and a weight restore that fails after the mask was already rewritten.
+- `WeightMaskProduct` now validates shape, dtype and range on construction.
+- New `sep_background.edge_artifact_thresh` (default 50.0) replaces a hard-coded constant in
+  the edge-artifact check, which also now uses `nanmedian` so NaNs cannot poison the result.
+
 ### Curated real-MegaCam label set (new)
 
 Closes the gap the first two passes named: every detection threshold was still being tuned
