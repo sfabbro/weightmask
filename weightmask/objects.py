@@ -282,9 +282,14 @@ def detect_objects(data_sub, bkg_rms_map, existing_mask, config):
                 from scipy.ndimage import binary_dilation
 
                 object_mask = binary_dilation(object_mask, iterations=dil_radius)
-            # Only return newly detected pixels (not already in existing_mask)
-            m_orig = existing_mask.astype(bool) if existing_mask is not None else np.zeros_like(object_mask)
-            obj_add_mask = object_mask & (~m_orig)
+        # Only return newly detected pixels (not already in existing_mask).
+        # This must sit outside the `keep_objects` branch: when nothing is
+        # detected, object_mask is still all-False and this correctly yields an
+        # empty mask. Leaving the assignment inside raised UnboundLocalError,
+        # which the handler below turned into a spurious ERROR on a normal
+        # outcome (the returned mask was correct; only the message was wrong).
+        m_orig = existing_mask.astype(bool) if existing_mask is not None else np.zeros_like(object_mask)
+        obj_add_mask = object_mask & (~m_orig)
         return obj_add_mask
     except Exception as e:
         # Not necessarily SEP: the ellipse/halo/dilation work in this body can

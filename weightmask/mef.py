@@ -556,13 +556,30 @@ def _open_hdu_handles(
             if hdul_flat is not None and fl_path is not None:
                 ff = fitsio.FITS(fl_path, "r")
                 opened.append(ff)
-                hdu_flat_obj = ff[i] if i < len(ff) else None
+                if i >= len(ff):
+                    # A flat MEF shorter than the science MEF must not degrade
+                    # to "no flat": process_image would substitute a unit flat
+                    # and emit unflat-fielded weights that look successful.
+                    close()
+                    return (
+                        None,
+                        None,
+                        None,
+                        None,
+                        f"HDU{i}",
+                        close,
+                        f"flat {fl_path} has {len(ff)} HDU(s), need index {i}",
+                    )
+                hdu_flat_obj = ff[i]
             else:
                 hdu_flat_obj = _hdu_at(hdul_flat, i)
             if hdul_badpix is not None and bp_path is not None:
                 fb = fitsio.FITS(bp_path, "r")
                 opened.append(fb)
-                hdu_badpix_obj = fb[i] if i < len(fb) else None
+                if i >= len(fb):
+                    close()
+                    return None, None, None, None, f"HDU{i}", close, f"keep-map {bp_path} has {len(fb)} HDU(s), need index {i}"
+                hdu_badpix_obj = fb[i]
             else:
                 hdu_badpix_obj = _hdu_at(hdul_badpix, i)
             try:

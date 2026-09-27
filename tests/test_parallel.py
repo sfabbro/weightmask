@@ -145,6 +145,35 @@ class TestParallelEquivalence(unittest.TestCase):
             self.assertEqual(n, 1)
             self.assertTrue(os.path.exists(paths["out_map_path"]))
 
+    def test_short_flat_mef_fails_loudly_instead_of_using_a_unit_flat(self):
+        """A flat shorter than the science MEF must not degrade silently.
+
+        With `hdu_flat_obj = None`, process_image substitutes a unit flat and
+        prints only an INFO line, so every affected CCD gets unflat-fielded
+        weights and the run still reports success.
+        """
+        with tempfile.TemporaryDirectory() as tmp:
+            sp = os.path.join(tmp, "sci.fits")
+            fp = os.path.join(tmp, "flat_one.fits")
+            shape = (48, 48)
+            _write_mef(sp, 3, shape=shape)
+            fitsio.write(fp, np.full(shape, 0.5, dtype=np.float32), clobber=True)
+            paths = {
+                "out_map_path": os.path.join(tmp, "o.weight.fits"),
+                "out_mask_path": os.path.join(tmp, "o.mask.fits"),
+                "out_invvar_path": None,
+                "out_sky_path": None,
+                "out_weight_raw_path": None,
+                "individual_mask_paths": {},
+            }
+            args = Namespace(tile_size=1024, individual_masks=False, max_workers=1)
+            cfg = _load_cfg()
+            with fitsio.FITS(sp) as hi, fitsio.FITS(fp) as hf:
+                n = process_all_hdus(
+                    [1, 2, 3], hi, hf, cfg, paths, args, flat_path=fp, input_path=sp
+                )
+            self.assertEqual(n, 0)
+
     def test_resolve_workers(self):
         import os as _os
 

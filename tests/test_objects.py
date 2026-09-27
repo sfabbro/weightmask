@@ -1,3 +1,5 @@
+import contextlib
+import io
 import unittest
 
 import numpy as np
@@ -148,6 +150,24 @@ class TestObjects(unittest.TestCase):
         self.assertIsInstance(obj_mask, np.ndarray)
         self.assertEqual(obj_mask.dtype, bool)
         self.assertEqual(np.sum(obj_mask), 0)
+
+    def test_detect_objects_empty_input_reports_no_error(self):
+        """Zero detections is a normal outcome, not a failure.
+
+        The returned mask was always correct here (all-False), which is why the
+        existing empty-input test never caught this: an assignment left inside
+        the `keep_objects` branch raised UnboundLocalError, the handler turned
+        it into an empty mask, and only the spurious ERROR line revealed it.
+        """
+        config = {"extract_thresh": 100.0, "min_area": 5}
+        buf = io.StringIO()
+        with contextlib.redirect_stdout(buf):
+            obj_mask = detect_objects(self.data_sub, self.bkg_rms_map, self.existing_mask, config)
+        log = buf.getvalue()
+
+        self.assertEqual(np.sum(obj_mask), 0)
+        self.assertNotIn("ERROR", log)
+        self.assertNotIn("failed", log)
 
     def test_detect_objects_with_existing_mask(self):
         """Test that already masked pixels are not included in the returned new mask."""

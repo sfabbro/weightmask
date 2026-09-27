@@ -129,9 +129,12 @@ def _parse_config_value(val):
     elif lowered in ("false", "no", "off"):
         return False
 
-    # Strict integer: optional sign + digits only, no underscores/whitespace
+    # Strict integer: at most one sign then digits. lstrip("+-") alone would
+    # accept "--5"/"++5"/"-+5" and then raise out of int(), aborting config
+    # loading with a traceback instead of passing the value through as a string.
     stripped = val.strip()
-    if stripped and "_" not in stripped and stripped.lstrip("+-").isdigit():
+    digits = stripped[1:] if stripped[:1] in ("+", "-") else stripped
+    if stripped and digits.isdigit():
         return int(stripped)
 
     # Strict float: only convert if it has a decimal point or exponent

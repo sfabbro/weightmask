@@ -236,7 +236,14 @@ class TestConfidenceGlobalHookup(unittest.TestCase):
             with fitsio.FITS(sp, "rw") as f:
                 f.write(s1)
                 f.write(s2)
-            fitsio.write(fp, np.ones((64, 64), dtype=np.float32), clobber=True)
+            # The flat must mirror the science layout (empty primary, then one
+            # image HDU per science HDU). A flat written as a single image sits
+            # at index 0 and is off by one against science HDUs 1 and 2, which
+            # used to fall through to a silent unit flat.
+            fitsio.write(fp, None, clobber=True)
+            with fitsio.FITS(fp, "rw") as f:
+                f.write(np.ones((64, 64), dtype=np.float32))
+                f.write(np.ones((64, 64), dtype=np.float32))
             paths = {
                 "out_map_path": os.path.join(tmp, "o.conf.fits"),
                 "out_mask_path": None,

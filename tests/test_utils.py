@@ -84,6 +84,22 @@ class TestUtils(unittest.TestCase):
         self.assertEqual(cleaned["sci1"], 1e-5)
         self.assertEqual(cleaned["sci2"], 25000.0)
 
+    def test_clean_config_dict_malformed_signs_pass_through(self):
+        """A malformed sign must not abort config loading.
+
+        Strict integer parsing used `lstrip("+-").isdigit()`, which accepts
+        "--5"/"++5"/"-+5" and then raised out of `int()`. That escaped
+        `clean_config_dict` and aborted the whole config load with a traceback
+        instead of leaving the value as the string it is.
+        """
+        config = {"a": "--5", "b": "++5", "c": "-+5", "ok": "-7", "pad": " 8 "}
+        cleaned = clean_config_dict(config)
+        self.assertEqual(cleaned["a"], "--5")
+        self.assertEqual(cleaned["b"], "++5")
+        self.assertEqual(cleaned["c"], "-+5")
+        self.assertEqual(cleaned["ok"], -7)
+        self.assertEqual(cleaned["pad"], 8)
+
     def test_clean_config_dict_strings(self):
         """Test clean_config_dict with regular strings."""
         config = {
