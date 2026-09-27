@@ -6,6 +6,29 @@
 
 Continuation of the audit below, covering the MEF/CLI input layer:
 
+- **Fixed: the documented CFITSIO input form did not work.** `validate_input_files`
+  stat'ed the raw string, so `science.fits[1]` failed with "Input file not found"
+  before the spec was ever parsed — while `docs/usage.md` advertised exactly that
+  form and `weightmask-reconstruct-sky` honoured it. The spec is now stripped
+  before the filesystem is touched.
+- **Fixed: a silent trap in the auxiliary inputs.** `--flat_image x.fits[2]` was
+  parsed into a variable nothing read, so the flat was matched by index anyway
+  and the explicit HDU was silently ignored. An `[N]` on `--flat_image`,
+  `--dark_image` or `--badpix_mask` is now rejected, since those are matched to
+  the science HDU by index. Also removed the dead binding, and `--hdu` now says
+  when it overrides an `[N]` in the input spec.
+- **Fixed: a wrong-shaped sky product.** `reconstruct_sky_mesh` returned `(h, 1)`
+  when the mesh had a single node column — reachable for any HDU narrower than
+  the mesh box, e.g. 30 px wide with `box 32` — and wrote it without complaint.
+- **Fixed: a silent repeated cost.** An unwritable bad-mask cache directory (the
+  normal case for a read-only VOSpace flat, where the cache cannot live next to
+  the file) produced no output at all, while the ~20 s/HDU median filter was
+  recomputed on every run. It now warns and names `bad_mask_cache_dir`.
+- **Documented:** the persistence prior is a prior on the *streak detector* only.
+  Those pixels are withheld from streak detection so detector-fixed structure is
+  not reported as a trail; they are not bad pixels, keep their normal weight and
+  carry no quality bit.
+
 - **Fixed: a silent unit flat.** A flat MEF shorter than the science MEF left
   `hdu_flat_obj = None`, so `process_image` substituted `F = 1` and printed one
   `INFO` line. Every affected CCD got unflat-fielded weights and the run still

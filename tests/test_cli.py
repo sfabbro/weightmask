@@ -1,13 +1,16 @@
+import contextlib
+import io
 import os
 import sys
 import tempfile
 import unittest
+from argparse import Namespace
 from unittest.mock import MagicMock, patch
 
 import fitsio
 import numpy as np
 
-from weightmask.cli import run_pipeline, validate_config, validate_fits_file
+from weightmask.cli import run_pipeline, validate_config, validate_fits_file, validate_input_files
 
 
 class TestValidateFitsFile(unittest.TestCase):
@@ -369,6 +372,48 @@ class TestReconstructSkyCLI(unittest.TestCase):
         with self.assertRaises(SystemExit) as cm:
             run_pipeline(["reconstruct-sky", "missing.fits"])
         self.assertEqual(cm.exception.code, 2)
+
+
+class TestValidateInputFiles(unittest.TestCase):
+    """`validate_input_files` must not stat a CFITSIO spec as if it were a path."""
+
+    def test_hdu_spec_in_input_file_is_accepted(self):
+        # docs/usage.md advertises `science.fits[1]`. The spec is not part of
+        # the path, so os.path.exists("s.fits[1]") is False and the run used to
+        # abort with "Input file not found" before the spec was ever parsed.
+        with tempfile.TemporaryDirectory() as tmp:
+            sp = os.path.join(tmp, "s.fits")
+            fitsio.write(sp, np.full((32, 32), 1000.0, dtype=np.float32), clobber=True)
+            args = Namespace(input_file=f"{sp}[0]", flat_image=None, badpix_mask=None, dark_image=None)
+            self.assertTrue(validate_input_files(args))
+            # An out-of-range index is the run's problem, not validation's.
+            args.input_file = f"{sp}[7]"
+            self.assertTrue(validate_input_files(args))
+
+    def test_hdu_spec_on_an_auxiliary_input_is_rejected(self):
+        # A flat/dark/keep-map is matched to each science HDU by index, so an
+        # explicit [N] has no meaning and used to be parsed into a variable
+        # nothing read -- accepted, then silently ignored.
+        with tempfile.TemporaryDirectory() as tmp:
+            sp = os.path.join(tmp, "s.fits")
+            fp = os.path.join(tmp, "f.fits")
+            fitsio.write(sp, np.full((32, 32), 1000.0, dtype=np.float32), clobber=True)
+            fitsio.write(fp, np.ones((32, 32), dtype=np.float32), clobber=True)
+            args = Namespace(input_file=sp, flat_image=f"{fp}[0]", badpix_mask=None, dark_image=None)
+            self.assertFalse(validate_input_files(args))
+            args.flat_image = fp
+            self.assertTrue(validate_input_files(args))
+
+    def test_missing_input_still_reports_the_clean_path(self):
+        # CFITSIO puts the spec at the end; `extract_hdu_spec` only strips a
+        # trailing "[N]", so this is the form that must be reported cleanly.
+        args = Namespace(
+            input_file="/nonexistent/dir.fits[2]", flat_image=None, badpix_mask=None, dark_image=None
+        )
+        with contextlib.redirect_stdout(io.StringIO()) as buf:
+            self.assertFalse(validate_input_files(args))
+        self.assertIn("/nonexistent/dir.fits", buf.getvalue())
+        self.assertNotIn("[2]", buf.getvalue())
 
 
 if __name__ == "__main__":

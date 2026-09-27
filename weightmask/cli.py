@@ -151,36 +151,51 @@ def parse_arguments(argv=None) -> argparse.Namespace:
     return parser.parse_args(argv)
 
 
+def _check_aux_input(value: str, label: str) -> bool:
+    """Validate a flat/dark/keep-map path.
+
+    These are matched to the science HDU by index, so an explicit ``[N]`` has
+    no meaning: reject it rather than accept and ignore it.
+    """
+    path, spec = extract_hdu_spec(value)
+    if spec is not None:
+        print(
+            f"ERROR: {label} '{value}' specifies an HDU, which is not supported. "
+            f"The {label.lower()} is matched to each science HDU by index."
+        )
+        return False
+    if not os.path.exists(path):
+        print(f"ERROR: {label} file not found: {path}")
+        return False
+    if not validate_fits_file(path):
+        print(f"ERROR: {label} file validation failed: {path}")
+        return False
+    return True
+
+
 def validate_input_files(args: argparse.Namespace) -> bool:
-    if not os.path.exists(args.input_file):
-        print(f"ERROR: Input file not found: {args.input_file}")
+    # Strip any CFITSIO-style "[N]" before touching the filesystem: the spec
+    # is not part of the path, so stat()ing the raw string made the documented
+    # `science.fits[1]` form fail with "Input file not found" before the spec
+    # was ever parsed.
+    input_path, input_spec = extract_hdu_spec(args.input_file)
+    if not os.path.exists(input_path):
+        print(f"ERROR: Input file not found: {input_path}")
         return False
 
-    if not validate_fits_file(args.input_file):
-        print(f"ERROR: Input file validation failed: {args.input_file}")
+    if not validate_fits_file(input_path):
+        print(f"ERROR: Input file validation failed: {input_path}")
         return False
 
     if args.flat_image:
-        if not os.path.exists(args.flat_image):
-            print(f"ERROR: Flat field file not found: {args.flat_image}")
-            return False
-        if not validate_fits_file(args.flat_image):
-            print(f"ERROR: Flat field file validation failed: {args.flat_image}")
+        if not _check_aux_input(args.flat_image, "Flat field"):
             return False
 
     if args.dark_image:
-        if not os.path.exists(args.dark_image):
-            print(f"ERROR: Dark frame file not found: {args.dark_image}")
-            return False
-        if not validate_fits_file(args.dark_image):
-            print(f"ERROR: Dark frame file validation failed: {args.dark_image}")
+        if not _check_aux_input(args.dark_image, "Dark frame"):
             return False
     if args.badpix_mask:
-        if not os.path.exists(args.badpix_mask):
-            print(f"ERROR: Bad pixel mask file not found: {args.badpix_mask}")
-            return False
-        if not validate_fits_file(args.badpix_mask):
-            print(f"ERROR: Bad pixel mask file validation failed: {args.badpix_mask}")
+        if not _check_aux_input(args.badpix_mask, "Bad pixel mask"):
             return False
 
     for path in getattr(args, "persistence", None) or []:
@@ -464,9 +479,16 @@ def run_pipeline(argv=None) -> int:
         return 1
 
     input_path, input_hdu = extract_hdu_spec(args.input_file)
-    flat_path, flat_hdu = extract_hdu_spec(args.flat_image) if args.flat_image else (None, None)
-    badpix_path, _ = extract_hdu_spec(args.badpix_mask) if args.badpix_mask else (None, None)
+    # The flat, dark and keep-map are matched to each science HDU by index, so
+    # an "[N]" on them is rejected in validate_input_files rather than parsed
+    # into a variable nothing reads.
+    flat_path = extract_hdu_spec(args.flat_image)[0] if args.flat_image else None
+    badpix_path = extract_hdu_spec(args.badpix_mask)[0] if args.badpix_mask else None
     if args.hdu is not None:
+        # --hdu wins over an "[N]" in the input spec; say so rather than
+        # silently processing a different extension than the one written.
+        if input_hdu is not None and input_hdu != args.hdu:
+            print(f"NOTE: --hdu {args.hdu} overrides the HDU {input_hdu} in '{args.input_file}'.")
         input_hdu = args.hdu
 
     paths = determine_output_paths(args, input_path, config)

@@ -39,8 +39,26 @@ sky mesh with the separate program `weightmask-reconstruct-sky` (also
 ### MEF
 
 Omit `--hdu` to process every 2-D image extension. Pin one extension with
-`--hdu 1` or a CFITSIO-style name `science.fits[1]`. Parallel HDU workers:
+`--hdu 1` or a CFITSIO-style name `science.fits[1]` (the spec must be trailing;
+`--hdu` wins if both are given, and says so). Parallel HDU workers:
 `--nproc` / `--max-workers` (default `min(8, ncpu)`; `0` or `1` is sequential).
+
+The flat, dark and keep-map are matched to each science HDU **by index**, so
+`--flat_image`, `--dark_image` and `--badpix_mask` reject an `[N]` spec rather
+than ignoring it. A flat or dark MEF shorter than the science MEF is an error
+(a unit flat would silently produce unflat-fielded weights) or, for the dark, a
+warning, since only hot-pixel rejection is lost. If the bad-mask cache
+directory is not writable -- a read-only VOSpace flat, typically -- the run
+still succeeds but says so, because the ~20 s/HDU median filter is then
+recomputed every time.
+
+### Persistence priors
+
+`--exposures` builds a per-CCD column/row prior from other exposures of the
+same detector. It is a **prior on the streak detector only**: those pixels are
+withheld from streak detection so detector-fixed structure is not reported as a
+sky trail. They are *not* bad pixels -- they keep their normal weight and carry
+no quality bit, because the flux really was recorded there.
 
 ### Flat, dark, keep-map
 
