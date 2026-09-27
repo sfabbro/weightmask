@@ -60,6 +60,21 @@ def test_confidence_percentile_is_deterministically_bounded(monkeypatch):
     np.testing.assert_array_equal(first, second)
 
 
+def test_build_weight_product_does_not_mutate_the_callers_quality_mask():
+    """A uint32 input must not be aliased by the product's INVALID_VARIANCE pass."""
+    inverse_variance = np.array([[1.0, 0.0], [4.0, np.nan]], dtype=np.float64)
+    callers_mask = np.zeros((2, 2), dtype=np.uint32)
+    before = callers_mask.copy()
+
+    product = build_weight_product(inverse_variance, callers_mask)
+
+    np.testing.assert_array_equal(callers_mask, before)
+    assert product.quality_mask is not callers_mask
+    # The product itself must still carry the INVALID_VARIANCE marks.
+    assert (product.quality_mask[0, 1] & QualityBit.INVALID_VARIANCE) != 0
+    assert (product.quality_mask[1, 1] & QualityBit.INVALID_VARIANCE) != 0
+
+
 def test_quality_bits_round_trip_through_integer_mask():
     bits = QualityBit.BAD_PIXEL | QualityBit.COSMIC_RAY | QualityBit.STREAK
     restored = QualityBit(np.uint32(bits))

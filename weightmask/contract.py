@@ -234,9 +234,34 @@ class WeightMaskProduct:
     confidence: np.ndarray
     metadata: Mapping[str, ArtifactMetadata]
 
+    def __post_init__(self):
+        shape = np.shape(self.quality_mask)
+        for name, arr in (
+            ("inverse_variance", self.inverse_variance),
+            ("weight", self.weight),
+            ("confidence", self.confidence),
+        ):
+            if np.shape(arr) != shape:
+                raise ValueError(f"WeightMaskProduct {name} shape {np.shape(arr)} != quality_mask shape {shape}")
+        if not np.issubdtype(self.quality_mask.dtype, np.integer):
+            raise TypeError("WeightMaskProduct quality_mask must have an integer dtype")
+        if not np.issubdtype(self.weight.dtype, np.floating):
+            raise TypeError("WeightMaskProduct weight must have a float dtype")
+        if not np.issubdtype(self.confidence.dtype, np.floating):
+            raise TypeError("WeightMaskProduct confidence must have a float dtype")
+        if np.any(self.weight < 0):
+            raise ValueError("WeightMaskProduct weight must be non-negative")
+        if np.any((self.confidence < 0) | (self.confidence > 1)):
+            raise ValueError("WeightMaskProduct confidence must be in [0, 1]")
+
 
 def canonical_quality_mask(mask: np.ndarray, shape: tuple[int, ...]) -> np.ndarray:
-    """Validate and copy a quality mask into the contract uint32 representation."""
+    """Validate and copy a quality mask into the contract uint32 representation.
+
+    The copy is required, not an optimization: :func:`build_weight_product`
+    sets ``INVALID_VARIANCE`` bits on the result, so a ``copy=False`` cast of a
+    uint32 input would silently mutate the caller's mask.
+    """
     array = np.asarray(mask)
     if array.shape != shape:
         raise ValueError(f"quality mask shape {array.shape} does not match data shape {shape}")
@@ -318,6 +343,8 @@ def build_weight_product(
         normalization = _bounded_percentile(positive, confidence_percentile)
         if np.isfinite(normalization) and normalization > 0:
             confidence = np.clip(weight / normalization, 0.0, 1.0).astype(np.float32, copy=False)
+        else:
+            print(f"  WARNING: confidence normalization failed (percentile={normalization}); confidence map is all-zero.")
 
     producer = producer or ProducerMetadata()
     provenance = dict(provenance or {})

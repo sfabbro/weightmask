@@ -112,7 +112,8 @@ def create_binary_mask(mask_data, bit_flag):
 def _parse_config_value(val):
     """
     Parse a single configuration value, converting strings to
-    bool/int/float if applicable.
+    bool/int/float if applicable. Uses strict type inference to avoid
+    silently coercing malformed values into numbers.
     """
     if isinstance(val, (bytes, bytearray)):
         try:
@@ -127,14 +128,20 @@ def _parse_config_value(val):
         return True
     elif lowered in ("false", "no", "off"):
         return False
-    else:
+
+    # Strict integer: optional sign + digits only, no underscores/whitespace
+    stripped = val.strip()
+    if stripped and "_" not in stripped and stripped.lstrip("+-").isdigit():
+        return int(stripped)
+
+    # Strict float: only convert if it has a decimal point or exponent
+    if "e" in lowered or "." in lowered:
         try:
-            if "." in val or "e" in lowered:
-                return float(val)
-            else:
-                return int(val)
+            return float(stripped)
         except ValueError:
-            return val
+            pass
+
+    return val
 
 
 def clean_config_dict(config: dict) -> dict:

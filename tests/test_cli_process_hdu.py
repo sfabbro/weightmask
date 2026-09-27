@@ -137,6 +137,32 @@ class TestProcessHDU(unittest.TestCase):
         self.assertIsNone(inv_var_data)
         self.assertIsNone(mask_data)
 
+    def test_process_hdu_still_passes_the_real_flat_when_bad_mask_is_precomputed(self):
+        """A precomputed bad mask must not let the flat field through as None.
+
+        ``process_image`` uses the flat for the variance/weight math, not just
+        for the bad mask, so skipping the read would silently substitute a unit
+        flat and disable flat-fielding.
+        """
+        self.mock_flat_data = np.full((100, 100), 0.25, dtype=np.float32)
+        self.mock_hdu_flat.read.return_value = self.mock_flat_data
+        precomputed = np.zeros((100, 100), dtype=bool)
+
+        with patch("weightmask.mef.process_image", return_value=(None,) * 6) as mock_process_image:
+            process_hdu(
+                self.mock_hdu_sci,
+                self.mock_hdu_flat,
+                self.config,
+                hdu_index=1,
+                precomputed_bad_mask=precomputed,
+            )
+
+        mock_process_image.assert_called_once()
+        passed_flat = mock_process_image.call_args.args[2]
+        self.assertIsNotNone(passed_flat)
+        np.testing.assert_allclose(passed_flat, 0.25)
+        self.assertIs(mock_process_image.call_args.kwargs["bad_mask"], precomputed)
+
     @patch("weightmask.process.detect_bad_pixels")
     @patch("weightmask.process.detect_saturated_pixels")
     @patch("weightmask.process.estimate_background")

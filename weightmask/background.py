@@ -24,7 +24,7 @@ def _estimate_global_sep(sci_data, mask):
         return None, None
 
 
-def _check_and_fix_edge_artifacts(bkg_map, sci_data_shape):
+def _check_and_fix_edge_artifacts(bkg_map, sci_data_shape, config=None):
     """Check for edge artifacts and apply smoothing if necessary."""
     edge_width = 50
     h, w = sci_data_shape
@@ -36,17 +36,18 @@ def _check_and_fix_edge_artifacts(bkg_map, sci_data_shape):
         bkg_map[:, :edge_width],
         bkg_map[:, -edge_width:],
     ]
-    center_median = np.median(bkg_map[edge_width:-edge_width, edge_width:-edge_width])
+    center_median = np.nanmedian(bkg_map[edge_width:-edge_width, edge_width:-edge_width])
+    edge_thresh = float(config.get("edge_artifact_thresh", 50.0)) if config else 50.0
     for edge_region in edge_regions:
-        edge_median = np.median(edge_region)
-        if abs(edge_median - center_median) > 50:
+        edge_median = np.nanmedian(edge_region)
+        if np.isfinite(edge_median) and np.isfinite(center_median) and abs(edge_median - center_median) > edge_thresh:
             bkg_map = gaussian_filter(bkg_map, sigma=2.0)
-            print("    Applied Gaussian smoothing to reduce edge artifacts")
+            print(f"    Applied Gaussian smoothing to reduce edge artifacts (edge-center diff > {edge_thresh}).")
             break
     return bkg_map
 
 
-def _estimate_sep_tiered(sci_data, mask, box_size, filter_size, max_box_size):
+def _estimate_sep_tiered(sci_data, mask, box_size, filter_size, max_box_size, config=None):
     """Estimate background using SEP with tiered retries.
 
     Returns ``(bkg_map, bkg_rms_map, box_used)``; ``box_used`` is None on failure.
@@ -71,7 +72,7 @@ def _estimate_sep_tiered(sci_data, mask, box_size, filter_size, max_box_size):
             bkg_rms_map = bkg.rms()
             print(f"    SEP background global RMS: {bkg.globalrms:.3f} (box={current_box})")
 
-            bkg_map = _check_and_fix_edge_artifacts(bkg_map, sci_data.shape)
+            bkg_map = _check_and_fix_edge_artifacts(bkg_map, sci_data.shape, config=config)
             return bkg_map, bkg_rms_map, int(current_box)
 
         except Exception as e:
@@ -103,7 +104,7 @@ def _estimate_robust_median(sci_data, mask, method, config):
         else:
             valid_data = sci_data[~mask] if np.any(~mask) else sci_data
             step = max(1, valid_data.size // 100000)
-            bkg_val = np.median(valid_data.ravel()[::step])
+            bkg_val = np.nanmedian(valid_data.ravel()[::step])
             bkg_map = np.full(sci_data.shape, bkg_val, dtype=np.float32)
 
         data_sub = sci_data - bkg_map
@@ -154,18 +155,14 @@ def _estimate_smooth_surface(sci_data, mask, config):
 
     full_x = (x_idx - 0.5 * (sci_data.shape[1] - 1)) / max(float(sci_data.shape[1]), 1.0)
     full_y = (y_idx - 0.5 * (sci_data.shape[0] - 1)) / max(float(sci_data.shape[0]), 1.0)
-    full_design = np.stack(
-        [
-            np.ones_like(full_x),
-            full_x,
-            full_y,
-            full_x * full_y,
-            full_x**2,
-            full_y**2,
-        ],
-        axis=0,
-    )
-    bkg_map = np.tensordot(coeffs, full_design, axes=(0, 0)).astype(np.float32)
+    bkg_map = (
+        coeffs[0]
+        + coeffs[1] * full_x
+        + coeffs[2] * full_y
+        + coeffs[3] * full_x * full_y
+        + coeffs[4] * full_x**2
+        + coeffs[5] * full_y**2
+    ).astype(np.float32)
     residual = sci_data - bkg_map
     valid_resid = residual[valid]
     step_r = max(1, valid_resid.size // 100000)
@@ -242,11 +239,11 @@ def reconstruct_sky_mesh(mesh, shape, box):
     ys = np.arange(h, dtype=np.float64)
     xs = np.arange(w, dtype=np.float64)
     if ny > 1:
-        cols = np.column_stack([CubicSpline(node_y, m[:, j], bc_type="natural")(ys) for j in range(nx)])
+        cols = CubicSpline(node_y, m, bc_type="natural", axis=0)(ys)
     else:
         cols = np.broadcast_to(m, (h, nx)).copy()
     if nx > 1:
-        out = np.vstack([CubicSpline(node_x, cols[i], bc_type="natural")(xs) for i in range(h)])
+        out = CubicSpline(node_x, cols, bc_type="natural", axis=1)(xs)
     else:
         out = cols
     return np.ascontiguousarray(out, dtype=np.float32)
@@ -414,7 +411,7 @@ def estimate_background(sci_data, mask, config):
             filter_size = config.get("filter_size", 3)
             max_box_size = config.get("max_box_size", max(box_size, 1024))
             bkg_map, bkg_rms_map, used_box = _estimate_sep_tiered(
-                sci_data, mask, box_size, filter_size, max_box_size
+                sci_data, mask, box_size, filter_size, max_box_size, config=config
             )
             if diagnostics is not None and used_box is not None:
                 diagnostics["box_size"] = used_box

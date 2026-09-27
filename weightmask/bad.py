@@ -53,7 +53,7 @@ def _detect_bad_pixels_local(flat_data, config, global_med):
             f"    Found {np.count_nonzero(pixel_mask_bool)} bad pixels (Ratio < {local_low_thresh:.2f} or > {local_high_thresh:.2f})."
         )
 
-    except Exception as e:
+    except (ValueError, KeyError, TypeError) as e:
         print(f"  WARNING: Local pixel thresholding failed: {e}. Skipping.")
         pixel_mask_bool.fill(False)
 

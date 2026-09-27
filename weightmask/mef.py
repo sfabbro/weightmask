@@ -48,7 +48,7 @@ def process_hdu(
     print(f"\n--- Processing HDU {hdu_index} ({hdu_name}) ---")
 
     try:
-        sci_data_full = np.ascontiguousarray(hdu_sci.read().astype(np.float32))
+        sci_data_full = np.ascontiguousarray(hdu_sci.read().astype(np.float32, copy=False))
         sci_hdr = hdu_sci.read_header()
     except (OSError, fitsio.FITSFormatError) as e:
         print(f"Skipping HDU: Cannot read science data: {e}")
@@ -56,8 +56,10 @@ def process_hdu(
 
     flat_data_full = None
     if hdu_flat is not None:
+        # Read the flat unconditionally: process_image uses it as the actual
+        # flat field for the variance/weight math, not just for the bad mask.
         try:
-            flat_data_full = np.ascontiguousarray(hdu_flat.read().astype(np.float32))
+            flat_data_full = np.ascontiguousarray(hdu_flat.read().astype(np.float32, copy=False))
         except (OSError, fitsio.FITSFormatError) as e:
             print(f"Skipping HDU: Cannot read flat data: {e}")
             return None, None, None, None, None, None
@@ -164,7 +166,14 @@ def extract_individual_masks(header_info: dict, mask_data):
     if mask_data is None:
         return tuple(np.array([]) for _ in keys)
     shape = mask_data.shape
-    return tuple(source.get(k, np.zeros(shape, dtype=bool)) for k in keys)
+    out = []
+    for k in keys:
+        if k in source:
+            out.append(source[k])
+        else:
+            print(f"  WARNING: individual mask '{k}' missing from header_info; emitting all-False.")
+            out.append(np.zeros(shape, dtype=bool))
+    return tuple(out)
 
 
 def _store_individual_masks(
@@ -381,6 +390,7 @@ def _rescale_confidence_to_global(paths, writers, conf_samples, conf_p99, config
     pooled = np.concatenate([np.ravel(s) for s in conf_samples.values()])
     global_p99 = float(np.percentile(pooled, 99.0))
     if not np.isfinite(global_p99) or global_p99 <= 0:
+        print(f"  WARNING: global confidence p99 is invalid ({global_p99}); skipping global rescale.")
         return
     factors = {i: p99 / global_p99 for i, p99 in conf_p99.items() if p99 > 0}
     # Rewriting an existing HDU: only pass ``compress`` when actually
@@ -394,7 +404,7 @@ def _rescale_confidence_to_global(paths, writers, conf_samples, conf_p99, config
                 if pos is None or pos >= len(f):
                     continue
                 data = f[pos].read()
-                f[pos].write(np.clip(data * factor, 0.0, 1.0).astype(np.float32), **write_kwargs)
+                f[pos].write(np.clip(data * factor, 0.0, 1.0).astype(np.float32, copy=False), **write_kwargs)
     except OSError as e:
         print(f"  WARNING: confidence global rescale failed: {e}")
         return
@@ -646,29 +656,43 @@ def _clear_chip_replicas(catalogs, writers, config):
             cat = catalogs[index]
             pos = mask_writer.positions.get(cat["hdu"])
             if pos is None or pos >= len(fmask):
+                print(f"  WARNING: chip-replica veto: unknown mask position for HDU {cat['hdu']}.")
                 continue
-            data = np.array(fmask[pos].read(), copy=True)
+            data = fmask[pos].read()
             ys, xs = cat["ys"], cat["xs"]
             if ys.size == 0 or data.shape != cat["shape"]:
+                print(f"  WARNING: chip-replica veto: shape mismatch for HDU {cat['hdu']}.")
                 continue
             pixels = data[ys, xs]
             only = ((pixels & streak_bit) != 0) & ((pixels & other_bits) == 0)
             data[ys, xs] = pixels & ~np.array(streak_bit, dtype=data.dtype)
             _rewrite_hdu(fmask, pos, data, compress)
-            if fmap is not None and fivar is not None and np.any(only):
-                wpos = map_writer.positions.get(cat["hdu"])
-                ipos = ivar_writer.positions.get(cat["hdu"])
-                if wpos is not None and ipos is not None and wpos < len(fmap) and ipos < len(fivar):
-                    weight = np.array(fmap[wpos].read(), copy=True)
-                    ivar = fivar[ipos].read()
-                    if weight.shape == data.shape and np.shape(ivar) == data.shape:
-                        weight[ys[only], xs[only]] = ivar[ys[only], xs[only]]
-                        _rewrite_hdu(fmap, wpos, weight.astype(np.float32, copy=False), compress)
-            if fraw is not None and fivar is not None and np.any(only):
+            # The mask is already rewritten above, so a failed weight restore
+            # leaves STREAK cleared but the weight map still zeroed there.
+            # Only the regular weight map is tracked; with no weight map
+            # requested there is nothing to restore and nothing to warn about.
+            needs_restore = bool(np.any(only))
+            needs_map_restore = needs_restore and fmap is not None
+            weight_restored = not needs_map_restore
+            if needs_map_restore:
+                if fivar is not None:
+                    wpos = map_writer.positions.get(cat["hdu"])
+                    ipos = ivar_writer.positions.get(cat["hdu"])
+                    if wpos is not None and ipos is not None and wpos < len(fmap) and ipos < len(fivar):
+                        weight = fmap[wpos].read()
+                        ivar = fivar[ipos].read()
+                        if weight.shape == data.shape and np.shape(ivar) == data.shape:
+                            weight[ys[only], xs[only]] = ivar[ys[only], xs[only]]
+                            _rewrite_hdu(fmap, wpos, weight.astype(np.float32, copy=False), compress)
+                        else:
+                            weight_restored = False
+                    else:
+                        weight_restored = False
+            if needs_restore and fraw is not None and fivar is not None:
                 rpos = raw_writer.positions.get(cat["hdu"])
                 ipos = ivar_writer.positions.get(cat["hdu"])
                 if rpos is not None and ipos is not None and rpos < len(fraw) and ipos < len(fivar):
-                    raw = np.array(fraw[rpos].read(), copy=True)
+                    raw = fraw[rpos].read()
                     ivar = fivar[ipos].read()
                     if raw.shape == np.shape(ivar):
                         raw[ys[only], xs[only]] = ivar[ys[only], xs[only]]
@@ -676,10 +700,12 @@ def _clear_chip_replicas(catalogs, writers, config):
             if find is not None:
                 spos = ind_writer.positions.get(cat["hdu"])
                 if spos is not None and spos < len(find):
-                    ind = np.array(find[spos].read(), copy=True)
+                    ind = find[spos].read()
                     if ind.shape == cat["shape"]:
                         ind[ys, xs] = 0
                         _rewrite_hdu(find, spos, ind.astype(np.uint8, copy=False), compress)
+            if not weight_restored:
+                print(f"  WARNING: chip-replica veto cleared STREAK on HDU {cat['hdu']} but weight restore failed.")
             n_cleared += 1
         if n_cleared:
             print(f"  Chip-replica veto cleared STREAK on {n_cleared} HDUs.")
@@ -748,7 +774,7 @@ def process_all_hdus(
         for i in hdus_to_process:
             if i < len(hdul_flat):
                 try:
-                    flat_data = np.ascontiguousarray(hdul_flat[i].read().astype(np.float32))
+                    flat_data = np.ascontiguousarray(hdul_flat[i].read().astype(np.float32, copy=False))
                     flat_meds[i] = _get_global_median(flat_data)
                     flat_shapes[i] = flat_data.shape
                 except Exception as e:
@@ -778,17 +804,19 @@ def process_all_hdus(
                         dark_hdu = fd_local[i]
                     else:
                         dark_hdu = None
-                except Exception:
+                except Exception as e:
+                    print(f"    WARNING: dark frame HDU {i} unavailable: {e}. Skipping dark mask.")
                     dark_hdu = None
             elif hdul_dark is not None:
                 try:
                     dark_hdu = hdul_dark[i] if i < len(hdul_dark) else None
-                except Exception:
+                except Exception as e:
+                    print(f"    WARNING: dark frame HDU {i} unavailable: {e}. Skipping dark mask.")
                     dark_hdu = None
             if dark_hdu is None:
                 return pre
             try:
-                dark_data = np.ascontiguousarray(dark_hdu.read().astype(np.float32))
+                dark_data = np.ascontiguousarray(dark_hdu.read().astype(np.float32, copy=False))
                 dark_hot = detect_bad_pixels(dark_data, dark_cfg_global, using_unit_flat=False)
                 sci_shape = tuple(hdu_sci.get_dims())
                 if dark_hot.shape != sci_shape:

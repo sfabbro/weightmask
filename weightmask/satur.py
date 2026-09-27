@@ -5,7 +5,7 @@ import scipy.ndimage
 from scipy.signal import find_peaks
 
 
-def estimate_saturation_robust_clump(data, min_adu=None, max_adu=None):
+def estimate_saturation_robust_clump(data, min_adu=None, max_adu=None, finite_data=None):
     """
     Robust Detrended Saturation Detection.
     Finds smeared saturation limits without causing artificial saturation on empty fields.
@@ -22,7 +22,8 @@ def estimate_saturation_robust_clump(data, min_adu=None, max_adu=None):
     """
     try:
         # Filter out infinities and NaNs
-        finite_data = data[np.isfinite(data)]
+        if finite_data is None:
+            finite_data = data[np.isfinite(data)]
         if finite_data.size == 0:
             print("  Robust Clump: No finite data found.")
             return None
@@ -129,7 +130,7 @@ def _get_saturation_from_header(sci_hdr, header_keyword):
     return None
 
 
-def _estimate_effective_full_scale(sci_data, sci_hdr, config, header_keyword):
+def _estimate_effective_full_scale(sci_data, sci_hdr, config, header_keyword, finite_data=None):
     """Estimate a plausible upper-scale bound for guarded saturation detection."""
     hist_params = config.get("histogram_params", {})
     candidates = []
@@ -151,7 +152,8 @@ def _estimate_effective_full_scale(sci_data, sci_hdr, config, header_keyword):
     if np.issubdtype(sci_data.dtype, np.integer):
         candidates.append(float(np.iinfo(sci_data.dtype).max))
 
-    finite_data = sci_data[np.isfinite(sci_data)]
+    if finite_data is None:
+        finite_data = sci_data[np.isfinite(sci_data)]
     data_max = float(np.max(finite_data)) if finite_data.size > 0 else 0.0
     positive = [value for value in candidates if np.isfinite(value) and value > 0]
     if not positive:
@@ -163,9 +165,10 @@ def _estimate_effective_full_scale(sci_data, sci_hdr, config, header_keyword):
     return float(effective), advisory
 
 
-def _estimate_plateau_tail(sci_data, effective_full_scale, config):
+def _estimate_plateau_tail(sci_data, effective_full_scale, config, finite_data=None):
     """Estimate saturation from an upper-tail plateau when histogram clumps are ambiguous."""
-    finite_data = sci_data[np.isfinite(sci_data)]
+    if finite_data is None:
+        finite_data = sci_data[np.isfinite(sci_data)]
     if finite_data.size == 0:
         return None
 
@@ -208,15 +211,16 @@ def _choose_saturation_level(hist_level, plateau_level, effective_full_scale, ad
     return float(effective_full_scale), "default guarded fallback"
 
 
-def _saturation_for_region(sci_data, sci_hdr, config, header_keyword, effective_full_scale, advisory):
+def _saturation_for_region(sci_data, sci_hdr, config, header_keyword, effective_full_scale, advisory, finite_data=None):
     """Estimate one saturation level for a data region (full frame or amp half)."""
     hist_params = config.get("histogram_params", {})
     hist_level = estimate_saturation_robust_clump(
         sci_data,
         min_adu=hist_params.get("hist_min_adu"),
         max_adu=hist_params.get("hist_max_adu"),
+        finite_data=finite_data,
     )
-    plateau_level = _estimate_plateau_tail(sci_data, effective_full_scale, config)
+    plateau_level = _estimate_plateau_tail(sci_data, effective_full_scale, config, finite_data=finite_data)
     return _choose_saturation_level(hist_level, plateau_level, effective_full_scale, advisory, config)
 
 
@@ -255,9 +259,10 @@ def detect_saturated_pixels(sci_data, sci_hdr, config):
         warnings.warn(f"Unknown saturation method '{method}', using guarded histogram logic.", RuntimeWarning)
 
     print("Attempting guarded histogram-based saturation detection...")
-    effective_full_scale, advisory = _estimate_effective_full_scale(sci_data, sci_hdr, config, header_keyword)
+    finite_data = sci_data[np.isfinite(sci_data)]
+    effective_full_scale, advisory = _estimate_effective_full_scale(sci_data, sci_hdr, config, header_keyword, finite_data=finite_data)
     saturation_level, sat_method_used = _saturation_for_region(
-        sci_data, sci_hdr, config, header_keyword, effective_full_scale, advisory
+        sci_data, sci_hdr, config, header_keyword, effective_full_scale, advisory, finite_data=finite_data
     )
     if sat_method_used == "default guarded fallback":
         print(f"  WARNING: Falling back to guarded full-scale saturation level: {saturation_level:.1f} ADU.")

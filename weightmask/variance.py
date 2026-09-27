@@ -240,11 +240,8 @@ def _calculate_inverse_variance_theoretical(
 
     valid_variance = denom > epsilon
     gain2 = np.square(gain)
-    if np.shape(gain2) == inv_variance.shape:
-        numer = gain2[valid_variance] * safe_flat[valid_variance] ** 2
-    else:
-        numer = gain2 * safe_flat[valid_variance] ** 2
-    inv_variance[valid_variance] = numer / denom[valid_variance]
+    numer = gain2 * safe_flat**2
+    np.divide(numer, denom, out=inv_variance, where=valid_variance)
 
     # Mask out invalid regions
     inv_variance[~valid_flat_mask] = 0.0
@@ -292,6 +289,8 @@ def _unbias_variance(inv_variance, sci_data, sky_map, gain, epsilon):
     Mimics LSST remove_signal_from_variance.
     """
     if inv_variance is None or gain <= 0:
+        if gain <= 0:
+            print(f"  WARNING: gain is invalid ({gain}); skipping variance unbiasing.")
         return inv_variance
 
     # Signal is (sci_data - sky_map)

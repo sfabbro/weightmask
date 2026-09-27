@@ -62,6 +62,7 @@ sep_background:
   dip_repair_enable: true        # fill mesh undershoots next to bright masks when data agree
   dip_repair_sigma: 5.0          # how large a dip (in sky-RMS) is eligible for repair
   dip_repair_max_fraction: 0.05  # abort repair if more than this fraction of the CCD would change
+  edge_artifact_thresh: 50.0     # edge-vs-centre median gap (ADU) that triggers Gaussian smoothing
 
 cosmic_ray:
   sigclip: 8.5                   # L.A.Cosmic/astroscrappy significance (conservative)

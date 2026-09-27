@@ -73,7 +73,8 @@ def _image_hdus(hdul, hdu: int | None) -> list[int]:
             info = hdu_i.get_info()
             if info.get("hdutype") == 0 and info.get("ndims") == 2:
                 out.append(idx)
-        except Exception:
+        except Exception as e:
+            print(f"  WARNING: HDU {idx} get_info() failed: {e}. Skipping.")
             continue
     if not out:
         print("ERROR: No suitable Image HDUs found.")

@@ -323,10 +323,12 @@ def process_image(
         gain = float(gain_raw)
     except (ValueError, TypeError):
         gain = float(variance_cfg.get("default_gain", 1.0))
+        print(f"  WARNING: GAIN header value {gain_raw!r} is invalid; using default {gain}.")
     try:
         read_noise_e = float(rdnoise_raw)
     except (ValueError, TypeError):
         read_noise_e = float(variance_cfg.get("default_rdnoise", 0.0))
+        print(f"  WARNING: RDNOISE header value {rdnoise_raw!r} is invalid; using default {read_noise_e}.")
     with _timed(timings, "cosmics"):
         cr_add_mask = detect_cosmic_rays(
             sci_data_full,
@@ -359,6 +361,9 @@ def process_image(
             print(f"    Iteration {i + 1}/{iterations}...")
             total_mask_for_bg = interim_mask_bool | current_obj_mask | sky_only_mask
             with _timed(timings, f"bg_iter_{i}"):
+                # Reusing the preliminary background here would be wrong: it was
+                # estimated with the pre-bleed/pre-CR mask, and iteration 0 masks
+                # out the bleed and cosmic-ray pixels found since.
                 bkg_map, bkg_rms_map = estimate_background(
                     sci_data_full, total_mask_for_bg, {**sep_bg_cfg, "_diagnostics": bg_diag}
                 )

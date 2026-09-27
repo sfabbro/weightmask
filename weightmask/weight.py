@@ -69,6 +69,6 @@ def generate_weight_and_confidence(inv_variance_map, final_mask_int, config):
         print("    WARNING: No positive weights found. Confidence map will be zeros.")
 
     # Ensure final map has the correct dtype
-    confidence_map = confidence_map.astype(conf_dtype)
+    confidence_map = confidence_map.astype(conf_dtype, copy=False)
 
     return weight_map, confidence_map, product

@@ -121,7 +121,11 @@ def detect_objects(data_sub, bkg_rms_map, existing_mask, config):
         extract_thresh = _adaptive_extract_threshold(d_sub, b_rms, m_in, base_extract_thresh)
 
         seed_thresh = float(clean_config.get("seed_thresh_factor", 1.25)) * extract_thresh
-        seed_objects = _run_sep_extract(d_sub, b_rms, m_in, seed_thresh, min_area, clean_config, segmentation_map=False)
+        try:
+            seed_objects = _run_sep_extract(d_sub, b_rms, m_in, seed_thresh, min_area, clean_config, segmentation_map=False)
+        except Exception as e:
+            print(f"  ERROR: SEP seed extraction failed: {e}")
+            return np.zeros(data_sub.shape, dtype=bool)
         seed_mask = np.zeros_like(object_mask, dtype=bool)
         elongated_seed = np.zeros_like(object_mask, dtype=bool)
         if len(seed_objects) > 0:
@@ -145,15 +149,19 @@ def detect_objects(data_sub, bkg_rms_map, existing_mask, config):
                     )
 
         second_pass_mask = seed_mask | (m_in if m_in is not None else np.zeros_like(seed_mask))
-        objects, segmap = _run_sep_extract(
-            d_sub,
-            b_rms,
-            second_pass_mask,
-            extract_thresh,
-            min_area,
-            clean_config,
-            segmentation_map=True,
-        )
+        try:
+            objects, segmap = _run_sep_extract(
+                d_sub,
+                b_rms,
+                second_pass_mask,
+                extract_thresh,
+                min_area,
+                clean_config,
+                segmentation_map=True,
+            )
+        except Exception as e:
+            print(f"  ERROR: SEP main extraction failed: {e}")
+            return np.zeros(data_sub.shape, dtype=bool)
 
         # Track highly elongated detections so the streak detector can claim them later.
         elongated_count = 0
@@ -277,9 +285,7 @@ def detect_objects(data_sub, bkg_rms_map, existing_mask, config):
             # Only return newly detected pixels (not already in existing_mask)
             m_orig = existing_mask.astype(bool) if existing_mask is not None else np.zeros_like(object_mask)
             obj_add_mask = object_mask & (~m_orig)
-            return obj_add_mask
-
+        return obj_add_mask
     except Exception as e:
-        print(f"  Object detection failed: {e}")
-
-    return np.zeros(data_sub.shape, dtype=bool)
+        print(f"  ERROR: SEP extraction failed: {e}")
+        return np.zeros(data_sub.shape, dtype=bool)
