@@ -1,8 +1,71 @@
 import unittest
+import unittest.mock
 
 import numpy as np
 
-from weightmask.satur import detect_saturated_pixels, grow_bleed_trails
+from weightmask.satur import (
+    _tail_histogram,
+    detect_saturated_pixels,
+    estimate_saturation_robust_clump,
+    grow_bleed_trails,
+)
+
+
+class TestTailHistogram(unittest.TestCase):
+    """``_tail_histogram`` must be indistinguishable from ``np.histogram``."""
+
+    def test_matches_numpy_on_a_realistic_sparse_tail(self):
+        rng = np.random.default_rng(0)
+        values = (1000.0 + 30.0 * rng.standard_normal(2_000_000)).astype(np.float32)
+        values[rng.integers(0, values.size, 400)] = 68_000.0
+        edges = np.linspace(30_000.0, 69_000.0, 100)
+
+        expected, _ = np.histogram(values, bins=edges)
+        got, got_edges = _tail_histogram(values, edges)
+
+        np.testing.assert_array_equal(got, expected)
+        self.assertEqual(got.dtype, expected.dtype)
+        np.testing.assert_array_equal(got_edges, edges)
+
+    def test_matches_numpy_on_fuzzed_bin_edges_including_exact_hits(self):
+        rng = np.random.default_rng(7)
+        for _ in range(300):
+            edges = np.sort(rng.uniform(0.0, 10.0, 7))
+            edges[0] = 0.0
+            # Include values sitting exactly on edges, plus out-of-range ones,
+            # which numpy drops rather than clipping into the end bins.
+            values = rng.choice(
+                np.concatenate([edges, rng.uniform(-1.0, 11.0, 60)]),
+                size=200,
+            )
+            expected, _ = np.histogram(values, bins=edges)
+            got, _ = _tail_histogram(values, edges)
+            np.testing.assert_array_equal(got, expected)
+
+    def test_empty_tail_returns_all_zero_counts(self):
+        edges = np.linspace(10.0, 20.0, 8)
+        got, _ = _tail_histogram(np.array([0.0, 1.0, 99.0], dtype=np.float32), edges)
+        np.testing.assert_array_equal(got, np.zeros(7, dtype=np.intp))
+
+    def test_non_monotonic_edges_still_raise(self):
+        edges = np.array([10.0, 5.0, 1.0])
+        with self.assertRaises(ValueError):
+            _tail_histogram(np.array([1.0, 2.0]), edges)
+
+    def test_clump_result_is_identical_with_the_original_histogram(self):
+        """The fast histogram must not move the detected level."""
+        rng = np.random.default_rng(3)
+        data = (1000.0 + 25.0 * rng.standard_normal(200_000)).astype(np.float32)
+        data[rng.integers(0, data.size, 300)] = 65_000.0
+
+        fast = estimate_saturation_robust_clump(data)
+        # Put the original np.histogram call back and re-run the same input.
+        with unittest.mock.patch(
+            "weightmask.satur._tail_histogram",
+            side_effect=lambda values, edges: np.histogram(values, bins=edges),
+        ):
+            reference = estimate_saturation_robust_clump(data)
+        self.assertEqual(fast, reference)
 
 
 class TestSaturation(unittest.TestCase):

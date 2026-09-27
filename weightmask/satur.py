@@ -5,6 +5,32 @@ import scipy.ndimage
 from scipy.signal import find_peaks
 
 
+def _tail_histogram(values, edges):
+    """Counts per bin, identical to ``np.histogram(values, bins=edges)``.
+
+    ``np.histogram`` with explicit bin edges sorts the entire input, yet
+    discards everything outside ``[edges[0], edges[-1]]``. On a real CCD only a
+    few hundred of ~10^7 pixels lie in the saturation tail, so restrict to the
+    tail first and bin only that. Counts are integers, so there is no
+    floating-point summation order to preserve: the result is exact, not
+    approximate.
+    """
+    if not np.all(np.diff(edges) > 0):
+        # Degenerate edges: let numpy raise its own monotonicity error so the
+        # failure mode for malformed config is unchanged.
+        counts, _ = np.histogram(values, bins=edges)
+        return counts, edges
+    n_bins = len(edges) - 1
+    lo = edges[0]
+    hi = edges[-1]
+    tail = values[(values >= lo) & (values <= hi)]
+    if tail.size == 0:
+        return np.zeros(n_bins, dtype=np.intp), edges
+    idx = np.searchsorted(edges, tail, side="right") - 1
+    np.clip(idx, 0, n_bins - 1, out=idx)
+    return np.bincount(idx, minlength=n_bins).astype(np.intp, copy=False), edges
+
+
 def estimate_saturation_robust_clump(data, min_adu=None, max_adu=None, finite_data=None):
     """
     Robust Detrended Saturation Detection.
@@ -66,7 +92,7 @@ def estimate_saturation_robust_clump(data, min_adu=None, max_adu=None, finite_da
         # Bin the extreme tail into ~100 bins.
         # This prevents the histogram from dissolving into noise for smeared clumps.
         bins = np.linspace(min_adu, max_adu, 100)
-        counts, bin_edges = np.histogram(finite_data, bins=bins)
+        counts, bin_edges = _tail_histogram(finite_data, bins)
         bin_centers = (bin_edges[:-1] + bin_edges[1:]) / 2
 
         if np.sum(counts) < 20:
