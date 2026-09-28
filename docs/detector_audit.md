@@ -79,12 +79,13 @@ memoizes it per source array (keyed on identity, holding a strong reference, so 
 recycled `id()` cannot alias a stale entry). One prepared image per array now
 serves every pass, with the masks applied afterwards.
 
-### `streaks._prune_small_edges` — per-region Python loop (fixed)
+### `streaks._prune_small_edges` — per-region Python loop (historical)
 
-`regionprops(label(edge_mask))` with `region.perimeter` ran once per HDU
-component: 55k components (measured on a comparable 2.1 Mpix mask) took 1.5-1.9 s
-per call, and the multiscale extractor calls it six times per satdet pass.
-`_region_perimeters` reproduces skimage's computation for every region at once
+Removed with the Canny/Hough stage it served. Recorded because the measurement
+stands on its own: `regionprops(label(edge_mask))` with `region.perimeter` ran
+once per HDU component, and 55k components (measured on a comparable 2.1 Mpix
+mask) took 1.5-1.9 s per call.
+`_region_perimeters` reproduced skimage's computation for every region at once
 (same 4-connected border, same `[[10,2,10],[2,1,2],[10,2,10]]` kernel, same
 per-region bounding-box semantics) in 0.069 s per call, 12 calls totalling
 0.83 s/HDU. Regions whose perimeter sits within 1e-6 of the cut are re-measured
@@ -248,21 +249,59 @@ column as a satellite trail. Restricting the search to non-axis angles does **no
 ranking — a one-pixel column projects into every angle (its rho width grows as the angle
 leaves the axis), so the artefacts simply move to theta = +-4 deg; measured, not assumed.
 
-### `streaks` prescreen gating (`satdet_params.skip_when_prescreen_confirmed`, default true)
+### `streaks` Canny/Hough stage removed, and the prescreen gate rewritten
 
-The pipeline already runs the cheap binned-Hough accumulator stage before the
-full-resolution multi-scale Canny/Hough sweep. When it confirms a trail, the sweep costs
-~24.5 s per CCD to produce the ~10^5 segments that only re-derive what the accumulator peak
-found. Measured on real HDUs, with the gate on and off:
+The full-resolution multi-scale Canny/Hough sweep (`satdet`) was measured over
+56 real MegaCam amps, on inputs captured from the `process_image` streak stage:
 
-| field | mask pixels (off / on) | time | differing pixels |
-|---|---|---|---|
-| clean | 10 945 / 10 945 | 27.4 s -> 3.0 s | **0** |
-| bright trail (8 sigma, 2500 px) | 20 651 / 20 651 | 28.1 s -> 3.5 s | **0** |
-| bright + faint trail | 41 838 / 41 838 | 28.3 s -> 3.7 s | **0** |
+| metric | value |
+|---|---|
+| amps where it ran | 56 / 56 |
+| amps where it accepted a candidate | **0** |
+| pixels of any final mask it explained | **0** |
+| cost | 1,543 s over the sweep, 27.5 s/amp |
 
-The gate only fires when the prescreen has *already* accepted, so a field where the sweep
-is the stage that finds the trail is unaffected by construction.
+It is not a tuning problem. `confidence_threshold` swept from 0.22 down to 0.02
+gave zero acceptances, including on the amps carrying known real trails, and the
+Canny pair swept from 0.06/0.22 to 0.60/1.30 also stayed at zero. Internally the
+stage is not idle: it produces ~131,000 Hough segments and ~5,300 clusters on a
+9.8 Mpix amp, of which 16 survive its own gates, and the closest survivor is
+**1,357 px from the known satellite trail**. The trail is not in the stage's own
+candidate list at any setting. Its `min_cluster_segments` gate was also
+undocumented -- the config's `min_segment_accept` gates a different, later check.
+
+All four real detections in 996195p are bit-identical before and after removal
+(1286, 584, 12001, 11034 px).
+
+The gate that decided whether the sweep ran, and which also gated the Radon
+rescue, was `prescreen_confirmed` plus a `low_confidence` flag. Both were
+statements about cost, and both could suppress a more sensitive detector on the
+strength of a cheaper one having found something. The rescue is now gated on the
+image alone: it runs unless the prescreen has already masked enough to have
+handled the frame.
+
+| amp | before | after |
+|---|---|---|
+| 996195p HDU 35 (real trail, prescreen succeeds) | 37 s | **1.2 s** |
+| 996195p HDU 1 (nothing found, rescue runs) | 37 s | **31.5 s** |
+
+### `streaks` pre-masked veto (`mask_params.max_premasked_fraction`, default 0.25)
+
+A component lying mostly inside the mask the pipeline already carries is not a new
+finding. On real amps the dominant false positive is a saturated star's bleed, and
+the two classes separate cleanly:
+
+| class | pre-masked fraction | median `data_sub` (sky ~150 e-) | across-MAD | shape |
+|---|---|---|---|---|
+| saturated-star bleed | **0.45** | 1,675-1,983 e- | 1.13-1.16 px | hairline, 1-row step where the wing brightens |
+| satellite trail | **0.02** | 45-50 e- | 4.45 px | constant-width band, tapers along its length |
+
+The pre-masked fraction is the cheapest of the four discriminators: a factor of 22
+apart, and both masks are already in hand at that point in the pipeline. Applied
+per component, so a stage returning both a bleed and a trail keeps the trail.
+
+On 996195p the veto removes both false positives (HDUs 1 and 16) and leaves both
+real trails untouched at 12,001 and 11,034 px.
 
 ### `cosmics` single pass (`cosmic_ray.single_pass`, default false)
 

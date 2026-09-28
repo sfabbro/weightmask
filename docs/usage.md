@@ -139,20 +139,26 @@ The streak stage dominates a CCD's time, and two settings decide most of it:
 
 ```yaml
 streak_masking:
-  satdet_params:
-    skip_when_prescreen_confirmed: true   # default; -24.5 s/CCD
   mrt_rescue_params:
     enable: true
     bin: 1                                # 4 = ~1.6 s instead of ~20 s
     sinogram_highpass: 101                # samples; 0 disables
     sigma_rel_floor: 0.001
+  mask_params:
+    max_premasked_fraction: 0.25          # drop a component the pipeline already flagged
 ```
 
-`skip_when_prescreen_confirmed` skips the full-resolution Canny/Hough sweep when
-the binned-Hough prescreen has already accepted a trail. Turning it off on
-`1013719p` HDU 1 did not recover the missed injected trails: the sweep returned
-no candidates. `profile_accept` keeps only components that concentrate about a
-fitted line narrower than `mask_params.max_support_width`.
+`profile_accept` keeps only components that concentrate about a fitted line
+narrower than `mask_params.max_support_width`. `max_premasked_fraction` drops a
+streak component lying mostly inside the mask the earlier stages already
+produced, because that is not a new finding: on real MegaCam amps a saturated
+star's bleed measures 0.45 and a genuine satellite trail 0.02.
+
+The Radon rescue now runs whenever the prescreen has not already masked enough
+to have handled the frame, rather than when a separate "confidence" flag says
+so. Previously that flag belonged to a Canny/Hough stage which was measured
+accepting nothing on 56 of 56 real amps, so the gate was a cost heuristic that
+could suppress the more sensitive detector.
 
 `mrt_rescue_params` is a Radon rescue for faint trails, and it is the most expensive
 thing in the stage. `bin` mean-bins the projection image before the transform; the
