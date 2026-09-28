@@ -2,6 +2,48 @@
 
 ## Unreleased
 
+### Delete the Canny/Hough stage, and stop a re-mask of known-bad pixels
+
+Measured over 56 real MegaCam amps (every 4th HDU of six exposures, production
+inputs captured from the `process_image` streak stage), the `satdet` stage --
+multi-scale Canny + probabilistic Hough + segment clustering -- **ran on 56 of
+56 amps, accepted a candidate on none, and explained zero pixels of any final
+mask: 1,543 s across the sweep, 27.5 s per amp.**
+
+It is not mis-tuned. Sweeping `confidence_threshold` from 0.22 down to 0.02
+produced zero acceptances on six amps including both known real trails. Sweeping
+the Canny thresholds from 0.06/0.22 up to 0.60/1.30 left acceptance at zero
+too. Internally the stage is not idle -- it produces ~131,000 Hough segments and
+~5,300 clusters on a 9.8 Mpix amp -- but only 16 clusters survive its own gates
+and **the closest survivor is 1,357 px from the known satellite trail**, so the
+trail is not in the stage's own candidate list at any setting. Its
+`min_cluster_segments` gate is also undocumented: the config's `min_segment_
+accept` gates a different, later check.
+
+Removed: `_detect_streaks_satdet` and 13 helpers only it called, plus
+`_StreakImageCache` and the three unmasked-retry config knobs.
+`_refine_trail_mask`, `_sample_trail_strip` and the rest of the strip machinery
+survive -- houghpeaks, contours and the rescue all use them.
+
+**All four real detections in 996195p are bit-identical before and after** (1286,
+584, 12001, 11034 px), so nothing was lost. HDU 35's streak stage went 37 s ->
+1.2 s, because the prescreen's own detection is now enough to skip the rescue;
+HDU 1 is 37 s -> 31.5 s, where the rescue still runs.
+
+The rescue gate was rewritten while the stage it depended on was being deleted.
+It used to be `low_confidence`, a flag owned by satdet, combined with a
+`prescreen_confirmed` heuristic -- a cost optimisation that could veto a more
+sensitive detector. It is now a statement about the image: the rescue runs unless
+the prescreen has already masked enough to have handled the frame.
+
+**Pre-masked veto.** A component lying mostly inside the mask the pipeline already
+carries is not a new finding. The dominant false positive on real amps is a
+saturated star's bleed: 45% of its pixels are already flagged, against **2%** for
+a real satellite trail -- a factor of 22, and free to compute because both masks
+are already in hand. Applied per component so a stage returning both a bleed and
+a trail keeps the trail, and to all four stages. On 996195p this removes the two
+false positives (HDUs 1 and 16) and leaves both real trails untouched.
+
 ### Streak benchmarks were scoring a code path production never runs
 
 `score_trail_truth.py` and `streak_inject.py` each built their own detector

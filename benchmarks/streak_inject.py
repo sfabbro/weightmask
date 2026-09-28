@@ -19,7 +19,7 @@ Usage:
 Detector inputs are captured from the ``process_image`` streak stage, so the
 background iteration and the exclusion mask match production. One background pass
 over an unmasked frame leaves chip-fixed columns in ``data_sub``, which
-manufactures false positives *and* flips ``prescreen_confirmed`` so that satdet,
+manufactures false positives *and* could flip the prescreen gate away from the
 the Radon rescue and RANSAC never run.
 """
 
@@ -141,16 +141,36 @@ def inject_grid(shape, specs, rng, min_separation=500.0, margin=0.15):
     return flux, truth, trails
 
 
-def trail_recall(mask, body, dilation=5):
-    """Recall and 5px-tolerant recall for one trail's own truth mask."""
-    from scipy.ndimage import binary_dilation
+def trail_recall(mask, body, dilation=5, line_half_width=2.0):
+    """Three recalls for one trail's own truth mask.
+
+    ``exact``
+        Fraction of the truth band the mask covers directly.
+    ``tolerant``
+        As ``exact`` but counting the mask anywhere within ``dilation`` px.
+    ``line``
+        Fraction of the truth band lying within ``line_half_width`` px of *any*
+        mask pixel.
+
+    ``line`` is the one that answers "was this trail found and localised". A
+    detector emits a fitted centre line, typically 1 px wide, while the injected
+    body is a 3.7 px-wide Gaussian band (``across < 1.86`` px). Comparing the two
+    directly caps the score near 0.74 no matter how well centred the line is, so
+    ``exact`` measures a width convention rather than a detection. Measured on
+    1013719p HDU 19 at 20 sigma: ``exact`` 0.669 with a median transverse offset
+    of 0.96 px and an along-trail span of 121% of the truth -- i.e. found dead
+    centre and slightly long, yet scored as two-thirds recovered.
+    """
+    from scipy.ndimage import binary_dilation, distance_transform_edt
 
     n_px = int(np.count_nonzero(body))
     if n_px == 0:
-        return 0.0, 0.0
+        return 0.0, 0.0, 0.0
     exact = float(np.count_nonzero(mask & body)) / n_px
     hits = int(np.count_nonzero(mask & binary_dilation(body, iterations=dilation)))
-    return exact, min(1.0, hits / n_px)
+    distance = distance_transform_edt(~mask)
+    line = float(np.count_nonzero(distance[body] <= line_half_width)) / n_px
+    return exact, min(1.0, hits / n_px), line
 
 
 def score_mask(mask, baseline, truth, dilation=5):
@@ -201,6 +221,7 @@ TSV_COLUMNS = [
     "truth_px",
     "recall",
     "recall5",
+    "recall_line",
     "fp_px",
     "fp5_px",
     "novel_px",
@@ -218,15 +239,17 @@ def format_tsv(rows):
 
 
 def summarise(rows):
-    """Aggregate the grid into ``(mean recall, mean 5px recall, mean fp5)``."""
+    """Aggregate into ``(mean recall, mean 5px recall, mean line recall, mean fp5)``."""
     if not rows:
-        return 0.0, 0.0, 0.0
+        return 0.0, 0.0, 0.0, 0.0
     recalls = [float(row["recall"]) for row in rows if row.get("recall") != ""]
     tolerant = [float(row["recall5"]) for row in rows if row.get("recall5") != ""]
+    line = [float(row["recall_line"]) for row in rows if row.get("recall_line") != ""]
     fp5 = [float(row["fp5_px"]) for row in rows]
     return (
         sum(recalls) / max(1, len(recalls)),
         sum(tolerant) / max(1, len(tolerant)),
+        sum(line) / max(1, len(line)),
         sum(fp5) / max(1, len(fp5)),
     )
 
@@ -256,7 +279,7 @@ def main(argv=None):
         default=None,
         help="flat-field FITS for the same HDU. Strongly recommended: the flat is what lets the "
         "upstream bad-column and bleed stages mask chip-fixed structure, and without it the cheap "
-        "prescreen accepts that structure as a 'trail' and suppresses satdet and the Radon rescue.",
+        "prescreen accepts that structure as a 'trail' and suppresses satdet and sensitive stages.",
     )
     parser.add_argument("--mode", default=None)
     parser.add_argument("--set", action="append", default=[], metavar="KEY=VALUE")
@@ -333,7 +356,7 @@ def main(argv=None):
         print(f"seed {seed}: trails={len(trails)} truth_px={int(truth.sum())} fp_px={fp_px} fp5_px={fp5_px} {dt:.1f}s")
 
         for index, trail in enumerate(trails):
-            exact, tolerant = trail_recall(mask, trail["truth"])
+            exact, tolerant, line = trail_recall(mask, trail["truth"])
             row = {key: value for key, value in trail.items() if key != "truth"}
             row.update(
                 {
@@ -344,6 +367,7 @@ def main(argv=None):
                     "truth_px": int(np.count_nonzero(trail["truth"])),
                     "recall": round(exact, 3),
                     "recall5": round(tolerant, 3),
+                    "recall_line": round(line, 3),
                     "fp_px": fp_px,
                     "fp5_px": fp5_px,
                     "novel_px": novel_px,
@@ -354,11 +378,11 @@ def main(argv=None):
             )
             rows.append(row)
 
-    mean_recall, mean_recall5, mean_fp5 = summarise(rows)
+    mean_recall, mean_recall5, mean_line, mean_fp5 = summarise(rows)
     if args.summary_only:
         print(
             f"grid summary: trails={len(rows)} mean_recall={mean_recall:.3f} "
-            f"mean_recall5={mean_recall5:.3f} mean_fp5_px={mean_fp5:.0f}"
+            f"mean_recall5={mean_recall5:.3f} mean_recall_line={mean_line:.3f} mean_fp5_px={mean_fp5:.0f}"
         )
     if args.out:
         with open(args.out, "w") as handle:

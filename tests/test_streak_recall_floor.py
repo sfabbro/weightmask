@@ -84,8 +84,8 @@ class TestStreakRecallFloor(unittest.TestCase):
         self.assertEqual(int(np.count_nonzero(self.clean_mask)), 0)
 
     def test_continuous_trails_are_recalled(self):
-        recalls = [exact for exact, _ in self.continuous]
-        tolerant = [loose for _, loose in self.continuous]
+        recalls = [exact for exact, _, _ in self.continuous]
+        tolerant = [loose for _, loose, _ in self.continuous]
         mean_recall = float(np.mean(recalls))
         mean_tolerant = float(np.mean(tolerant))
         self.assertGreaterEqual(
@@ -100,7 +100,7 @@ class TestStreakRecallFloor(unittest.TestCase):
         )
 
     def test_overall_tolerant_recall_floor(self):
-        mean_tolerant = float(np.mean([loose for _, loose in self.per_trail]))
+        mean_tolerant = float(np.mean([loose for _, loose, _ in self.per_trail]))
         self.assertGreaterEqual(mean_tolerant, FLOOR_ALL_RECALL5, f"grid mean recall5 fell to {mean_tolerant:.3f}")
 
     def test_false_positives_stay_bounded(self):
@@ -114,12 +114,12 @@ class TestStreakRecallFloor(unittest.TestCase):
         """Documents today's known gap without freezing it in place."""
         dashed = [trail for trail in self.trails if trail["dashed"]]
         for trail in dashed:
-            exact, tolerant = trail_recall(self.mask, trail["truth"])
+            exact, tolerant, line = trail_recall(self.mask, trail["truth"])
             self.assertGreaterEqual(exact, 0.0)
             self.assertGreaterEqual(tolerant, exact)
             print(
                 f"[knowngap] dashed len={trail['length']} sig={trail['peak_sig']}: "
-                f"recall={exact:.3f} recall5={tolerant:.3f}"
+                f"recall={exact:.3f} recall5={tolerant:.3f} recall_line={line:.3f}"
             )
 
 

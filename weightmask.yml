@@ -120,40 +120,6 @@ streak_masking:
   dilation_radius: 2             # pixels; grow accepted trails
   profile_accept: true           # keep only the fitted line; drop components wider than max_support_width
   debug: false                   # extra streak diagnostics
-  retry_without_existing_mask: true  # retry if the first pass looks like a masked-star false positive
-  retry_if_area_fraction_exceeds: 0.03  # retry when the trail covers more than this of the CCD
-  retry_if_support_width_exceeds: 10.0  # pixels; retry when the refined width is this broad
-  satdet_params:
-    bin_factor: 2                # bin before Hough; strip confirmation stays full-res
-    rescale_percentiles: [4.5, 93.0]  # stretch before Canny
-    gaussian_sigma: 2.0          # pixels; fallback Gaussian if gaussian_sigmas is unused
-    gaussian_sigmas: [1.5, 2.0, 3.0]  # pixels; multi-scale Canny pre-smooth
-    canny_low_threshold: 0.06    # Canny hysteresis low (relative)
-    canny_high_threshold: 0.22   # Canny hysteresis high (relative)
-    small_edge_perimeter: 40     # drop compact edge blobs smaller than this
-    hough_threshold: 6           # probabilistic Hough vote threshold
-    hough_min_line_length: 65    # pixels; shortest Hough segment
-    hough_max_line_gap: 20       # pixels; gap allowed along a segment
-    hough_rng_seed: 0            # RNG seed for the probabilistic Hough
-    cluster_angle_tol_deg: 2.5   # deg; merge collinear segments
-    cluster_rho_tol_px: 30.0     # pixels; merge offset for that cluster
-    max_transverse_rms: 8.0      # pixels; reject fat/non-linear clusters
-    edge_buffer: 16              # pixels; CCD-edge margin for "touches the border"
-    min_edge_touches: 0          # require this many border contacts (0 = off)
-    min_interior_span: 70.0      # pixels; minimum projected length inside the CCD
-    min_segment_density: 0.01    # inlier density along the candidate
-    candidate_corridor_radius: 10  # pixels; corridor around a Hough line
-    max_existing_mask_fraction: 0.8  # reject if this much of the corridor is already masked
-    max_candidates: 8            # cap Hough candidates per CCD
-    min_segment_accept: 2        # need this many supporting segments
-    confidence_threshold: 0.22   # primary-pass accept threshold
-    skip_when_prescreen_confirmed: true
-                                 # skip the full-resolution multi-scale Canny/Hough
-                                 # sweep when the binned-Hough prescreen already
-                                 # accepted a trail. Re-measured 2026-09-21 on
-                                 # 1013719p HDU 1 with this off: satdet returned
-                                 # 0 candidates and the two missed trails stayed
-                                 # at recall 0, for +29 s.
   houghpeak_params:
     enable: true                 # binned Hough-peak extractor
     bin: 4                       # spatial binning before the peak search
@@ -203,6 +169,9 @@ streak_masking:
     min_row_hit_fraction: 0.20   # fraction of rows that must contain mask
     min_col_hit_fraction: 0.10   # fraction of columns that must contain mask
     max_support_width: 12        # pixels; reject if the refined trail is wider
+    max_premasked_fraction: 0.25 # drop a streak component lying mostly in the upstream
+                                 # mask: it is not a new finding. Real satellite trails
+                                 # sit at 0.02 on MegaCam; saturated-star bleed at 0.45.
     max_row_gap: 0               # opt-in gap bridge for full-span Hough candidates (samples)
     min_row_run: 0               # when bridging, ignore runs shorter than this many samples
   enable_sparse_ransac: true     # dashed-trail recovery on residual bright pixels
