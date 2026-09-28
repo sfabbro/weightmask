@@ -1,8 +1,12 @@
 import os
+import sys
 
 import numpy as np
 
-from tests.simulate_and_test import create_simulated_data
+# Run as `python examples/complex_simulation_example.py`: put the repo root on
+# the path so `tests` is importable (same shim as examples/test_real_mef.py).
+sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))  # noqa: E402
+from tests.simulate_and_test import create_simulated_data  # noqa: E402
 
 
 def run_complex_demonstration():

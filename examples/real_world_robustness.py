@@ -1,4 +1,10 @@
-from tests.simulate_and_test import run_masking_test
+import os
+import sys
+
+# Run as `python examples/real_world_robustness.py`: put the repo root on the
+# path so `tests` is importable (same shim as examples/test_real_mef.py).
+sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))  # noqa: E402
+from tests.simulate_and_test import run_masking_test  # noqa: E402
 
 
 def demonstrate_robustness():

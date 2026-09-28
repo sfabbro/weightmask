@@ -10,7 +10,7 @@ test = "pytest"
 benchmark-synthetic = "python -m tests.benchmarks.run --suite synthetic_v2 --with-baselines"
 benchmark-megacam = "python -m tests.benchmarks.run --suite megacam_real"
 benchmark-acs = "python -m tests.benchmarks.run --suite acs_compare"
-example-complex = "python examples/complex_simulation_example.py"
+example-complex = "python -m examples.complex_simulation_example"
 science-gate = "python benchmarks/science_gate.py"
 
 [dependencies]
