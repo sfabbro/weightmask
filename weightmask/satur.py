@@ -286,7 +286,9 @@ def detect_saturated_pixels(sci_data, sci_hdr, config):
 
     print("Attempting guarded histogram-based saturation detection...")
     finite_data = sci_data[np.isfinite(sci_data)]
-    effective_full_scale, advisory = _estimate_effective_full_scale(sci_data, sci_hdr, config, header_keyword, finite_data=finite_data)
+    effective_full_scale, advisory = _estimate_effective_full_scale(
+        sci_data, sci_hdr, config, header_keyword, finite_data=finite_data
+    )
     saturation_level, sat_method_used = _saturation_for_region(
         sci_data, sci_hdr, config, header_keyword, effective_full_scale, advisory, finite_data=finite_data
     )

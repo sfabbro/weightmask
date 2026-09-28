@@ -372,13 +372,9 @@ def determine_output_paths(args: argparse.Namespace, input_path: str, config: di
         args.output_mask if args.output_mask is not None else os.path.join(output_dir, f"{base_out}.mask.fits")
     )
     out_invvar_path = (
-        args.output_invvar
-        if args.output_invvar is not None
-        else os.path.join(output_dir, f"{base_out}.ivar.fits")
+        args.output_invvar if args.output_invvar is not None else os.path.join(output_dir, f"{base_out}.ivar.fits")
     )
-    out_sky_path = (
-        args.output_sky if args.output_sky is not None else os.path.join(output_dir, f"{base_out}.sky.fits")
-    )
+    out_sky_path = args.output_sky if args.output_sky is not None else os.path.join(output_dir, f"{base_out}.sky.fits")
     out_weight_raw_path = args.output_weight_raw
 
     individual_mask_paths = {}

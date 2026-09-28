@@ -171,9 +171,7 @@ class TestParallelEquivalence(unittest.TestCase):
             args = Namespace(tile_size=1024, individual_masks=False, max_workers=1)
             cfg = _load_cfg()
             with fitsio.FITS(sp) as hi, fitsio.FITS(fp) as hf:
-                n = process_all_hdus(
-                    [1, 2, 3], hi, hf, cfg, paths, args, flat_path=fp, input_path=sp
-                )
+                n = process_all_hdus([1, 2, 3], hi, hf, cfg, paths, args, flat_path=fp, input_path=sp)
             self.assertEqual(n, 0)
 
     def test_short_flat_mef_reports_why(self):

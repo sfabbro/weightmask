@@ -122,7 +122,9 @@ def detect_objects(data_sub, bkg_rms_map, existing_mask, config):
 
         seed_thresh = float(clean_config.get("seed_thresh_factor", 1.25)) * extract_thresh
         try:
-            seed_objects = _run_sep_extract(d_sub, b_rms, m_in, seed_thresh, min_area, clean_config, segmentation_map=False)
+            seed_objects = _run_sep_extract(
+                d_sub, b_rms, m_in, seed_thresh, min_area, clean_config, segmentation_map=False
+            )
         except Exception as e:
             print(f"  ERROR: SEP seed extraction failed: {e}")
             return np.zeros(data_sub.shape, dtype=bool)

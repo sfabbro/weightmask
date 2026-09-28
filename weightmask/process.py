@@ -282,9 +282,7 @@ def process_image(
     print("  (1.1/7) Detecting saturation on the full image...")
     sat_cfg = dict(config.get("saturation", {}))
     with _timed(timings, "saturation"):
-        saturation_level, sat_method_used, sat_mask = detect_saturated_pixels(
-            sci_data_full, sci_hdr, sat_cfg
-        )
+        saturation_level, sat_method_used, sat_mask = detect_saturated_pixels(sci_data_full, sci_hdr, sat_cfg)
     final_mask_int[sat_mask] |= MASK_BITS["SAT"]
     header_info["SAT_LVL"], header_info["SAT_METH"] = saturation_level, sat_method_used
 
@@ -294,9 +292,7 @@ def process_image(
     # Calculate preliminary background RMS for CR and Bleed masking
     print("  Calculating preliminary background RMS...")
     with _timed(timings, "background_prelim"):
-        prelim_bkg_map, prelim_bkg_rms = estimate_background(
-            sci_data_full, interim_mask_bool, sep_bg_cfg
-        )
+        prelim_bkg_map, prelim_bkg_rms = estimate_background(sci_data_full, interim_mask_bool, sep_bg_cfg)
 
     # --- 1.5 Bleed Trail (Blooming) Masking ---
     with _timed(timings, "bleed"):

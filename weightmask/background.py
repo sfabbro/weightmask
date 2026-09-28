@@ -305,12 +305,7 @@ def _repair_negative_dips(bkg_map, sci_data, bkg_rms_map, mask, config, diagnost
     except Exception:
         return bkg_map
     try:
-        candidate = (
-            guide
-            & (np.asarray(bkg_map) < 0)
-            & np.isfinite(data)
-            & (~np.asarray(mask, dtype=bool))
-        )
+        candidate = guide & (np.asarray(bkg_map) < 0) & np.isfinite(data) & (~np.asarray(mask, dtype=bool))
     except Exception:
         return bkg_map
     n_cand = int(np.count_nonzero(candidate))
@@ -334,23 +329,11 @@ def _repair_negative_dips(bkg_map, sci_data, bkg_rms_map, mask, config, diagnost
         fill_nn = skymap[tuple(idx)]
         bad_map = (data - skymap) > thresh
         # Tier 1: neighbor fill where the data agree with it.
-        accept = (
-            candidate
-            & np.isfinite(thresh)
-            & np.isfinite(fill_nn)
-            & bad_map
-            & (np.abs(data - fill_nn) <= thresh)
-        )
+        accept = candidate & np.isfinite(thresh) & np.isfinite(fill_nn) & bad_map & (np.abs(data - fill_nn) <= thresh)
         # Tier 2: deep interiors whose border fill is still depressed fall back
         # to the global median when the data agree with that instead.
         if np.isfinite(skymed):
-            accept2 = (
-                candidate
-                & ~accept
-                & np.isfinite(thresh)
-                & bad_map
-                & (np.abs(data - skymed) <= thresh)
-            )
+            accept2 = candidate & ~accept & np.isfinite(thresh) & bad_map & (np.abs(data - skymed) <= thresh)
         else:
             accept2 = np.zeros_like(candidate, dtype=bool)
     except Exception as e:

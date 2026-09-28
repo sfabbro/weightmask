@@ -212,7 +212,10 @@ class TestDipRepair(unittest.TestCase):
         tiny_data = np.full((10, 10), 1000.0, dtype=np.float32)
         tiny_rms = np.full((10, 10), 10.0, dtype=np.float32)
         out2 = _repair_negative_dips(
-            tiny_sky, tiny_data, tiny_rms, np.zeros((10, 10), bool),
+            tiny_sky,
+            tiny_data,
+            tiny_rms,
+            np.zeros((10, 10), bool),
             {"dip_repair_enable": False},
         )
         self.assertTrue(bool((out2 == -10.0).all()))  # disabled: untouched

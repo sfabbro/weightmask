@@ -11,7 +11,7 @@ callable internals, not a stability promise. Science methods are in
 ```python
 from weightmask import WeightMapGenerator
 
-gen = WeightMapGenerator(config)          # raises ValueError if config is invalid
+gen = WeightMapGenerator(config)  # raises ValueError if config is invalid
 out = gen.process(data, header=None, flat_data=None, tile_size=1024)
 ```
 

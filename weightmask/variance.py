@@ -307,7 +307,9 @@ def _unbias_variance(inv_variance, sci_data, sky_map, gain, epsilon):
         n_negative = int(np.count_nonzero(valid & (var_bg <= epsilon)))
         if n_negative:
             frac = n_negative / max(int(np.count_nonzero(valid)), 1)
-            print(f"    WARNING: variance unbiasing negative on {n_negative} pixels ({frac:.1%}); retained total variance.")
+            print(
+                f"    WARNING: variance unbiasing negative on {n_negative} pixels ({frac:.1%}); retained total variance."
+            )
         effective_var = np.where(var_bg > epsilon, var_bg, var_total)
         new_inv_variance = np.where(
             valid & np.isfinite(effective_var) & (effective_var > 0),

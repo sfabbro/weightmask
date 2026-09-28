@@ -26,9 +26,7 @@ class TestWeight(unittest.TestCase):
             },
         }
 
-        weight_map, confidence_map, product = generate_weight_and_confidence(
-            inv_variance_map, final_mask_int, config
-        )
+        weight_map, confidence_map, product = generate_weight_and_confidence(inv_variance_map, final_mask_int, config)
 
         # Check that we got results
         self.assertIsNotNone(weight_map)
@@ -72,9 +70,7 @@ class TestWeight(unittest.TestCase):
             },
         }
 
-        weight_map, confidence_map, product = generate_weight_and_confidence(
-            inv_variance_map, final_mask_int, config
-        )
+        weight_map, confidence_map, product = generate_weight_and_confidence(inv_variance_map, final_mask_int, config)
 
         # Check that we got results
         self.assertIsNotNone(weight_map)
@@ -102,9 +98,7 @@ class TestWeight(unittest.TestCase):
             },
         }
 
-        weight_map, confidence_map, product = generate_weight_and_confidence(
-            inv_variance_map, final_mask_int, config
-        )
+        weight_map, confidence_map, product = generate_weight_and_confidence(inv_variance_map, final_mask_int, config)
 
         # Check that we got results
         self.assertIsNotNone(weight_map)

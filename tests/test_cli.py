@@ -488,9 +488,7 @@ class TestValidateInputFiles(unittest.TestCase):
     def test_missing_input_still_reports_the_clean_path(self):
         # CFITSIO puts the spec at the end; `extract_hdu_spec` only strips a
         # trailing "[N]", so this is the form that must be reported cleanly.
-        args = Namespace(
-            input_file="/nonexistent/dir.fits[2]", flat_image=None, badpix_mask=None, dark_image=None
-        )
+        args = Namespace(input_file="/nonexistent/dir.fits[2]", flat_image=None, badpix_mask=None, dark_image=None)
         with contextlib.redirect_stdout(io.StringIO()) as buf:
             self.assertFalse(validate_input_files(args))
         self.assertIn("/nonexistent/dir.fits", buf.getvalue())

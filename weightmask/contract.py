@@ -199,8 +199,7 @@ class ArtifactMetadata:
                 decoded = json.loads(payload_raw)
             except (TypeError, json.JSONDecodeError) as exc:
                 warnings.warn(
-                    f"Provenance cards are present but could not be decoded ({exc}); "
-                    f"treating the producer as unknown.",
+                    f"Provenance cards are present but could not be decoded ({exc}); treating the producer as unknown.",
                     RuntimeWarning,
                 )
                 provenance_state = "undecodable"
@@ -394,7 +393,9 @@ def build_weight_product(
         if np.isfinite(normalization) and normalization > 0:
             confidence = np.clip(weight / normalization, 0.0, 1.0).astype(np.float32, copy=False)
         else:
-            print(f"  WARNING: confidence normalization failed (percentile={normalization}); confidence map is all-zero.")
+            print(
+                f"  WARNING: confidence normalization failed (percentile={normalization}); confidence map is all-zero."
+            )
 
     producer = producer or ProducerMetadata()
     provenance = dict(provenance or {})

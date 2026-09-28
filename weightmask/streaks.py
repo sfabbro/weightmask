@@ -1674,9 +1674,7 @@ def _detect_streaks_satdet(data_sub, bkg_rms_map, existing_mask, config, cache=N
     if not segments:
         return np.zeros(data_sub.shape, dtype=bool), [], {"scales": debug_scales, "accepted_count": 0}
 
-    candidates = _build_satdet_candidates(
-        segments, data_sub, data_sub.shape, cfg, existing_mask, cache=cache
-    )
+    candidates = _build_satdet_candidates(segments, data_sub, data_sub.shape, cfg, existing_mask, cache=cache)
     streak_mask = np.zeros(data_sub.shape, dtype=bool)
     accepted = []
     for candidate in candidates:
