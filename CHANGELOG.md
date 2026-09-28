@@ -2,6 +2,50 @@
 
 ## Unreleased
 
+### Streak benchmarks were scoring a code path production never runs
+
+`score_trail_truth.py` and `streak_inject.py` each built their own detector
+inputs: one `estimate_background` pass over the raw frame with an all-False
+exclusion. Production does neither. It iterates the background (preliminary pass,
+then cosmic-ray and bleed masking, then a final pass over the accumulated mask)
+and it hands `detect_streaks` a populated
+`interim_mask_bool | final_obj_mask | detector_prior`. Both benchmarks therefore
+measured something the pipeline never executes.
+
+Three separate things followed from that, and the first two were wrong:
+
+1. **The committed false-positive baseline was the background stage's error
+   attributed to the streak stage.** A single unmasked pass leaves the chip-fixed
+   columns and rows in `data_sub` as bright linear features. Re-scored on the
+   production path, on the same 8 HDUs and the same 32 labelled entries: **8
+   false positives (rate 0.250) -> 1 (0.031)**, gate 0.100, so the gate passes
+   where the committed run recorded 0.124 and failed. Seven of the eight HDUs go
+   to zero. `houghpeaks` scores 0.000 on the same inputs for 12 s against 567 s
+   for the full cascade.
+2. **The `bin` recall table in `weightmask.yml` cannot be used to pick a knob.**
+   It was measured on the same non-production path, so the documented
+   non-monotonicity (bin=1 scoring 0.36 at 6 sigma where bin=4 scores 0.94) was
+   never a resolution trade. The pick in that comment is withdrawn pending
+   re-measurement.
+3. **The `prescreen_confirmed` suppression is not the recall defect it looked
+   like.** It was the natural suspect -- the cheap prescreen accepting something
+   skips satdet and the Radon rescue. Flipping
+   `satdet_params.skip_when_prescreen_confirmed` to `false` on injected trails
+   moved the cost from 6.0 s to 22.6 s and left recall **exactly unchanged** at
+   0.101. Rejected.
+
+The scoring tally was checked against the committed totals before any comparison
+was drawn: the method reproduces 30 FP / 241 entries on the full set exactly.
+
+`benchmarks/production_inputs.py` replaces the hand-rolled inputs with a capture
+of the real `process_image` streak stage, so the harnesses cannot drift from the
+pipeline again. It raises rather than falling back if the streak stage is not
+reached, because a silent fallback is the defect. The score artifact now records
+the config path, its sha256 and the `streak_masking` block; the 2026-09-18
+artifact recorded none, which is why its timings could not be reconciled with a
+direct measurement. Five new tests in `tests/test_production_inputs.py` pin the
+capture to production and were each mutation-checked.
+
 ### Verified against real data
 
 Every performance change in the audit below was checked end-to-end, not just per

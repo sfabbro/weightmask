@@ -26,6 +26,7 @@ from __future__ import annotations
 
 import argparse
 import contextlib
+import hashlib
 import io
 import json
 import os
@@ -35,10 +36,13 @@ from concurrent.futures import ProcessPoolExecutor
 
 import fitsio
 import numpy as np
+import yaml
 
 MODULE_DIR = os.path.dirname(os.path.abspath(__file__))
 if MODULE_DIR not in sys.path:
     sys.path.insert(0, MODULE_DIR)
+
+from production_inputs import capture_detector_inputs, streak_config  # noqa: E402
 
 DEFAULT_FIXTURE = os.path.join("benchmarks", "trail_truth", "megacam_real_labels.json")
 DEFAULT_REPORT = os.path.join("benchmarks", "trail_truth", "megacam_real_labels.score.json")
@@ -100,9 +104,6 @@ def run_detector(detector, science, data_sub, rms, existing, header, streak_cfg)
 def score_hdu(job):
     """Run every detector on one (exposure, HDU) and score the entries there."""
     import fitsio
-    import yaml
-
-    from weightmask.background import estimate_background
 
     path, hdu, entries, config_path, detectors, corridor_px, quiet = job[:7]
     apply_persistence = bool(job[7]) if len(job) > 7 else False
@@ -113,15 +114,9 @@ def score_hdu(job):
             header = handle[hdu].read_header()
         with contextlib.redirect_stdout(io.StringIO()) if quiet else contextlib.nullcontext():
             config = yaml.safe_load(open(config_path))
-            streak_cfg = dict(config["streak_masking"])
-            streak_cfg["enable"] = True
-            existing = np.zeros(science.shape, dtype=bool)
-            if apply_persistence:
-                prior = _persistence_prior(path, header, science.shape)
-                if prior is not None:
-                    existing |= prior
-            sky, rms = estimate_background(science, existing, config["sep_background"])
-            data_sub = science - sky
+            streak_cfg = streak_config(config)
+            prior = _persistence_prior(path, header, science.shape) if apply_persistence else None
+            data_sub, rms, existing = capture_detector_inputs(science, header, config, detector_prior=prior)
         # Rasterise every band once: the detectors share them.
         bands = [labelled_band(entry, science.shape, corridor_px) for entry in entries]
         for detector in detectors:
@@ -274,6 +269,10 @@ def main(argv=None):
         "--min-trail-recall", type=float, default=0.0, help="gate on trail recall (vacuous while there are no trails)"
     )
     parser.add_argument("--exposures", help="comma-separated subset")
+    parser.add_argument(
+        "--hdu-list",
+        help="comma-separated exposure:hdu pairs to restrict scoring to, e.g. 1013719p:17,1013720p:5",
+    )
     parser.add_argument("--workers", type=int, default=4)
     parser.add_argument("--report", default=DEFAULT_REPORT)
     parser.add_argument(
@@ -296,6 +295,22 @@ def main(argv=None):
         if wanted and entry["exposure"] not in wanted:
             continue
         grouped.setdefault((entry["exposure"], entry["hdu"]), []).append(entry)
+
+    if args.hdu_list:
+        requested = set()
+        for item in args.hdu_list.split(","):
+            item = item.strip()
+            if not item:
+                continue
+            exposure, _, hdu = item.rpartition(":")
+            if not exposure or not hdu.isdigit():
+                print(f"ERROR: --hdu-list entry {item!r} is not exposure:hdu", file=sys.stderr)
+                return 2
+            requested.add((exposure, int(hdu)))
+        absent = requested - set(grouped)
+        if absent:
+            print(f"WARNING: no labelled entries for {sorted(absent)}", file=sys.stderr)
+        grouped = {key: value for key, value in grouped.items() if key in requested}
 
     plan, jobs, missing = [], [], set()
     for (exposure, hdu), entries in sorted(grouped.items()):
@@ -326,11 +341,24 @@ def main(argv=None):
 
     totals, skipped = summarise(fixture, per_hdu, detectors, args.min_coverage, args.skip_px)
 
+    # Record the config that produced these numbers. The 2026-09-18 score
+    # artifact carried no config, so its timings could not be reconciled with a
+    # direct measurement and the baseline was not reproducible.
+    config_source = open(args.config).read()
+    config_record = {
+        "path": args.config,
+        "sha256": hashlib.sha256(config_source.encode()).hexdigest(),
+        "detector_inputs": "production (process_image streak stage)",
+        "streak_masking": yaml.safe_load(config_source).get("streak_masking", {}),
+    }
+
     lines = [
         "# Real-MegaCam label-set score",
         "",
         f"Fixture: `{args.fixture}` (schema {fixture['schema']}). Detectors: {', '.join(detectors)}.",
         f"Coverage threshold {args.min_coverage:.2f} of a {2 * args.corridor_px:.0f} px-wide labelled band.",
+        f"Config `{config_record['path']}` sha256 `{config_record['sha256'][:16]}`. Detector inputs are captured from the",
+        "`process_image` streak stage, so the exclusion mask matches production.",
         "",
         "| detector | trail recall | artefact entries | artefact FPs | FP rate | artefact pixel coverage | HDUs | seconds |",
         "|---|---|---|---|---|---|---|---|",
@@ -365,6 +393,7 @@ def main(argv=None):
     report = {
         "fixture": args.fixture,
         "detectors": detectors,
+        "config": config_record,
         "thresholds": {"min_coverage": args.min_coverage, "corridor_px": args.corridor_px, "skip_px": args.skip_px},
         "totals": totals,
         "skipped": skipped,

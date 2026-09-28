@@ -12,13 +12,15 @@ The injection and scoring helpers are importable, which is what
 
 Usage:
     pixi run python benchmarks/streak_inject.py <exposure.fits.fz> [--hdu N]
-        [--seeds 3] [--out results.tsv] [--mask-path MASK.fits]
+        [--seeds 3] [--out results.tsv]
         [--exposure-id NAME] [--mode auto_ground] [--set key=value ...]
         [--quick] [--no-cache]
 
-``--mask-path`` replaces the previously hardcoded production location; when it is
-omitted a mask is looked for beside the exposure, and when none exists an empty
-mask is used (recorded in the TSV's ``note`` column).
+Detector inputs are captured from the ``process_image`` streak stage, so the
+background iteration and the exclusion mask match production. One background pass
+over an unmasked frame leaves chip-fixed columns in ``data_sub``, which
+manufactures false positives *and* flips ``prescreen_confirmed`` so that satdet,
+the Radon rescue and RANSAC never run.
 """
 
 import argparse
@@ -160,31 +162,6 @@ def score_mask(mask, baseline, truth, dilation=5):
     return int(np.count_nonzero(novel & ~truth)), int(np.count_nonzero(novel & ~near)), int(np.count_nonzero(novel))
 
 
-def load_existing_mask(mask_path, hdu, shape):
-    """Read a production mask HDU if one is available, else an empty mask."""
-    if not mask_path:
-        return np.zeros(shape, dtype=bool), "no mask file"
-    import fitsio
-
-    with fitsio.FITS(mask_path, "r") as handle:
-        if hdu >= len(handle):
-            return np.zeros(shape, dtype=bool), f"mask has no HDU {hdu}"
-        raw = handle[hdu].read()
-    if raw.shape != shape:
-        return np.zeros(shape, dtype=bool), f"mask HDU shape {raw.shape} != {shape}"
-    return (raw & 55) > 0, "production mask"
-
-
-def default_mask_path(exposure_path):
-    """Look for ``<pid>.mask.fits`` beside the exposure."""
-    directory, name = os.path.split(exposure_path)
-    stem = name.split(".")[0]
-    for candidate in (os.path.join(directory, f"{stem}.mask.fits"), os.path.join(directory, f"{stem}.mask.fits.fz")):
-        if os.path.exists(candidate):
-            return candidate
-    return None
-
-
 def apply_overrides(config, pairs):
     """Apply ``key=value`` (optionally dotted) overrides in place and return it."""
     from weightmask.utils import clean_config_dict
@@ -273,8 +250,14 @@ def main(argv=None):
     parser.add_argument("--seed", type=int, default=0, help="first seed; a run uses seed .. seed+N-1")
     parser.add_argument("--seeds", type=int, default=1)
     parser.add_argument("--out", default=None, help="write the grid to this TSV")
-    parser.add_argument("--mask-path", default=None, help="production mask (default: beside the exposure)")
     parser.add_argument("--exposure-id", default=None, help="label for the TSV (default: the file stem)")
+    parser.add_argument(
+        "--flat",
+        default=None,
+        help="flat-field FITS for the same HDU. Strongly recommended: the flat is what lets the "
+        "upstream bad-column and bleed stages mask chip-fixed structure, and without it the cheap "
+        "prescreen accepts that structure as a 'trail' and suppresses satdet and the Radon rescue.",
+    )
     parser.add_argument("--mode", default=None)
     parser.add_argument("--set", action="append", default=[], metavar="KEY=VALUE")
     parser.add_argument("--quick", action="store_true", help="six-trail grid instead of the full sweep")
@@ -287,7 +270,7 @@ def main(argv=None):
     import fitsio
     from astropy.stats import mad_std
 
-    from weightmask.background import estimate_background
+    from production_inputs import capture_detector_inputs
     from weightmask.streaks import detect_streaks
 
     base_cfg, streak_cfg = load_config(args)
@@ -296,13 +279,26 @@ def main(argv=None):
 
     with fitsio.FITS(args.exposure, "r") as handle:
         sci = np.ascontiguousarray(handle[args.hdu].read().astype(np.float32))
+        header = handle[args.hdu].read_header()
 
-    mask_path = args.mask_path if args.mask_path is not None else default_mask_path(args.exposure)
-    existing, note = load_existing_mask(mask_path, args.hdu, sci.shape)
+    flat = None
+    if args.flat:
+        with fitsio.FITS(args.flat, "r") as handle:
+            flat = np.ascontiguousarray(handle[args.hdu].read().astype(np.float32))
+
+    # Detector inputs must come from the production pipeline. A single background
+    # pass over an unmasked frame leaves the chip-fixed columns and rows in
+    # ``data_sub``: that manufactures false streak positives, and it also flips
+    # ``prescreen_confirmed`` so satdet, the Radon rescue and RANSAC are skipped.
+    # The recorded ``bin`` recall curve was non-monotonic for exactly that reason
+    # -- it measured whether the sensitive stages ran, not resolution.
+    base_cfg["streak_masking"] = dict(streak_cfg)
+    data_sub, rms, existing = capture_detector_inputs(sci, header, base_cfg, flat=flat)
+    note = "production streak stage" + ("" if flat is not None else " (NO FLAT)")
+    if flat is None:
+        print("WARNING: no --flat given; upstream bad-column/bleed masking is much weaker than production.")
     print(f"existing_mask: {int(existing.sum())} px ({note})")
 
-    sky, rms = estimate_background(sci, existing, base_cfg["sep_background"])
-    data_sub = sci - sky
     finite = data_sub[np.isfinite(data_sub)]
     noise = float(mad_std(finite[:: max(1, finite.size // 200000)]))
 
@@ -312,7 +308,12 @@ def main(argv=None):
         flux, truth, trails = inject_grid(sci.shape, specs, rng, args.min_separation)
         data_test = data_sub + flux * noise
 
-        cache_path = os.path.join(args.cache_dir, f"{exposure_id}_{args.hdu}_{seed}_{config_key(streak_cfg)}.npy")
+        # The "prod" tag is part of the key: baselines cached before the inputs
+        # came from the production stage were computed from a different image and
+        # must not be reused against these.
+        cache_path = os.path.join(
+            args.cache_dir, f"{exposure_id}_{args.hdu}_{seed}_{config_key(streak_cfg)}_prod.npy"
+        )
         if not args.no_cache and os.path.exists(cache_path):
             baseline = np.load(cache_path).astype(bool)
             print(f"seed {seed}: baseline cached ({int(baseline.sum())} px)")
