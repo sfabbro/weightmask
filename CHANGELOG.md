@@ -2,6 +2,30 @@
 
 ## Unreleased
 
+### Verified against real data
+
+Every performance change in the audit below was checked end-to-end, not just per
+change: mask, inverse variance, weight, confidence and sky products for three
+real MegaCam amps of `1013719p` (4644x2112, 29.4 Mpix total), streaks enabled,
+`weightmask.yml` unmodified, against the pre-audit revision `0811166`.
+
+**All 15 arrays bit-identical: zero differing pixels, max|diff| exactly 0.** The
+throughput work cost nothing in output on real data.
+
+- Saturation tail histogram: 1285 ms -> 47 ms per 9.8 Mpix amp, by binning only
+  the pixels in the tail instead of letting `np.histogram` sort all 9,811,968 of
+  them to count the 510 that lie in it. Exact -- counts are integers, so there is
+  no summation order to preserve.
+- Sky mesh reconstruction: 4.4x and bit-identical, via the `axis=0`/`axis=1`
+  form of the same cubic spline. Note this is the mesh<->full-res inverse used
+  when reading a stored sky product, not the per-CCD path, so it is not counted
+  toward CCD throughput.
+- `variance`: `np.divide(..., where=)` in place of boolean fancy-indexing.
+- `mef`: dropped redundant `np.array(..., copy=True)` around FITS reads, and
+  `astype(copy=False)` on reads. `fitsio.read()` returns an owning, writable
+  array for plain and RICE_1 tile-compressed images alike, so this is not an
+  mmap alias.
+
 ### Correctness and performance audit (bugs found and fixed)
 
 Continuation of the audit below, covering the MEF/CLI input layer:
