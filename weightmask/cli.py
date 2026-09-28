@@ -403,12 +403,20 @@ def determine_output_paths(args: argparse.Namespace, input_path: str, config: di
 
 
 def open_fits_files(input_path: str, flat_path: Optional[str]):
+    hdul_input = None
     try:
         hdul_input = fitsio.FITS(input_path, "r")
         hdul_flat = fitsio.FITS(flat_path, "r") if flat_path else None
         return hdul_input, hdul_flat
     except OSError as e:
         print(f"ERROR: Could not open input files: {e}")
+        # The input handle is already open at this point if the flat is what
+        # failed; returning (None, None) dropped it on the floor.
+        if hdul_input is not None:
+            try:
+                hdul_input.close()
+            except Exception:
+                pass
         return None, None
 
 
@@ -528,24 +536,27 @@ def run_pipeline(argv=None) -> int:
         detector_priors = build_persistence_priors(input_path, hdus_to_process, persistence)
         print(f"Persistence prior for {len(detector_priors)} HDU(s) from {len(persistence)} other exposure(s).")
 
-    process_success_count = process_all_hdus(
-        hdus_to_process,
-        hdul_input,
-        hdul_flat,
-        config,
-        paths,
-        args,
-        flat_path=flat_path,
-        hdul_badpix=hdul_badpix,
-        hdul_dark=hdul_dark,
-        max_workers=getattr(args, "max_workers", None),
-        input_path=input_path,
-        badpix_path=badpix_path,
-        dark_path=dark_path,
-        detector_priors=detector_priors,
-    )
-
-    _cleanup_hdul(hdul_input, hdul_flat, hdul_badpix, hdul_dark)
+    # Every exit from here must release the handles, including an exception out
+    # of the run itself: _cleanup_hdul used to run only on the success path.
+    try:
+        process_success_count = process_all_hdus(
+            hdus_to_process,
+            hdul_input,
+            hdul_flat,
+            config,
+            paths,
+            args,
+            flat_path=flat_path,
+            hdul_badpix=hdul_badpix,
+            hdul_dark=hdul_dark,
+            max_workers=getattr(args, "max_workers", None),
+            input_path=input_path,
+            badpix_path=badpix_path,
+            dark_path=dark_path,
+            detector_priors=detector_priors,
+        )
+    finally:
+        _cleanup_hdul(hdul_input, hdul_flat, hdul_badpix, hdul_dark)
 
     import warnings
 

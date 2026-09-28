@@ -8,6 +8,7 @@ implements :class:`ArrayHeaderIO`.
 from __future__ import annotations
 
 import json
+import warnings
 from dataclasses import dataclass, field
 from enum import Enum, IntFlag
 from typing import Any, Mapping, Protocol, runtime_checkable
@@ -185,14 +186,46 @@ class ArtifactMetadata:
     @classmethod
     def from_header(cls, header: Mapping[str, Any]) -> "ArtifactMetadata":
         payload_raw = _json_from_header_cards(header, "WMPROV", "WMPV")
-        try:
-            payload = json.loads(payload_raw)
-        except (TypeError, json.JSONDecodeError):
-            payload = {}
+        # Distinguish "this product carries no provenance" from "the provenance
+        # is there but unreadable". The second means a truncated write or a
+        # perturbed FITS header, and collapsing it to an empty payload produced
+        # a plausible-looking ProducerMetadata(version="unknown") that a caller
+        # could not tell from a genuine "unknown".
+        payload: dict = {}
+        if payload_raw is None:
+            provenance_state = "absent"
+        else:
+            try:
+                decoded = json.loads(payload_raw)
+            except (TypeError, json.JSONDecodeError) as exc:
+                warnings.warn(
+                    f"Provenance cards are present but could not be decoded ({exc}); "
+                    f"treating the producer as unknown.",
+                    RuntimeWarning,
+                )
+                provenance_state = "undecodable"
+            else:
+                if not isinstance(decoded, dict):
+                    warnings.warn(
+                        f"Provenance payload is {type(decoded).__name__}, not an object; "
+                        f"treating the producer as unknown.",
+                        RuntimeWarning,
+                    )
+                    provenance_state = "not_an_object"
+                else:
+                    payload = decoded
+                    provenance_state = "ok"
+        producer = payload.get("producer") or {}
+        if provenance_state != "ok" and producer:
+            warnings.warn(
+                f"Provenance is {provenance_state} but a producer record was expected; "
+                f"treating the producer as unknown.",
+                RuntimeWarning,
+            )
         return cls(
             artifact_type=str(header.get("WMART", "unknown")),
             contract_version=str(header.get("WMVERS", CONTRACT_VERSION)),
-            producer=ProducerMetadata.from_dict(payload.get("producer", {})),
+            producer=ProducerMetadata.from_dict(producer if isinstance(producer, dict) else {}),
             provenance=payload.get("provenance", {}),
             mask_polarity=header.get("WMMASK"),
             semantics=header.get("WMSEM"),

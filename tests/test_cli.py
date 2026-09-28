@@ -420,6 +420,57 @@ class TestValidateInputFiles(unittest.TestCase):
             self.assertIn("only 2 of 3 HDUs", log)
             self.assertIn("EXTNAME", log)
 
+    def test_handles_are_released_even_when_the_run_raises(self):
+        """_cleanup_hdul used to run only on the success path."""
+        with tempfile.TemporaryDirectory() as tmp:
+            sp = os.path.join(tmp, "s.fits")
+            fitsio.write(sp, np.full((32, 32), 1000.0, dtype=np.float32), clobber=True)
+            from weightmask import cli as cli_mod
+
+            calls = []
+            real = cli_mod._cleanup_hdul
+
+            def spy(*a, **k):
+                calls.append(tuple(x is not None for x in a))
+                return real(*a, **k)
+
+            with contextlib.redirect_stdout(io.StringIO()):
+                with patch.object(cli_mod, "_cleanup_hdul", side_effect=spy):
+                    with patch.object(cli_mod, "process_all_hdus", side_effect=RuntimeError("boom")):
+                        with self.assertRaises(RuntimeError):
+                            run_pipeline([sp, "-o", os.path.join(tmp, "o.fits")])
+            self.assertEqual(len(calls), 1, "handles leaked on the exception path")
+            self.assertTrue(calls[0][0], "the input handle was open and must be closed")
+
+    def test_open_fits_files_closes_the_input_when_the_flat_fails(self):
+        """Returning (None, None) used to drop an already-open input handle."""
+        from weightmask import cli as cli_mod
+
+        with tempfile.TemporaryDirectory() as tmp:
+            sp = os.path.join(tmp, "s.fits")
+            fitsio.write(sp, np.full((32, 32), 1000.0, dtype=np.float32), clobber=True)
+            state = {"closed": False}
+            real_fits = cli_mod.fitsio.FITS
+
+            def fake_fits(path, *a, **k):
+                if "nonexistent" in str(path):
+                    raise OSError("cannot open flat")
+                handle = real_fits(path, *a, **k)
+                real_close = handle.close
+
+                def close():
+                    state["closed"] = True
+                    return real_close()
+
+                handle.close = close
+                return handle
+
+            with patch.object(cli_mod.fitsio, "FITS", side_effect=fake_fits):
+                with contextlib.redirect_stdout(io.StringIO()):
+                    got = cli_mod.open_fits_files(sp, "/nonexistent/flat.fits")
+            self.assertEqual(got, (None, None))
+            self.assertTrue(state["closed"], "input handle was opened then dropped unclosed")
+
     def test_hdu_spec_on_an_auxiliary_input_is_rejected(self):
         # A flat/dark/keep-map is matched to each science HDU by index, so an
         # explicit [N] has no meaning and used to be parsed into a variable

@@ -1,4 +1,5 @@
 import sys
+import warnings
 from types import ModuleType
 
 import numpy as np
@@ -106,6 +107,35 @@ def test_non_finite_weight_and_confidence_are_rejected():
                 np.full(shape, bad, np.float32),
                 {},
             )
+
+
+def test_undecodable_provenance_warns_instead_of_becoming_version_unknown():
+    """A truncated provenance payload must not masquerade as a real 'unknown'.
+
+    `from_header` collapsed any decode failure to an empty payload, so a
+    truncated or perturbed FITS header produced a plausible
+    ProducerMetadata(version="unknown") indistinguishable from a genuine one.
+    """
+    artifact = ArtifactMetadata("quality_mask", ProducerMetadata(version="1.0"), {"k": "v"})
+    good = artifact.to_header()
+
+    with warnings.catch_warnings(record=True) as caught:
+        warnings.simplefilter("always")
+        assert ArtifactMetadata.from_header(good).producer.version == "1.0"
+    assert not caught, "a clean round trip must not warn"
+
+    truncated = {**good, "WMPVCNT": "1"}  # reassembles to invalid JSON
+    with pytest.warns(RuntimeWarning, match="could not be decoded"):
+        restored = ArtifactMetadata.from_header(truncated)
+    assert restored.producer.version == "unknown"
+
+    # Absent provenance is legitimate -- not every product carries it -- so it
+    # stays quiet rather than warning about a foreign producer.
+    absent = {k: v for k, v in good.items() if not k.startswith("WMPV") and k != "WMPVCNT"}
+    with warnings.catch_warnings(record=True) as caught:
+        warnings.simplefilter("always")
+        assert ArtifactMetadata.from_header(absent).producer.version == "unknown"
+    assert not caught, "absent provenance is not an error"
 
 
 def test_quality_bits_round_trip_through_integer_mask():
