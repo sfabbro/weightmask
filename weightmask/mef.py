@@ -693,16 +693,21 @@ def _clear_chip_replicas(catalogs, writers, config):
             # leaves STREAK cleared but the weight map still zeroed there.
             # Only the regular weight map is tracked: with no weight map
             # requested there is nothing to restore and nothing to report.
+            # Note a writer is only opened when its product was requested, so
+            # a weight map with no inverse-variance product leaves ivar_writer
+            # None. Looking up its positions anyway raised AttributeError,
+            # which escaped this function and left the mask and weight
+            # products permanently disagreeing.
             needs_restore = bool(np.any(only))
             needs_map_restore = needs_restore and fmap is not None
             weight_restored = not needs_map_restore
             if needs_map_restore:
                 wpos = map_writer.positions.get(cat["hdu"])
-                ipos = ivar_writer.positions.get(cat["hdu"])
+                ipos = ivar_writer.positions.get(cat["hdu"]) if ivar_writer is not None else None
                 if (
                     fivar is not None
-                    and wpos is not None
                     and ipos is not None
+                    and wpos is not None
                     and wpos < len(fmap)
                     and ipos < len(fivar)
                 ):

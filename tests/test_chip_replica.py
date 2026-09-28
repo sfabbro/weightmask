@@ -1,5 +1,7 @@
 """Chip-replica veto: the same CCD-local line on two chips is not a sky trail."""
 
+import contextlib
+import io
 import os
 import tempfile
 import unittest
@@ -79,6 +81,57 @@ class TestChipReplicaOnDisk(unittest.TestCase):
             bit = int(QualityBit.STREAK)
             self.assertFalse(bool(np.any(masks[0] & bit)))
             self.assertFalse(bool(np.any(masks[1] & bit)))
+
+    def test_weight_map_without_inverse_variance_does_not_crash_the_veto(self):
+        """No inverse-variance product means no ivar writer, hence no positions.
+
+        Looking up `ivar_writer.positions` unconditionally raised AttributeError,
+        which escaped `_clear_chip_replicas` (its handler catches only OSError)
+        after the mask had already been rewritten -- so the run aborted with the
+        mask saying "good" and the weight map still zeroed at the same pixels.
+        """
+        shape = (48, 48)
+
+        def column_streak(data_sub, _rms, _existing, _cfg):
+            return _column(data_sub.shape, data_sub.shape[1] // 2)
+
+        with tempfile.TemporaryDirectory() as tmp:
+            science = os.path.join(tmp, "sci.fits")
+            flat = os.path.join(tmp, "flat.fits")
+            rng = np.random.default_rng(2)
+            fitsio.write(science, None, clobber=True)
+            with fitsio.FITS(science, "rw") as handle:
+                for i in range(2):
+                    handle.write(
+                        (1000 + 15 * rng.standard_normal(shape)).astype(np.float32),
+                        header={"CCDID": f"CCD{i}"},
+                    )
+            fitsio.write(flat, None, clobber=True)
+            with fitsio.FITS(flat, "rw") as handle:
+                for _ in range(2):
+                    handle.write(np.ones(shape, dtype=np.float32))
+            paths = {
+                "out_map_path": os.path.join(tmp, "o.weight.fits"),
+                "out_mask_path": os.path.join(tmp, "o.mask.fits"),
+                "out_invvar_path": None,  # weight map but no inverse variance
+                "out_sky_path": None,
+                "out_weight_raw_path": None,
+                "individual_mask_paths": {},
+            }
+            args = Namespace(tile_size=32, individual_masks=False, max_workers=1)
+            cfg = yaml.safe_load(open("weightmask.yml"))
+            cfg["streak_masking"]["enable"] = True
+            buf = io.StringIO()
+            with contextlib.redirect_stdout(buf):
+                with patch("weightmask.process.detect_streaks", side_effect=column_streak):
+                    with fitsio.FITS(science) as hdul, fitsio.FITS(flat) as hdul_flat:
+                        n = process_all_hdus(
+                            [1, 2], hdul, hdul_flat, cfg, paths, args, flat_path=flat, input_path=science
+                        )
+            self.assertEqual(n, 2)
+            # The mask was rewritten before the restore, so the inability to
+            # restore must be reported rather than passing silently.
+            self.assertIn("could not be restored", buf.getvalue())
 
     def test_raw_weight_restore_does_not_depend_on_the_weight_map(self):
         """The raw-weight branch must resolve its own ivar position.
