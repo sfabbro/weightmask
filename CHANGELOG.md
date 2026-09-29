@@ -69,6 +69,23 @@ that class. This is a stopgap; a pixel at 99% of `SATURATE` arguably belongs to
 the saturation stage, which is a wider change than this stage should make on
 its own.
 
+**No confirmed satellite trail exists locally, and an attempt to build one
+failed.** The two faint linear features in `996195p` HDUs 35/36 are real
+(60-90 sigma after line integration, row median 34 e- against 40 e- noise,
+i.e. genuinely marginal) but nothing confirms either as a satellite: their
+fitted sky position angles differ by 1.74 deg once the 0.15 deg chip rotation is
+removed, roughly 18x the fit uncertainty, so they are probably two separate
+features rather than one trail, and there is no sibling epoch locally to test
+persistence against. A first attempt at a stability fixture was discarded
+because its independent line-integration fit reported the feature 66 px from
+where the detector puts it; the cause was a scoring bug in the fit, which
+rewarded raw line sums so a few bright pixels at y=3220 (row median 0.49 e-
+outlived the genuine trail at y=3180, row median 34 e-). The detector was right.
+
+Consequence: **the repository still cannot measure real-data trail recall.**
+The veto thresholds are currently justified by one confirmed-by-eye feature and a
+0.25 pre-masked fraction, not by a recall measurement. That is the honest state.
+
 ### Streak benchmarks were scoring a code path production never runs
 
 `score_trail_truth.py` and `streak_inject.py` each built their own detector
