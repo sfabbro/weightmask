@@ -172,6 +172,11 @@ streak_masking:
     max_premasked_fraction: 0.25 # drop a streak component lying mostly in the upstream
                                  # mask: it is not a new finding. Real satellite trails
                                  # sit at 0.02 on MegaCam; saturated-star bleed at 0.45.
+    max_component_sigma: 20.0    # drop a component whose p90 exceeds this many background
+                                 # RMS. Trails measure ~2 sigma, saturated-star bleed
+                                 # 54-66, and a near-saturated column group ~2000. A
+                                 # stopgap: those columns sit at 97-99.5% of SATURATE and
+                                 # arguably belong to the saturation stage, not here.
     max_row_gap: 0               # opt-in gap bridge for full-span Hough candidates (samples)
     min_row_run: 0               # when bridging, ignore runs shorter than this many samples
   enable_sparse_ransac: true     # dashed-trail recovery on residual bright pixels

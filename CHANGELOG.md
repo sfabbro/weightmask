@@ -44,6 +44,31 @@ are already in hand. Applied per component so a stage returning both a bleed and
 a trail keeps the trail, and to all four stages. On 996195p this removes the two
 false positives (HDUs 1 and 16) and leaves both real trails untouched.
 
+**Who owns the survivors?** Bit attribution in the final mask says 97% of the
+dead-column pixels carry `STREAK` and nothing else, so this is not a duplicate
+label -- `bad.py` genuinely does not own them. It detects bad columns *from the
+flat*, and in `1013719p` HDU 5 those columns are ordinary in the flat
+(median 1.0108 vs a flat median of 0.9967). They are instead at 97-99.5% of the
+`SATURATE` level (column medians 62,069-63,663 against `SATURATE = 63,973`), so
+the saturation stage misses them by a hair. The same structure appears in all
+three epochs of the QW322 pointing, so it is static.
+
+**Brightness veto** (`mask_params.max_component_sigma`, default 20). As a
+multiple of the local background RMS at p90, measured on real amps:
+
+| feature | p90 |
+|---|---|
+| satellite trail (996195p HDU 35/36) | ~2 sigma |
+| saturated-star bleed | 54-66 sigma |
+| near-saturated column group | ~2000 sigma |
+
+Both real trails survive **byte-identically** (12,001 and 11,034 px). The
+column components fall 10,773 -> 7,182 and 9,256 -> 5,785: the veto removes the
+saturated core but not the ~3-sigma halo around it, so it is a partial fix for
+that class. This is a stopgap; a pixel at 99% of `SATURATE` arguably belongs to
+the saturation stage, which is a wider change than this stage should make on
+its own.
+
 ### Streak benchmarks were scoring a code path production never runs
 
 `score_trail_truth.py` and `streak_inject.py` each built their own detector

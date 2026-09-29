@@ -1185,6 +1185,52 @@ def _detect_trails_sparse_ransac(data_sub, bkg_rms_map, existing_mask, config):
     return trail_mask
 
 
+def _drop_bright_components(mask, data_sub, bkg_rms_map, max_sigma, min_pixels=24):
+    """Drop streak components too bright to be a trail.
+
+    Measured on real MegaCam amps, as a multiple of the local background RMS:
+
+    | feature | p90 of the component |
+    |---|---|
+    | satellite trail (996195p HDU 35/36) | ~2 sigma |
+    | saturated-star bleed | 54-66 sigma |
+    | near-saturated column group (1013719p HDU 5) | ~2000 sigma |
+
+    The last case is a group of columns at 97-99.5% of the ``SATURATE`` level. The
+    saturation stage tests against the keyword itself, so it misses them by a
+    hair, and ``bad.py`` works from the flat, where those columns are ordinary.
+    Nothing upstream owns them, and a feature 2000 sigma above the sky is not a
+    trail.
+
+    This is a stopgap for a threshold that arguably belongs in the saturation
+    stage; it lives here because it cannot mask a real trail, and because a
+    satellite trail in a 560 s exposure has no headroom to spare. 10x margin
+    below the trails measured so far, 3x above the bleed.
+    """
+    if max_sigma is None or bkg_rms_map is None or not np.any(mask):
+        return mask
+    labeled, n_components = label(np.asarray(mask, dtype=bool), connectivity=2, return_num=True)
+    if n_components == 0:
+        return mask
+    sizes = np.bincount(labeled.ravel(), minlength=n_components + 1)
+    keep = np.ones(n_components + 1, dtype=bool)
+    keep[0] = False
+    for index in range(1, n_components + 1):
+        if sizes[index] < int(min_pixels):
+            keep[index] = True  # too small to judge
+            continue
+        sel = labeled == index
+        values = data_sub[sel].astype(np.float64)
+        noise = bkg_rms_map[sel].astype(np.float64)
+        good = np.isfinite(values) & np.isfinite(noise) & (noise > 0)
+        if not np.any(good):
+            keep[index] = True
+            continue
+        sigma = float(np.percentile(values[good] / noise[good], 90))
+        keep[index] = sigma <= float(max_sigma)
+    return keep[labeled]
+
+
 def _drop_premasked_components(mask, existing_mask, max_fraction, min_pixels=24):
     """Drop streak components that lie mostly inside the mask the pipeline already has.
 
@@ -1281,17 +1327,23 @@ def detect_streaks(data_sub, bkg_rms_map, existing_mask, config):
     streak_mask_bool = np.zeros(data_sub.shape, dtype=bool)
     debug_info = {"mode": mode, "houghpeaks": {}, "contours": {}, "mrt": {}, "sparse_ransac": None}
     min_streak_px = int(config.get("mask_params", {}).get("min_mask_pixels", 64))
-    # A component the upstream stages already flagged is not a new finding.
+    # A component the upstream stages already flagged is not a new finding, and a
+    # component orders of magnitude above the sky is not a trail.
     max_premasked = config.get("mask_params", {}).get("max_premasked_fraction", 0.25)
+    max_sigma = config.get("mask_params", {}).get("max_component_sigma", 20.0)
+
+    def _veto(mask):
+        mask = _drop_bright_components(mask, data_sub, bkg_rms_map, max_sigma, min_streak_px)
+        return _drop_premasked_components(mask, existing_mask, max_premasked, min_streak_px)
 
     print(f"  Detecting streaks (mode: {mode})...")
     streak_t0 = time.time()
     hp_mask, hp_accepted, hp_debug = _detect_streaks_houghpeaks(data_sub, bkg_rms_map, existing_mask, config)
-    hp_mask = _drop_premasked_components(hp_mask, existing_mask, max_premasked, min_streak_px)
+    hp_mask = _veto(hp_mask)
     streak_mask_bool |= hp_mask
     debug_info["houghpeaks"] = {"accepted": hp_accepted, **hp_debug}
     ct_mask, ct_accepted, ct_debug = _detect_streaks_contours(data_sub, bkg_rms_map, existing_mask, config)
-    ct_mask = _drop_premasked_components(ct_mask, existing_mask, max_premasked, min_streak_px)
+    ct_mask = _veto(ct_mask)
     streak_mask_bool |= ct_mask
     debug_info["contours"] = {"accepted": ct_accepted, **ct_debug}
     n_prescreen_accepted = len(hp_accepted) + len(ct_accepted)
@@ -1309,7 +1361,7 @@ def detect_streaks(data_sub, bkg_rms_map, existing_mask, config):
     if mrt_enabled and np.count_nonzero(streak_mask_bool) < min_streak_px:
         print(f"    [streak] MRT rescue pass (t+{time.time() - streak_t0:.1f}s)...")
         mrt_mask, mrt_candidates, mrt_debug = _detect_streaks_mrt_like(data_sub, bkg_rms_map, existing_mask, config)
-        mrt_mask = _drop_premasked_components(mrt_mask, existing_mask, max_premasked, min_streak_px)
+        mrt_mask = _veto(mrt_mask)
         streak_mask_bool |= mrt_mask
         debug_info["mrt"] = {"accepted": mrt_candidates, **mrt_debug}
 
@@ -1325,7 +1377,7 @@ def detect_streaks(data_sub, bkg_rms_map, existing_mask, config):
             residual_existing |= existing_mask
         print(f"    [streak] sparse RANSAC pass (t+{time.time() - streak_t0:.1f}s)...")
         sparse_mask = _detect_trails_sparse_ransac(data_sub, bkg_rms_map, residual_existing, config)
-        sparse_mask = _drop_premasked_components(sparse_mask, existing_mask, max_premasked, min_streak_px)
+        sparse_mask = _veto(sparse_mask)
         streak_mask_bool |= sparse_mask
         debug_info["sparse_ransac"] = int(np.count_nonzero(sparse_mask))
     else:

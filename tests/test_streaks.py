@@ -2,7 +2,7 @@ import unittest
 
 import numpy as np
 
-from weightmask.streaks import _drop_premasked_components, detect_streaks
+from weightmask.streaks import _drop_bright_components, _drop_premasked_components, detect_streaks
 
 
 class TestStreaks(unittest.TestCase):
@@ -189,6 +189,82 @@ class TestPremaskedVeto(unittest.TestCase):
         frac = yaml.safe_load(open(repo / "weightmask.yml"))["streak_masking"]["mask_params"]["max_premasked_fraction"]
         self.assertGreater(frac, 0.02, "must not touch real trails (measured 0.02)")
         self.assertLess(frac, 0.45, "must catch bleed (measured 0.45)")
+
+
+class TestBrightnessVeto(unittest.TestCase):
+    """A component orders of magnitude above the sky is not a trail.
+
+    On real MegaCam amps, as a multiple of the local background RMS at p90:
+    trails measure ~2 sigma, saturated-star bleed 54-66, and a group of
+    near-saturated columns (97-99.5% of the SATURATE level, missed by the
+    saturation stage by a hair and by ``bad.py`` because the flat shows those
+    columns as ordinary) about 2000.
+    """
+
+    def _scene(self, noise=1.0):
+        shape = (64, 64)
+        return np.zeros(shape, dtype=np.float32), np.full(shape, noise, dtype=np.float32)
+
+    def _band(self, shape, y0, y1, x0, x1):
+        m = np.zeros(shape, dtype=bool)
+        m[y0:y1, x0:x1] = True
+        return m
+
+    def test_a_trail_brightness_is_kept(self):
+        shape = (64, 64)
+        data, rms = self._scene()
+        data[30:34, 5:60] = 2.0  # p90 = 2 sigma
+        mask = self._band(shape, 30, 34, 5, 60)
+        out = _drop_bright_components(mask, data, rms, 20.0, min_pixels=10)
+        self.assertEqual(int(out.sum()), int(mask.sum()))
+
+    def test_a_brightness_like_bleed_is_dropped(self):
+        shape = (64, 64)
+        data, rms = self._scene()
+        data[30:34, 5:60] = 60.0  # p90 = 60 sigma
+        mask = self._band(shape, 30, 34, 5, 60)
+        out = _drop_bright_components(mask, data, rms, 20.0, min_pixels=10)
+        self.assertEqual(int(out.sum()), 0)
+
+    def test_a_near_saturated_column_group_is_dropped(self):
+        shape = (64, 64)
+        data, rms = self._scene()
+        data[10:60, 20:24] = 2000.0  # ~2000 sigma
+        mask = self._band(shape, 10, 60, 20, 24)
+        out = _drop_bright_components(mask, data, rms, 20.0, min_pixels=10)
+        self.assertEqual(int(out.sum()), 0)
+
+    def test_threshold_boundary_is_inclusive(self):
+        shape = (64, 64)
+        data, rms = self._scene()
+        data[30:34, 5:60] = 20.0
+        mask = self._band(shape, 30, 34, 5, 60)
+        self.assertEqual(int(_drop_bright_components(mask, data, rms, 20.0, 10).sum()), int(mask.sum()))
+        self.assertEqual(int(_drop_bright_components(mask, data, rms, 19.0, 10).sum()), 0)
+
+    def test_disabled_threshold_is_a_no_op(self):
+        shape = (64, 64)
+        data, rms = self._scene()
+        data[10:60, 20:24] = 2000.0
+        mask = self._band(shape, 10, 60, 20, 24)
+        for disabled in (None, 1e9):
+            np.testing.assert_array_equal(_drop_bright_components(mask, data, rms, disabled, 10), mask)
+
+    def test_missing_rms_map_is_a_no_op(self):
+        shape = (64, 64)
+        data, _ = self._scene()
+        mask = self._band(shape, 10, 60, 20, 24)
+        np.testing.assert_array_equal(_drop_bright_components(mask, data, None, 20.0, 10), mask)
+
+    def test_shipped_threshold_separates_the_two_measured_classes(self):
+        from pathlib import Path
+
+        import yaml
+
+        repo = Path(__file__).resolve().parents[1]
+        sigma = yaml.safe_load(open(repo / "weightmask.yml"))["streak_masking"]["mask_params"]["max_component_sigma"]
+        self.assertGreater(sigma, 2.0, "must not touch real trails (measured ~2 sigma p90)")
+        self.assertLess(sigma, 54.0, "must catch saturated-star bleed (measured 54-66 sigma p90)")
 
 
 if __name__ == "__main__":
