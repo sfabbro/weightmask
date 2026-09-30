@@ -4,6 +4,8 @@ channels = ["conda-forge"]
 platforms = ["osx-arm64", "linux-64"]
 
 [tasks]
+streak-sweep = "python benchmarks/streak_stage_sweep.py --dense --out test_outputs/perf/streak_stage_sweep.json"
+streak-sweep-norescue = "python benchmarks/streak_stage_sweep.py --dense --no-rescue --out test_outputs/perf/streak_stage_sweep_norescue.json"
 lint = "ruff check ."
 format = "ruff format ."
 test = "pytest"
