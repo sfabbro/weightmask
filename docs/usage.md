@@ -181,6 +181,29 @@ corpus -- contours and RANSAC accept on 0 of 224 real amps each -- yet each is t
 sole finder in the cells it helps and costs recall in none, which is why neither
 was removed.
 
+`pixi run exposure-time` answers the question at the unit a survey pays in --
+the whole exposure, not one chip. On a 36-chip MegaPrime MEF (996195p, 353 Mpix,
+one core, `--nproc 1`):
+
+| | wall | per chip |
+|---|---|---|
+| `streak_masking.enable: false` | **389.9 s** | 10.83 s |
+| `streak_masking.enable: true` | **420.4 s** | 11.68 s |
+| difference | **+30.4 s** | +0.85 s |
+
+Streak detection is **7% of a full exposure**, not the majority of it. Cosmics is
+67%. The remaining streaks-attributable cost is mostly reading the 350 MB flat,
+which happens either way.
+
+Two things that make this number trustworthy and would otherwise have made it
+wrong. Both arms are warmed up and the warmup discarded: the first run of either
+arm pays for importing skimage/scipy, populating the on-disk flat-bad-pixel cache,
+and faulting the flat into the page cache. Measured in sequence without a warmup,
+the arm that ran second appeared 2.6x *faster*, which is an ordering artifact and
+not a property of streak detection. And the reported streak pixel count is
+checked per arm, so a run where the toggle silently failed to take cannot be
+mistaken for a measurement.
+
 The synthetic benchmark suite has a known, pre-existing gate failure
 (`Synthetic-v2 average streak F1 0.159 < 0.200`) that is unchanged by any of
 the above -- the per-case F1 values are identical with and without the rescue.

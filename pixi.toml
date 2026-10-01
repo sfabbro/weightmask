@@ -9,6 +9,7 @@ streak-sweep = "python benchmarks/streak_stage_sweep.py --stride 1 --out test_ou
 #   pixi run streak-recall-floor -- --disable contours
 #   pixi run streak-recall-floor -- --disable ransac
 streak-recall-floor = "python benchmarks/streak_recall_floor.py --out test_outputs/perf/recall_floor_dashed.json"
+exposure-time = "python benchmarks/exposure_time.py"
 lint = "ruff check ."
 format = "ruff format ."
 test = "pytest"
