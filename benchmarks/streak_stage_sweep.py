@@ -9,14 +9,14 @@ star attachment) so bleed and satellite trails can be told apart on evidence.
 
 Sampling is validated, not assumed. Every-4th-HDU is a reasonable default for a
 wide survey but it missed the only real trails in the local corpus, twice, and
-both misses silently understated what the cheap prescreen could do. So the HDU
-list is checked against the amps that actually matter before any work starts,
-and the run aborts if they are missing.
+both misses silently understated what the cheap prescreen could do. So the
+default is now to scan every HDU, and any coarser sample is checked against the
+amps that actually matter before any work starts -- the run aborts if they are
+missing rather than reporting a number computed without them.
 
 Usage:
-    pixi run python benchmarks/streak_stage_sweep.py --out sweeps.json
-    pixi run python benchmarks/streak_stage_sweep.py --no-rescue --out no_rescue.json
-    pixi run python benchmarks/streak_stage_sweep.py --dense --out dense.json
+    pixi run streak-sweep                  # every HDU
+    pixi run streak-sweep -- --stride 8   # coarser, but only if the guard passes
 """
 
 from __future__ import annotations
@@ -47,7 +47,6 @@ import weightmask.streaks as ST  # noqa: E402
 
 DATA = os.path.join(REPO, "benchmark_data", "megacam")
 FLAT = os.path.join(DATA, "perf", "flat_08Bm01_r.fits.fz")
-STRIDE = 4
 
 EXPOSURES = [
     ("long/996195p.fits.fz", "996195p"),
@@ -65,7 +64,6 @@ REQUIRED = {("996195p", 35), ("996195p", 36)}
 STAGES = (
     "_detect_streaks_houghpeaks",
     "_detect_streaks_contours",
-    "_detect_streaks_mrt_like",
     "_detect_trails_sparse_ransac",
 )
 
@@ -118,8 +116,8 @@ def component_table(mask, data_sub, rms):
 
 
 def run_one(job):
-    path, hdu, exposure, no_rescue = job
-    out = {"exposure": exposure, "hdu": int(hdu), "error": None, "no_rescue": bool(no_rescue)}
+    path, hdu, exposure = job
+    out = {"exposure": exposure, "hdu": int(hdu), "error": None}
     try:
         with fitsio.FITS(path) as handle:
             science = np.ascontiguousarray(handle[hdu].read().astype(np.float32))
@@ -131,8 +129,6 @@ def run_one(job):
                     flat = np.ascontiguousarray(handle[hdu].read().astype(np.float32))
         cfg = yaml.safe_load(open(os.path.join(REPO, "weightmask.yml")))
         scfg = streak_config(cfg)
-        if no_rescue:
-            scfg["mrt_rescue_params"] = {**scfg["mrt_rescue_params"], "enable": False}
         with contextlib.redirect_stdout(io.StringIO()):
             data_sub, rms, existing = capture_detector_inputs(science, header, cfg, flat=flat)
 
@@ -195,7 +191,7 @@ def run_one(job):
     return out
 
 
-def build_jobs(dense, no_rescue):
+def build_jobs(stride):
     jobs = []
     for relative, exposure in EXPOSURES:
         path = os.path.join(DATA, relative)
@@ -203,36 +199,37 @@ def build_jobs(dense, no_rescue):
             continue
         with fitsio.FITS(path) as handle:
             count = len(handle)
-        if dense:
-            hdus = list(range(1, count))
-        else:
-            hdus = list(range(1, count, STRIDE))
-        for hdu in hdus:
-            jobs.append((path, hdu, exposure, no_rescue))
+        for hdu in range(1, count, max(1, stride)):
+            jobs.append((path, hdu, exposure))
     return jobs
 
 
 def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__.split("\n")[0])
     parser.add_argument("--out", default=os.path.join(MODULE_DIR, "streak_stage_sweep.json"))
-    parser.add_argument("--dense", action="store_true", help="scan every HDU of every exposure")
-    parser.add_argument("--no-rescue", action="store_true", help="disable the Radon rescue")
+    parser.add_argument(
+        "--stride",
+        type=int,
+        default=1,
+        help="sample every Nth HDU. 1 (the default) scans all of them, which is what the "
+        "validation below requires; raise it only for a deliberately partial run",
+    )
     parser.add_argument("--workers", type=int, default=4)
     args = parser.parse_args(argv)
 
-    jobs = build_jobs(args.dense, args.no_rescue)
+    jobs = build_jobs(args.stride)
     sampled = {(job[2], job[1]) for job in jobs}
     missing = REQUIRED - sampled
     if missing:
         print(
             f"ERROR: the HDU sample omits {sorted(missing)}, which carry the only real "
-            f"linear features in the local corpus. A stride of {STRIDE} hides them and "
-            f"understates what the prescreen can do. Re-run with --dense.",
+            f"linear features in the local corpus. A stride of {args.stride} hides them and "
+            f"understates what the prescreen can do. Re-run with --stride 1.",
             file=sys.stderr,
         )
         return 2
-    print(f"{len(jobs)} HDUs across {len({j[2] for j in jobs})} exposures, rescue "
-          f"{'off' if args.no_rescue else 'on'}; required amps {sorted(REQUIRED)} present")
+    print(f"{len(jobs)} HDUs across {len({j[2] for j in jobs})} exposures; "
+          f"required amps {sorted(REQUIRED)} present")
     results = []
     started = time.time()
     with ProcessPoolExecutor(max_workers=max(1, args.workers)) as pool:

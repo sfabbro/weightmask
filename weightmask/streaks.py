@@ -51,27 +51,6 @@ def persistent_axis_mask(frames, min_other=2, sigma=3.0):
     return mask
 
 
-def _subtract_hot_axis_bands(image, sigma=3.0):
-    """Remove columns and rows whose median is a robust outlier.
-
-    An oblique trail hits each column in a few rows, so it does not move that
-    column's median. A bright detector column does, and those columns otherwise
-    take every Radon top-k slot. Only the outlier axes are subtracted.
-    """
-    out = np.array(image, dtype=np.float32, copy=True)
-    for axis in (0, 1):
-        profile = np.median(out, axis=axis)
-        hot = _profile_outliers(profile, sigma)
-        if not np.any(hot):
-            continue
-        band = profile[hot].astype(np.float32)
-        if axis == 0:
-            out[:, hot] -= band
-        else:
-            out[hot, :] -= band[:, None]
-    return np.clip(out, 0.0, None)
-
-
 def _normalize_angle_deg(angle_deg):
     """Normalize an angle to the [0, 180) degree range."""
     return (angle_deg + 180.0) % 180.0
@@ -678,217 +657,6 @@ def _candidate_from_rho_theta(rho, theta_deg, shape):
     }
 
 
-def _radon_pad_offsets(shape, side):
-    """Per-axis ``(before, after)`` padding that centres ``shape`` inside ``side``.
-
-    Mirrors skimage's centring arithmetic so that the padded image centre stays
-    the CCD centre and ``rho = 0`` keeps meaning "through the middle of the chip".
-    """
-    offsets = []
-    for size in shape:
-        pad = side - size
-        before = (size + pad) // 2 - size // 2
-        offsets.append((before, pad - before))
-    return tuple(offsets)
-
-
-def _radon_projections(image, thetas):
-    """Radon transform of ``image`` on a *tight* square pad.
-
-    ``skimage.transform.radon`` pads every input to a square of side
-    ``sqrt(2) * max(shape)`` -- 6568 for a 4644x2112 CCD whose true diagonal is
-    5102 -- so it warps 1.66x more pixels at every angle than the geometry
-    needs. This runs the identical warp-and-sum on a diagonal-sized pad, keeping
-    the result directly comparable (same bilinear ``warp``, same centring) while
-    shrinking the transform.
-    """
-    from skimage.transform import warp
-
-    height, width = image.shape
-    side = int(np.ceil(np.hypot(height, width)))
-    (before_y, _after_y), (before_x, _after_x) = _radon_pad_offsets(image.shape, side)
-    padded = np.zeros((side, side), dtype=image.dtype)
-    padded[before_y : before_y + height, before_x : before_x + width] = image
-    center = side // 2
-    sinogram = np.zeros((side, len(thetas)), dtype=image.dtype)
-    for index, angle in enumerate(np.deg2rad(thetas)):
-        cos_a, sin_a = float(np.cos(angle)), float(np.sin(angle))
-        rotation = np.array(
-            [
-                [cos_a, sin_a, -center * (cos_a + sin_a - 1)],
-                [-sin_a, cos_a, -center * (cos_a - sin_a - 1)],
-                [0.0, 0.0, 1.0],
-            ]
-        )
-        sinogram[:, index] = warp(padded, rotation, clip=False).sum(0)
-    return sinogram
-
-
-def _valid_rho_range(shape, thetas):
-    """``(low, high)`` rho bounds per angle: the rho values that cross the chip.
-
-    Outside this range a projection sees only zero padding, so it carries no
-    information about the image. Including it is precisely what broke the
-    rescue's significance estimate: at theta = 0, 4628 of 6568 sinogram entries
-    are exact padding zeros, so the column's MAD is 0, the old hard-coded
-    fallback kicked in, and every value in that column became a million-sigma
-    "detection" that no threshold could reject.
-    """
-    height, width = shape
-    theta = np.radians(np.asarray(thetas, dtype=np.float64))
-    half = 0.5 * (height * np.abs(np.cos(theta)) + width * np.abs(np.sin(theta)))
-    return -half, half
-
-
-def _detect_streaks_mrt_like(data_sub, bkg_rms_map, existing_mask, config):
-    """Run a lightweight MRT-like Radon rescue for low-confidence ground-based streaks."""
-    cfg = config.get("mrt_rescue_params", {})
-    mask_cfg = config.get("mask_params", {})
-    theta_step = float(cfg.get("theta_step_deg", 1.0))
-    peak_threshold = float(cfg.get("peak_threshold_sig", 4.5))
-    max_candidates = int(cfg.get("max_candidates", 4))
-    confidence_threshold = float(cfg.get("confidence_threshold", 0.35))
-
-    if bkg_rms_map is not None:
-        # Detection threshold: unknown-RMS pixels contribute no signal to the
-        # projections rather than being normalised by a substitute RMS, which
-        # is what made two physical bright columns dominate the sinogram.
-        valid_rms = rms_valid_mask(bkg_rms_map)
-        normalized = np.where(valid_rms, data_sub / np.maximum(np.where(valid_rms, bkg_rms_map, 1.0), 1e-6), 0.0)
-    else:
-        normalized = data_sub
-    if existing_mask is not None:
-        normalized = np.where(existing_mask, 0.0, normalized)
-    normalized = np.clip(normalized, 0.0, None)
-    med = np.nanmedian(normalized)
-    if np.isfinite(med):
-        normalized -= med
-    normalized = np.clip(normalized, 0.0, None)
-    # Column/row bands outrank trails in a global top-k. Subtract them before
-    # the transform; the strip refiner still sees the original image.
-    normalized = _subtract_hot_axis_bands(normalized)
-
-    # Binning is the single biggest cost lever here (the transform is quadratic
-    # in the padded side). The peak it finds is confirmed at full resolution by
-    # the same strip refiner as every other candidate, so binning only costs rho
-    # quantisation of `bin` pixels, not a second detection path.
-    bin_factor = max(1, int(cfg.get("bin", 1)))
-    if bin_factor > 1:
-        normalized = _bin_array(normalized, bin_factor)
-    work_shape = normalized.shape
-
-    thetas = np.arange(0.0, 180.0, theta_step, dtype=np.float32)
-    if thetas.size == 0:
-        return np.zeros(data_sub.shape, dtype=bool), [], {"theta_step_deg": theta_step, "peaks": 0}
-
-    sinogram = _radon_projections(normalized, thetas)
-    side = sinogram.shape[0]
-    rho_coords = np.arange(side, dtype=np.float64) - 0.5 * (side - 1)
-    rho_low, rho_high = _valid_rho_range(work_shape, thetas)
-    valid_rho = (rho_coords[:, None] >= rho_low[None, :]) & (rho_coords[:, None] <= rho_high[None, :])
-
-    # Star-clutter suppression along rho. A bright star is a broad bump in the
-    # sinogram at every angle, and on a real CCD those bumps set the per-angle
-    # MAD (~1.1e3) far above what a faint trail contributes (~150 for a 4-sigma,
-    # 2500-pixel trail), which is why such a trail measures 0.16 sigma against
-    # the old per-column MAD and can never enter a top-k list. Subtracting a
-    # moving median along rho keeps the trail's narrow peak and removes the
-    # broad bumps. The window is scaled by the bin factor so it covers the same
-    # physical scale at any binning.
-    highpass = int(cfg.get("sinogram_highpass", 0))
-    if highpass > 1:
-        window = max(3, highpass // bin_factor) | 1
-        sinogram = sinogram - ndi.median_filter(sinogram, size=(window, 1), mode="nearest")
-
-    # Statistics over the geometrically valid rho only: the padding carries no
-    # information and, being identically zero on a large fraction of every
-    # column, would otherwise collapse the MAD to zero.
-    observed = np.where(valid_rho, sinogram, np.nan)
-    med = np.nanmedian(observed, axis=0, keepdims=True)
-    sigma = mad_std(observed - med, axis=0, ignore_nan=True)
-    usable_sigma = sigma[np.isfinite(sigma) & (sigma > 0)]
-    sigma_floor = max(
-        float(cfg.get("sigma_rel_floor", 1e-3)) * (float(np.median(usable_sigma)) if usable_sigma.size else 1.0),
-        1e-12,
-    )
-    sigma = np.where(np.isfinite(sigma) & (sigma > sigma_floor), sigma, sigma_floor)
-    snr = np.where(valid_rho, (sinogram - med) / sigma[np.newaxis, :], -np.inf)
-
-    # A note on why the peak search is not restricted: a one-pixel-wide detector
-    # column projects into *every* angle (its rho width grows as the angle leaves
-    # the axis), so excluding near-axis angles only moves the same artefacts to
-    # theta = +-4 degrees rather than removing them -- measured, not assumed.
-    # Those artefacts are then rejected downstream by the strip refiner's
-    # step-discontinuity guard, which is what keeps this path from masking a
-    # chip's bright columns as trails.
-    flat_snr = np.where(valid_rho, snr, -np.inf).ravel()
-
-    n_peaks = int(min(max(max_candidates, 0), flat_snr.size))
-    if n_peaks == 0:
-        return np.zeros(data_sub.shape, dtype=bool), [], {"theta_step_deg": theta_step, "peaks": 0, "bin": bin_factor}
-    flat_indices = np.argpartition(flat_snr, -n_peaks)[-n_peaks:]
-    order = flat_indices[np.argsort(flat_snr[flat_indices])[::-1]]
-
-    streak_mask = np.zeros(data_sub.shape, dtype=bool)
-    accepted = []
-    used = []
-    for flat_idx in order:
-        rho_idx, theta_idx = np.unravel_index(int(flat_idx), snr.shape)
-        score_peak = float(snr[rho_idx, theta_idx])
-        if not np.isfinite(score_peak) or score_peak < peak_threshold:
-            continue
-        rho0 = float(rho_coords[rho_idx]) * bin_factor
-        theta_deg = float(thetas[theta_idx])
-        # ``bin`` quantises rho. A bright trail then fails ``max_support_width``
-        # because the strip is a few pixels off centre. Search ±bin at full res;
-        # bin 1 keeps the single sample the unbinned peak already named.
-        deltas = (0.0,) if bin_factor <= 1 else tuple(float(d) for d in range(-int(bin_factor), int(bin_factor) + 1))
-        chosen = None
-        for delta in deltas:
-            rho = rho0 + delta
-            if any(abs(theta_deg - t0) < 2.0 and abs(rho - r0) < 20.0 for r0, t0 in used):
-                continue
-
-            # ``_candidate_from_rho_theta`` speaks the Hesse convention used by
-            # ``hough_line`` (theta = the line's normal direction, rho = the signed
-            # distance along that normal). ``radon`` parameterises the same line
-            # reflected: theta_radon = 90 - phi where phi is the line's own angle.
-            # Feeding radon coordinates straight in therefore built the *mirror* of
-            # the candidate line -- harmless near theta = 0, where the two agree, but
-            # for an oblique line the strip refiner was handed a line that does not
-            # exist in the image and rejected it with `no_support`. That is why this
-            # rescue could only ever propose the near-axis column artefacts.
-            # Calibrated on injected lines at phi = 0/22.9/45/90/140 deg: the
-            # conversion below reproduces all of them to within the rho sampling.
-            candidate = _candidate_from_rho_theta(-rho, 180.0 - theta_deg, data_sub.shape)
-            if candidate is None:
-                continue
-            candidate["source"] = "mrt"
-            refined, refine_info = _refine_trail_mask(
-                data_sub, bkg_rms_map, candidate, mask_cfg, existing_mask=existing_mask
-            )
-            conf = _score_candidate(candidate, refined, refine_info, existing_mask)
-            if conf >= confidence_threshold and np.count_nonzero(refined) > 0 and (chosen is None or conf > chosen[0]):
-                chosen = (conf, rho, refined)
-        if chosen is None:
-            continue
-        conf, rho, refined = chosen
-        streak_mask |= refined
-        accepted.append({"rho": rho, "theta_deg": theta_deg, "peak_snr": score_peak, "confidence": conf})
-        used.append((rho, theta_deg))
-
-    return (
-        streak_mask,
-        accepted,
-        {
-            "theta_step_deg": theta_step,
-            "bin": bin_factor,
-            "sinogram": side,
-            "accepted_count": len(accepted),
-        },
-    )
-
-
 def _refine_hough_peak(H, thetas, rhos, ti, ri):
     """Parabolic sub-pixel refinement of a Hough accumulator peak.
 
@@ -1315,7 +1083,7 @@ def detect_streaks(data_sub, bkg_rms_map, existing_mask, config):
 
     Raises ValueError on unknown modes (fail fast on config typos).
     Mode ``auto_ground`` (also via legacy ``method`` alias): binned-Hough peaks and
-    contour morphology, then the Radon rescue and conditional RANSAC.
+    contour morphology, then conditional RANSAC.
 
     Benchmark-only Frangi lives in ``benchmarks.frangi_legacy``.
     """
@@ -1351,19 +1119,14 @@ def detect_streaks(data_sub, bkg_rms_map, existing_mask, config):
         f"    [streak] prescreen done in {time.time() - streak_t0:.1f}s: "
         f"{n_prescreen_accepted} accepted, {int(np.count_nonzero(streak_mask_bool))} px."
     )
-    # The Radon rescue is the *sensitive* stage: it exists to find what the cheap
-    # prescreen misses, so it runs unless the prescreen has already masked enough
-    # to have handled the frame. It used to be gated on a "low confidence" flag
-    # owned by the deleted Canny/Hough stage, which never accepted anything, so
-    # the gate was in practice a cost heuristic rather than a decision about the
-    # image.
-    mrt_enabled = bool(config.get("mrt_rescue_params", {}).get("enable", True))
-    if mrt_enabled and np.count_nonzero(streak_mask_bool) < min_streak_px:
-        print(f"    [streak] MRT rescue pass (t+{time.time() - streak_t0:.1f}s)...")
-        mrt_mask, mrt_candidates, mrt_debug = _detect_streaks_mrt_like(data_sub, bkg_rms_map, existing_mask, config)
-        mrt_mask = _veto(mrt_mask)
-        streak_mask_bool |= mrt_mask
-        debug_info["mrt"] = {"accepted": mrt_candidates, **mrt_debug}
+    # The Radon rescue used to sit here as the *sensitive* stage -- the thing that
+    # finds what the cheap prescreen misses. It is gone. Measured on 83 real amps
+    # it accepted on 3, all three false positives, while houghpeaks explained all
+    # 23,035 px of the real detections. On injected trails at 4/6/8/12 sigma over
+    # two lengths and two seeds it changed recall_line by +0.000 in 8 of 8 cells.
+    # It cost 121.7 s/amp of a 125.7 s/amp stage. See benchmarks/streak_recall_floor.py
+    # and benchmarks/streak_stage_sweep.py; both must be re-run, not assumed, if
+    # anyone proposes restoring a faint-trail stage.
 
     run_sparse_ransac = bool(config.get("enable_sparse_ransac", True))
     if config.get("sparse_on_primary_weak_only", True):

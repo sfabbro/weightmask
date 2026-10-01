@@ -16,14 +16,8 @@ class TestStreaks(unittest.TestCase):
             "enable": True,
             "mode": "auto_ground",
             "dilation_radius": 2,
-            "houghpeak_params": {"enable": False},
+            "houghpeak_params": {"enable": True, "bin": 2, "thresh_sig": 2.5, "min_votes": 40, "max_candidates": 6},
             "contour_params": {"enable": False},
-            "mrt_rescue_params": {
-                "theta_step_deg": 1.0,
-                "peak_threshold_sig": 3.0,
-                "max_candidates": 4,
-                "confidence_threshold": 0.15,
-            },
             "mask_params": {
                 "strip_length": 180,
                 "strip_width": 48,
@@ -77,7 +71,6 @@ class TestStreaks(unittest.TestCase):
             existing_mask[max(0, y - 1) : min(self.shape[0], y + 2), max(0, x - 1) : min(self.shape[1], x + 2)] = True
 
         config = self._config()
-        config["mrt_rescue_params"].update({"peak_threshold_sig": 8.0, "confidence_threshold": 0.6})
         config["mask_params"].update({"max_support_width": 6, "min_row_hit_fraction": 0.5})
 
         masked = detect_streaks(data_sub, self.rms, existing_mask, config)

@@ -116,7 +116,7 @@ sep_objects:
 
 streak_masking:
   enable: true                   # STREAK bit; production mode is auto_ground only
-  mode: "auto_ground"            # Canny/Hough + strip refine + Radon rescue + optional RANSAC
+  mode: "auto_ground"            # binned Hough peaks + contours + strip refine + optional RANSAC
   dilation_radius: 2             # pixels; grow accepted trails
   profile_accept: true           # keep only the fitted line; drop components wider than max_support_width
   debug: false                   # extra streak diagnostics
@@ -133,30 +133,14 @@ streak_masking:
     shape_cut: 0.2               # compactness; reject round blobs
     area_cut: 100.0              # pixels; minimum contour area
     radius_dev_cut: 0.5          # reject contours that look circular
-  mrt_rescue_params:
-    enable: true                 # Radon rescue for faint/intermittent trails; it dominates
-                                 # the streak stage on a clean field (~35 s and ~350 MB per
-                                 # 9.8 Mpix HDU), so it can be switched off where fields are
-                                 # known to carry no such trails.
-    theta_step_deg: 2.0          # deg; Radon angle sampling
-    peak_threshold_sig: 4.2      # Radon-peak significance, measured over the
-                                 # geometrically valid rho range only
-    max_candidates: 4            # cap rescue lines
-    confidence_threshold: 0.25   # accept threshold for the rescue pass
-    bin: 1                       # mean-bin the projection image before the Radon.
-                                 # 1 = full resolution, ~20 s per CCD. Set 4 for ~1.6 s
-                                 # (12x) at the cost of `bin` pixels of rho quantisation:
-                                 # measured recall on injected trails (1.5 px wide, 800 px
-                                 # long, flat background) is 0.90/0.91/0.36/0.90 at bin=1 vs
-                                 # 0.39/0.90/0.94/0.80 at bin=4 for 60/12/6/4 sigma.
-    sigma_rel_floor: 0.001       # floor for a per-angle peak MAD, as a fraction of
-                                 # the median MAD over angles (never a fixed 1.0)
-    sinogram_highpass: 101       # samples; moving-median window subtracted along rho
-                                 # before significance is measured. The sinogram is
-                                 # star-clutter dominated (per-angle MAD ~1.1e3 on a
-                                 # real CCD, where a 4-sigma 2500px trail contributes
-                                 # only ~150), so broad star bumps must be removed
-                                 # before a narrow trail can stand out. 0 disables.
+  # mrt_rescue_params removed. The Radon rescue was the sensitive stage -- the
+  # one meant to find what the cheap prescreen misses. Measured before removal:
+  # over 83 real amps it accepted on 3, all three false positives, while
+  # houghpeaks explained all 23,035 px of real detections; on injected trails at
+  # 4/6/8/12 sigma, two lengths, two seeds it moved recall_line by +0.000 in 8 of
+  # 8 cells. It cost 121.7 s/amp of a 125.7 s/amp stage. The `bin` recall table
+  # that used to live here was measured on the non-production input path and is
+  # withdrawn -- see benchmarks/streak_recall_floor.py and benchmarks/streak_stage_sweep.py.
   mask_params:
     strip_length: 256            # pixels; trail-aligned stamp length
     strip_width: 80              # pixels; stamp width for the profile

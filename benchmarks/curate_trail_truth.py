@@ -413,12 +413,7 @@ def mine_hdu(job):
     import yaml
 
     from weightmask.background import estimate_background
-    from weightmask.streaks import (
-        _candidate_from_rho_theta,
-        _detect_streaks_houghpeaks,
-        _detect_streaks_mrt_like,
-        detect_streaks,
-    )
+    from weightmask.streaks import _detect_streaks_houghpeaks, detect_streaks
 
     path, hdu, config_path, corridor_px, quiet, proposers, component_params = job
     (
@@ -427,7 +422,6 @@ def mine_hdu(job):
         bright_threshold_sig,
         bright_min_px,
         bright_min_elongation,
-        radon_max_candidates,
     ) = component_params
     sink = contextlib.redirect_stdout(io.StringIO()) if quiet else contextlib.nullcontext()
     with sink:
@@ -491,63 +485,13 @@ def mine_hdu(job):
                 measured["proposed_by"] = ["bright"]
                 measured["detector"] = {}
                 candidates.append(measured)
-        if "radon" in proposers:
-            # Orientation-agnostic: an exhaustive binned-Radon line search, so the
-            # candidate set cannot be biased toward whatever connected components
-            # or Hough bins happen to favour.  Uses the production rescue with its
-            # accept gates opened, because curation -- not the rescue -- is the
-            # filter here.
-            rescue_cfg = dict(streak_cfg)
-            rescue_cfg["mrt_rescue_params"] = {
-                "enable": True,
-                "theta_step_deg": 2.0,
-                "peak_threshold_sig": 2.0,
-                "max_candidates": radon_max_candidates,
-                "confidence_threshold": 0.0,
-                "bin": 4,
-                "sigma_rel_floor": 0.001,
-                "sinogram_highpass": 101,
-            }
-            _, rescue_accepted, _ = _detect_streaks_mrt_like(data_sub, rms, existing, rescue_cfg)
-            for candidate in rescue_accepted:
-                # Take the line straight from the production builder.  ``radon``
-                # parameterises a line *reflected* relative to the Hesse convention
-                # ``_candidate_from_rho_theta`` speaks, so rebuilding the line here
-                # from (theta, rho) by hand reproduces the mirror bug the rescue
-                # itself was fixed for -- and the mirrored line is what the
-                # independent profile and the mosaic test would then be scored on.
-                built = _candidate_from_rho_theta(
-                    -float(candidate["rho"]), 180.0 - float(candidate["theta_deg"]), science.shape
-                )
-                if built is None:
-                    continue
-                (x0, y0), (x1, y1) = built["endpoints"]
-                dx, dy = float(x1) - float(x0), float(y1) - float(y0)
-                span = math.hypot(dx, dy)
-                if span <= 0:
-                    continue
-                direction = (dx / span, dy / span)
-                candidates.append(
-                    {
-                        "point": [0.5 * (float(x0) + float(x1)), 0.5 * (float(y0) + float(y1))],
-                        "direction": [direction[0], direction[1]],
-                        "normal": list(_normalise_normal(-direction[1], direction[0])),
-                        "n_mask_px": 0,
-                        "rms_along_px": 0.0,
-                        "rms_across_px": 0.0,
-                        "width_px": 0.0,
-                        "length_px": span,
-                        "span_along_px": span,
-                        "elongation": float("nan"),
-                        "proposed_by": ["radon"],
-                        "detector": {
-                            "theta_deg": float(candidate["theta_deg"]),
-                            "rho": float(candidate["rho"]),
-                            "peak_snr": float(candidate.get("peak_snr", float("nan"))),
-                            "confidence": float(candidate.get("confidence", float("nan"))),
-                        },
-                    }
-                )
+        # The "radon" proposer is gone with the rescue it read candidates from.
+        # It proposed lines only for the curation corpus, and on 83 real amps the
+        # rescue it depended on accepted on 3 -- all false positives -- while
+        # changing injected-trail recall by +0.000 in 8 of 8 cells. Any candidate
+        # worth curating that neither `bright` nor `houghpeaks` proposes is a
+        # detector problem, not a curation-coverage problem, and the honest way
+        # to surface one is `pipeline` (the real production detector).
 
     if not candidates:
         return record
@@ -922,8 +866,8 @@ def main(argv=None):
     parser.add_argument("--workers", type=int, default=4)
     parser.add_argument(
         "--propose",
-        default="bright,houghpeaks,radon",
-        help="comma-separated proposers from {bright,houghpeaks,pipeline,radon}; 'pipeline' runs the production detect_streaks",
+        default="bright,houghpeaks",
+        help="comma-separated proposers from {bright,houghpeaks,pipeline}; 'pipeline' runs the production detect_streaks",
     )
     parser.add_argument("--corridor-px", type=float, default=30.0, help="mask-pixel corridor for the PCA re-measure")
     parser.add_argument("--min-component-px", type=int, default=400, help="smallest pipeline mask component to measure")
@@ -933,12 +877,6 @@ def main(argv=None):
     )
     parser.add_argument("--bright-min-px", type=int, default=150, help="bright proposer minimum component area")
     parser.add_argument("--bright-min-elongation", type=float, default=6.0, help="bright proposer minimum elongation")
-    parser.add_argument(
-        "--radon-max-candidates",
-        type=int,
-        default=16,
-        help="Radon proposer lines per HDU; each is measured with a full along-line profile, so this sets the run cost",
-    )
     parser.add_argument("--group-tol-deg", type=float, default=2.0, help="mosaic normal tolerance for grouping")
     parser.add_argument("--group-tol-px", type=float, default=15.0, help="mosaic offset tolerance (pixels)")
     parser.add_argument("--min-group-ccds", type=int, default=2, help="CCDs that must share a mosaic line")
@@ -1006,7 +944,7 @@ def main(argv=None):
         parser.error(f"no exposures found under {args.data_root}")
 
     proposers = [item.strip() for item in args.propose.split(",") if item.strip()]
-    unknown = sorted(set(proposers) - {"bright", "houghpeaks", "pipeline", "radon"})
+    unknown = sorted(set(proposers) - {"bright", "houghpeaks", "pipeline"})
     if unknown:
         parser.error(f"unknown proposer(s): {', '.join(unknown)}")
     if not proposers:
@@ -1030,7 +968,6 @@ def main(argv=None):
         args.bright_threshold_sig,
         args.bright_min_px,
         args.bright_min_elongation,
-        args.radon_max_candidates,
     )
     jobs = [
         (
@@ -1179,7 +1116,6 @@ def main(argv=None):
             "bright_threshold_sig": args.bright_threshold_sig,
             "bright_min_px": args.bright_min_px,
             "bright_min_elongation": args.bright_min_elongation,
-            "radon_max_candidates": args.radon_max_candidates,
             "group_tol_deg": args.group_tol_deg,
             "group_tol_px": args.group_tol_px,
             "min_group_ccds": args.min_group_ccds,

@@ -101,17 +101,21 @@ the streak stage.
 **What.** Linear trails (satellites, aircraft, meteors). Zero weight.
 
 **Method.** Production mode is `auto_ground` only. Candidates are the union of
-three extractors (order does not matter; they OR together), then a
+two extractors (order does not matter; they OR together), then a
 trail-aligned strip is refined on the full-resolution image:
 
 - Binned Hough-peak search.
 - Elongated contour morphology.
-- Multi-scale Canny edges and a probabilistic Hough transform (ACS
-  SATDET-inspired; not a bit-identical port).
 - Strip profile growth and geometric gates (`mask_params`).
-- If primary confidence is low, a Radon-transform peak search (MRT-like
-  rescue).
 - Optional sparse RANSAC on residual bright pixels for dashed trails.
+
+Two further extractors were removed after measurement, not preference. A
+multi-scale Canny/Hough stage accepted nothing on 56 of 56 real amps. An
+angle-binned Radon rescue accepted on 3 of 83, all false positives, and changed
+`recall_line` by +0.000 across 8 of 8 injected-trail cells spanning 4-12 sigma,
+two lengths and two seeds, while costing 121.7 s/amp of a 125.7 s/amp stage. The
+remains of the two -- houghpeaks explains every real detection on the corpus.
+Re-derive with `pixi run streak-sweep` and `pixi run rescue-recall`.
 
 Frangi-ridge comparison code is not in the package; it lives in
 `benchmarks/frangi_legacy.py`.

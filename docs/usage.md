@@ -133,19 +133,23 @@ retuning the masking cannot reuse a stale mask. A missing, partial, corrupt or
 unwritable cache entry simply falls back to the normal computation, and
 `bad_mask_cache: false` disables the cache entirely.
 
-### Streak detection cost and the Radon rescue
+### Streak detection cost
 
-The streak stage dominates a CCD's time, and two settings decide most of it:
+The streak stage dominates a CCD's time. What is left is two binned prescreens
+and a conditional RANSAC pass:
 
 ```yaml
 streak_masking:
-  mrt_rescue_params:
+  houghpeak_params:
     enable: true
-    bin: 1                                # 4 = ~1.6 s instead of ~20 s
-    sinogram_highpass: 101                # samples; 0 disables
-    sigma_rel_floor: 0.001
+    bin: 4                               # spatial binning before the peak search
+    thresh_sig: 2.5
+  contour_params:
+    enable: true
   mask_params:
     max_premasked_fraction: 0.25          # drop a component the pipeline already flagged
+    max_component_sigma: 20.0             # drop a component far brighter than a trail
+  enable_sparse_ransac: true
 ```
 
 `profile_accept` keeps only components that concentrate about a fitted line
@@ -153,26 +157,28 @@ narrower than `mask_params.max_support_width`. `max_premasked_fraction` drops a
 streak component lying mostly inside the mask the earlier stages already
 produced, because that is not a new finding: on real MegaCam amps a saturated
 star's bleed measures 0.45 and a genuine satellite trail 0.02.
+`max_component_sigma` drops a component whose 90th percentile exceeds 20
+background RMS: real trails sit near 2 sigma, saturated-star bleed at 54-66, and
+a near-saturated column group around 2000.
 
-The Radon rescue now runs whenever the prescreen has not already masked enough
-to have handled the frame, rather than when a separate "confidence" flag says
-so. Previously that flag belonged to a Canny/Hough stage which was measured
-accepting nothing on 56 of 56 real amps, so the gate was a cost heuristic that
-could suppress the more sensitive detector.
+There used to be a third stage, an angle-binned Radon rescue
+(`mrt_rescue_params`), intended as the sensitive one -- the thing that finds
+what the cheap prescreen misses. It is gone. Measured on 83 real amps it
+accepted on three, all three false positives, while `houghpeaks` explained all
+23,035 px of real detections; on injected trails at 4, 6, 8 and 12 sigma, two
+lengths and two seeds, it moved `recall_line` by +0.000 in eight of eight cells.
+It cost 121.7 s/amp of a 125.7 s/amp stage, and removing it took the stage to
+4.0 s/amp with both real trails byte-identical. `pixi run streak-sweep` and
+`pixi run rescue-recall` re-derive those numbers; anyone proposing a replacement
+sensitive stage has to re-run them rather than argue from this file.
 
-`mrt_rescue_params` is a Radon rescue for faint trails, and it is the most expensive
-thing in the stage. `bin` mean-bins the projection image before the transform; the
-peak it finds is confirmed at full resolution by the same strip refiner as every
-other candidate, so binning costs only `bin` pixels of rho quantisation. The measured
-trade-off is in the config comment: `bin: 4` is ~12x faster with equal *average*
-recall but a wider per-case spread, which is why full resolution is the default.
-`enable: false` removes the stage entirely and leaves detection to the Hough paths,
-which is what surveys whose fields are known to carry no intermittent trails should
-set.
+The synthetic benchmark suite has a known, pre-existing gate failure
+(`Synthetic-v2 average streak F1 0.159 < 0.200`) that is unchanged by any of
+the above -- the per-case F1 values are identical with and without the rescue.
 
 If a field is diagnosed as slow, `streak_masking.debug: true` puts the per-stage
-evidence (segments per scale, candidates, accepted lines with angle/rho/confidence,
-which passes ran) into `config['_last_run']`.
+evidence (candidates, accepted lines with angle/rho/confidence, which passes
+ran) into `config['_last_run']`.
 
 ### Quality bits
 

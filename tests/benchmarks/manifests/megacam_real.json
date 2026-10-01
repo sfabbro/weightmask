@@ -17,8 +17,14 @@
       "local_path": "benchmark_data/megacam/megacam_sparse_control.fits",
       "label_recipe": "blank_control",
       "crop_mode": "random",
-      "crop_shape": [768, 768],
-      "comparators": ["rubin_compatible_kht", "simple_hough"],
+      "crop_shape": [
+        768,
+        768
+      ],
+      "comparators": [
+        "simple_hough",
+        "radon"
+      ],
       "expected_instrument": "MegaPrime",
       "expected_detector": "MegaCam"
     },
@@ -38,8 +44,14 @@
         "polarity": "one_means_trail"
       },
       "crop_mode": "random",
-      "crop_shape": [768, 768],
-      "comparators": ["rubin_compatible_kht", "simple_hough", "simple_radon"],
+      "crop_shape": [
+        768,
+        768
+      ],
+      "comparators": [
+        "simple_hough",
+        "radon"
+      ],
       "expected_instrument": "MegaPrime",
       "expected_detector": "MegaCam"
     },
@@ -53,8 +65,14 @@
       "dark_local_path": "benchmark_data/megacam/megacam_dark_residual.fits",
       "label_recipe": "dark_injection_v1",
       "crop_mode": "random",
-      "crop_shape": [768, 768],
-      "comparators": ["astroscrappy_only", "dark_threshold_baseline"],
+      "crop_shape": [
+        768,
+        768
+      ],
+      "comparators": [
+        "astroscrappy_only",
+        "dark_threshold_baseline"
+      ],
       "expected_instrument": "MegaPrime",
       "expected_detector": "MegaCam"
     }

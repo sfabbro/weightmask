@@ -15,8 +15,7 @@ def rms_valid_mask(rms):
     Callers must choose, deliberately, between the two legitimate readings:
 
     * a *detection threshold* cannot be asserted without an RMS, so those
-      pixels must be inert -- see ``_detect_streaks_mrt_like`` and
-      ``_refine_trail_mask``;
+      pixels must be inert -- see ``_refine_trail_mask``;
     * a *rejection / quality gate* still has to judge what it can, so it
       substitutes a robust value -- see ``rms_or_robust`` and
       ``cosmics._post_filter_components``.

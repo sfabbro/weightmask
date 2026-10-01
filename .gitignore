@@ -178,3 +178,4 @@ benchmark_data/
 *.mask.fits
 *.ivar.fits
 *.sky.fits
+.DS_Store

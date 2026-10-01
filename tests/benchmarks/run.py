@@ -64,109 +64,103 @@ def _mask_stats(pred_mask, gt_mask, eval_gt_mask=None):
     }
 
 
-def _simple_hough_baseline(data_sub, bkg_rms):
-    """Satdet-style baseline without MRT rescue (calls private helpers)."""
-    from weightmask.streaks import (
-        _detect_streaks_contours,
-        _detect_streaks_houghpeaks,
-        _detect_streaks_satdet,
-    )
+def _simple_hough_baseline(data_sub, bkg_rms, thresh_sig=5.0, min_length=90.0, half_width=3):
+    """A plain Hough-transform streak detector, independent of weightmask.
 
-    config = {
-        "enable": True,
-        "mode": "auto_ground",
-        "debug": True,
-        "enable_sparse_ransac": False,
-        "satdet_params": {
-            "rescale_percentiles": [2.0, 98.5],
-            "gaussian_sigmas": [1.5],
-            "canny_low_threshold": 0.08,
-            "canny_high_threshold": 0.25,
-            "small_edge_perimeter": 40,
-            "hough_threshold": 8,
-            "hough_min_line_length": 90,
-            "hough_max_line_gap": 25,
-            "cluster_angle_tol_deg": 3.0,
-            "cluster_rho_tol_px": 24.0,
-            "min_cluster_segments": 2,
-            "edge_buffer": 20,
-            "min_edge_touches": 0,
-            "min_interior_span": 80.0,
-            "min_segment_density": 0.01,
-            "candidate_corridor_radius": 10,
-            "max_existing_mask_fraction": 0.85,
-            "confidence_threshold": 0.25,
-        },
-        "mask_params": {
-            "strip_length": 196,
-            "strip_width": 64,
-            "profile_sigma_threshold": 1.0,
-            "profile_percentile": 70.0,
-            "rotation_interpolation_order": 1,
-            "padding": 2,
-            "min_mask_pixels": 16,
-            "min_row_hits": 5,
-            "min_row_hit_fraction": 0.2,
-            "max_support_width": 18,
-        },
-    }
-    empty = np.zeros_like(data_sub, dtype=bool)
+    A comparator is only worth its name if it is a *different* algorithm reached
+    through no weightmask code. The two that used to sit here both violated that
+    and neither ran: ``_simple_hough_baseline`` imported the deleted
+    ``_detect_streaks_satdet`` and crashed, and ``_rubin_compatible_kht`` called
+    ``detect_streaks`` itself, so a "comparator" was scored against the thing it
+    was meant to be compared to. Both are gone.
+
+    What remains is the honest minimal version of the name: threshold, Hough
+    transform, keep the strongest line, paint its corridor. No candidate scoring,
+    no strip refinement, no vetoes -- the point is to be simple.
+    """
+    from skimage.transform import hough_line, hough_line_peaks
+
+    binary = np.isfinite(data_sub) & (data_sub > thresh_sig * bkg_rms)
+    if not binary.any():
+        return np.zeros_like(data_sub, dtype=bool)
+    accumulator, angles, distances = hough_line(binary)
+    # hough_line_peaks returns three parallel arrays, not a list of tuples.
+    vote, theta, rho = hough_line_peaks(accumulator, angles, distances, min_distance=4, min_angle=4, threshold=40)
     mask = np.zeros_like(data_sub, dtype=bool)
-    hp_mask, _, _ = _detect_streaks_houghpeaks(data_sub, bkg_rms, empty, config)
-    mask |= hp_mask
-    ct_mask, _, _ = _detect_streaks_contours(data_sub, bkg_rms, empty, config)
-    mask |= ct_mask
-    sat_mask, _, _ = _detect_streaks_satdet(data_sub, bkg_rms, empty, config)
-    mask |= sat_mask
+    yy, xx = np.mgrid[0 : data_sub.shape[0], 0 : data_sub.shape[1]]
+    for angle, offset in zip(theta[:4], rho[:4]):
+        normal = (np.cos(angle), np.sin(angle))
+        distance = np.abs(xx * normal[0] + yy * normal[1] - offset)
+        mask |= distance <= half_width
     return mask
 
 
-def _rubin_compatible_baseline(data_sub, bkg_rms):
-    config = {
-        "enable": True,
-        "mode": "auto_ground",
-        "debug": True,
-        "enable_sparse_ransac": False,
-        "satdet_params": {
-            "rescale_percentiles": [1.0, 99.2],
-            "gaussian_sigmas": [1.0, 2.0],
-            "canny_low_threshold": 0.06,
-            "canny_high_threshold": 0.18,
-            "small_edge_perimeter": 35,
-            "hough_threshold": 5,
-            "hough_min_line_length": 60,
-            "hough_max_line_gap": 18,
-            "cluster_angle_tol_deg": 2.0,
-            "cluster_rho_tol_px": 30.0,
-            "min_cluster_segments": 2,
-            "edge_buffer": 12,
-            "min_edge_touches": 0,
-            "min_interior_span": 70.0,
-            "min_segment_density": 0.01,
-            "candidate_corridor_radius": 10,
-            "max_existing_mask_fraction": 0.9,
-            "confidence_threshold": 0.20,
-        },
-        "mrt_rescue_params": {
-            "theta_step_deg": 1.0,
-            "peak_threshold_sig": 4.0,
-            "max_candidates": 4,
-            "confidence_threshold": 0.22,
-        },
-        "mask_params": {
-            "strip_length": 220,
-            "strip_width": 72,
-            "profile_sigma_threshold": 1.0,
-            "profile_percentile": 72.0,
-            "rotation_interpolation_order": 1,
-            "padding": 2,
-            "min_mask_pixels": 16,
-            "min_row_hits": 4,
-            "min_row_hit_fraction": 0.18,
-            "max_support_width": 20,
-        },
-    }
-    return detect_streaks(data_sub, bkg_rms, np.zeros_like(data_sub, dtype=bool), config)
+def _radon_baseline(data_sub, bkg_rms, thresh_sig=4.0, theta_step_deg=2.0, min_length=60.0):
+    """A standalone Radon line search, independent of weightmask.
+
+    Replaces the ``simple_radon`` comparator the MegaCam manifest asked for and
+    the code never provided -- the name sat in ``comparators`` with no
+    implementation behind it, so requesting it silently produced no baseline at
+    all. This is the matched-filter idea the deleted production rescue used
+    (Nir, Zackay & Ofek 2018: a PSF-broadened line template scored along rotated
+    axes), written out longhand so the comparison does not route through
+    weightmask code.
+
+    For each trial angle the image is projected onto the perpendicular axis. Two
+    sinograms are accumulated: the matched-filter sum, and a count of pixels above
+    ``thresh_sig``. A line is accepted where the count reaches ``min_length`` and
+    the sum peaks along that row. The count is the gate that does the work -- a
+    single hot pixel has count 1 and is rejected no matter how bright, which is
+    the failure a sum-threshold alone gets wrong.
+    """
+    finite = np.isfinite(data_sub)
+    normalized = np.where(finite, data_sub / np.maximum(bkg_rms, 1e-6), 0.0)
+    bright = np.where(finite & (data_sub > thresh_sig * bkg_rms), 1.0, 0.0).astype(np.float32)
+    height, width = data_sub.shape
+    diagonal = int(np.ceil(np.hypot(height, width))) + 2
+    padded_sum = np.zeros((diagonal, diagonal), dtype=np.float32)
+    padded_bright = np.zeros((diagonal, diagonal), dtype=np.float32)
+    offset_y, offset_x = (diagonal - height) // 2, (diagonal - width) // 2
+    padded_sum[offset_y : offset_y + height, offset_x : offset_x + width] = normalized
+    padded_bright[offset_y : offset_y + height, offset_x : offset_x + width] = bright
+    grid_y, grid_x = np.mgrid[0:diagonal, 0:diagonal]
+
+    mask = np.zeros_like(data_sub, dtype=bool)
+    # The image occupies padded rows/cols [offset_y:, offset_x:]. The corridor is
+    # measured against those same padded coordinates -- an earlier version used
+    # the top-left of the padded grid as if it were the image origin, which shifted
+    # every corridor by the pad offset and so found the line at 0/260.
+    window_y = grid_y[offset_y : offset_y + height, offset_x : offset_x + width]
+    window_x = grid_x[offset_y : offset_y + height, offset_x : offset_x + width]
+    for theta_deg in np.arange(0.0, 180.0, theta_step_deg):
+        theta = np.deg2rad(theta_deg)
+        normal_x, normal_y = np.cos(theta), np.sin(theta)
+        # rho is measured on the padded grid, whose x*nx + y*ny range depends on
+        # the angle and can go negative. Shift into non-negative bins and keep the
+        # offset, so bin i is the geometric offset (i + rho_offset).
+        raw = grid_x * normal_x + grid_y * normal_y
+        rho_offset = int(np.floor(raw.min())) - 1
+        rho = (np.floor(raw) - rho_offset).astype(np.int32)
+        n_bins = diagonal * 2 + 4
+        projection_sum = np.bincount(rho.ravel(), weights=padded_sum.ravel(), minlength=n_bins)
+        support = np.bincount(rho.ravel(), weights=padded_bright.ravel(), minlength=n_bins)
+
+        long_enough = support >= min_length
+        if not long_enough.any():
+            continue
+        candidates = np.flatnonzero(long_enough)
+        for index in candidates:
+            # Local maximum along rho within its own connected run, so a star
+            # cluster at one rho cannot borrow a neighbouring angle's peak.
+            if projection_sum[index] < projection_sum[index - 1] or projection_sum[index] < projection_sum[
+                index + 1
+            ]:
+                continue
+            # Bin i is the geometric offset (i + rho_offset); the corridor is
+            # drawn around that, in the same padded-grid units the window uses.
+            distance = np.abs(window_x * normal_x + window_y * normal_y - (index + rho_offset))
+            mask |= distance <= 1.5
+    return mask
 
 
 def _benchmark_synthetic_bad_pixels(seed, size):
@@ -281,8 +275,8 @@ def run_synthetic_v2(with_baselines=False, selected_cases=None):
                     products["ground_truth"]["streak"],
                     eval_gt_mask=dilated_streak_gt,
                 ),
-                "rubin_compatible_kht": _mask_stats(
-                    _rubin_compatible_baseline(data_sub, products["bkg_rms"]),
+                "radon": _mask_stats(
+                    _radon_baseline(data_sub, products["bkg_rms"]),
                     products["ground_truth"]["streak"],
                     eval_gt_mask=dilated_streak_gt,
                 ),
@@ -814,8 +808,8 @@ def _evaluate_blank_control(data, bkg_rms, with_baselines):
         baselines["simple_hough"] = {
             "streak_pixels": int(np.sum(_simple_hough_baseline(data - np.nanmedian(data), bkg_rms)))
         }
-        baselines["rubin_compatible_kht"] = {
-            "streak_pixels": int(np.sum(_rubin_compatible_baseline(data - np.nanmedian(data), bkg_rms)))
+        baselines["radon"] = {
+            "streak_pixels": int(np.sum(_radon_baseline(data - np.nanmedian(data), bkg_rms)))
         }
     return metrics, streak_mask, baselines
 
@@ -941,22 +935,21 @@ def _evaluate_streak_case(
                 "streak_pixels": int(np.sum(hough_mask)),
                 "overlap_with_weightmask": int(np.sum(hough_mask & weightmask_mask)),
             }
-        if "rubin_compatible_kht" in case.get("comparators", []):
-            rubin_mask = _rubin_compatible_baseline(data_sub, bkg_rms)
-            baselines["rubin_compatible_kht"] = {
-                "streak_pixels": int(np.sum(rubin_mask)),
-                "overlap_with_weightmask": int(np.sum(rubin_mask & weightmask_mask)),
+        if "radon" in case.get("comparators", []):
+            radon_mask = _radon_baseline(data_sub, bkg_rms)
+            baselines["radon"] = {
+                "streak_pixels": int(np.sum(radon_mask)),
+                "overlap_with_weightmask": int(np.sum(radon_mask & weightmask_mask)),
             }
-        if "acstools_detsat" in case.get("comparators", []):
-            try:
-                baselines["acstools_detsat"] = {"status": "available"}
-            except Exception:
-                baselines["acstools_detsat"] = {"status": "unavailable"}
-        if "acstools_findsat_mrt" in case.get("comparators", []):
-            try:
-                baselines["acstools_findsat_mrt"] = {"status": "available"}
-            except Exception:
-                baselines["acstools_findsat_mrt"] = {"status": "unavailable"}
+        # A requested comparator with no implementation must be reported as not
+        # run, not dropped. ``simple_radon`` sat in the MegaCam manifest with no
+        # code behind it, so asking for it silently produced no baseline and the
+        # summary looked complete. Same for the two acstools comparators, whose
+        # old handlers were try/except around a dict literal and so always
+        # answered "available" without running anything.
+        for wanted in case.get("comparators", []):
+            if wanted not in baselines:
+                baselines[wanted] = {"status": "not_implemented", "reason": "no comparator code in this repository"}
     return metrics, weightmask_mask, baselines
 
 
