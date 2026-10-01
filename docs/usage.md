@@ -195,7 +195,30 @@ Streak detection is **7% of a full exposure**, not the majority of it. Cosmics i
 67%. The remaining streaks-attributable cost is mostly reading the 350 MB flat,
 which happens either way.
 
-Two things that make this number trustworthy and would otherwise have made it
+`--scaling 1 2 4 8` sweeps the worker count. On this 8-core M2 (4 performance +
+4 efficiency):
+
+| `--nproc` | wall | speedup | efficiency |
+|---|---|---|---|
+| 1 | 430.1 s | 1.00x | 100% |
+| 2 | 245.7 s | 1.75x | 88% |
+| 4 | 168.9 s | 2.55x | 64% |
+| 8 | 139.6 s | 3.08x | 39% |
+
+The efficiency column falls because **the machine saturates, not because the
+pipeline serialises**. Per-chip wall time grows with the thread count -- median
+11.06 s at `--nproc 1`, 15.64 s at 4, 27.14 s at 8 -- so eight threads on four
+performance cores each run ~2.45x slower than one thread alone. The two
+candidate serial sections were measured and are negligible: the flat-median
+prologue that runs before any worker starts is 2.4 s, and writing every product
+serially is 1.0 s, together 0.8% of the single-core run.
+
+An Amdahl fit to the three parallel points implies a 101 s serial floor, which
+both direct measurements contradict. The fit is wrong here and is not quoted: with
+four threads sharing four cores, a three-point fit cannot separate "serial code"
+from "machine saturation", and the per-chip timings can.
+
+Two things that make the comparison number trustworthy and would otherwise have made it
 wrong. Both arms are warmed up and the warmup discarded: the first run of either
 arm pays for importing skimage/scipy, populating the on-disk flat-bad-pixel cache,
 and faulting the flat into the page cache. Measured in sequence without a warmup,
