@@ -2,6 +2,41 @@
 
 ## Unreleased
 
+### Sparse RANSAC keeps its place, and its price is 0.82 s/amp
+
+The third stage of the same question. On 224 real amps RANSAC runs on 222,
+accepts on 0, and costs 184 s of the 782 s stage -- 0.82 s/amp, 24%. Measured on
+its own remit, dashed trails:
+
+| injected trail | with RANSAC | without | |
+|---|---|---|---|
+| 1500 px dashed, 12 sigma | 0.167 | **0.000** | RANSAC is the only finder |
+| 800 px solid, 12 sigma | 0.165 | **0.000** | RANSAC is the only finder |
+| other 14 cells | equal | equal | no effect |
+| cells helped / hurt | 2 / 16 | | **0 hurt** |
+
+So it stays, for the same reason contours stays and the rescue did not: it is the
+sole finder in the cells where it helps and costs recall in none.
+
+Two things about this measurement that are worth not getting wrong.
+
+The timing column of the recall grid cannot price this stage. RANSAC is gated by
+`sparse_on_primary_weak_only`, and on the injected grid the gate is shut in
+**94 of 96 runs** -- the prescreen has usually already succeeded, so RANSAC is
+never entered. Its measured cost there is -0.1 s/run, which is noise, and
+negative cost is the signature of a stage that did not run. The honest price is
+the real-amp sweep's 0.82 s/amp, where the gate is open on 222 of 224.
+
+The grid was extended to inject dashed trails at all. RANSAC's stated job is
+dashed-trail recovery, and the first version of this grid only injected
+continuous ones -- which would have measured it on inputs it was never built for
+and returned a clean +0.000 for the wrong reason. That is the same error as
+judging contours on real amps alone, caught by asking what the stage was for
+before measuring it.
+
+`benchmarks/streak_recall_floor.py` now sweeps `{solid, dashed}` for every
+(length, sigma) cell and records `dashed` in each row.
+
 ### Contours keeps its place; the instrument that decides is now reusable
 
 The Radon rescue was removed below because it cost 121.7 s/amp and found nothing.

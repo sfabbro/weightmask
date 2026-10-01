@@ -24,6 +24,7 @@ is not comparable across ``bin`` settings.
 Usage:
     pixi run streak-recall-floor                        # the shipped floor
     pixi run streak-recall-floor -- --disable contours  # what contours uniquely finds
+    pixi run streak-recall-floor -- --disable ransac    # what RANSAC uniquely finds (dashed trails)
 """
 from __future__ import annotations
 
@@ -66,10 +67,14 @@ SIGMAS = (4.0, 6.0, 8.0, 12.0)
 LENGTHS = (800, 1500)
 SEEDS = (0, 1)
 STAGES = ("contours", "houghpeaks", "ransac")
+# Dashed trails are the sparse RANSAC stage's whole remit. Measuring it on
+# continuous trails only would repeat the mistake this benchmark already caught
+# once: a stage judged on inputs it was never built for.
+DASHED_KINDS = (False, True)
 
 
 def run_one(job):
-    path, hdu, label, sigmas, lengths, seeds, disable = job
+    path, hdu, label, sigmas, lengths, seeds, disable, dashed_kinds = job
     out = {
         "exposure": os.path.basename(path).split(".")[0],
         "hdu": int(hdu),
@@ -107,28 +112,33 @@ def run_one(job):
         noise = float(np.median(np.abs(finite - np.median(finite))) * 1.4826)
         for length in lengths:
             for sigma in sigmas:
-                for seed in seeds:
-                    flux, _truth, trails = inject_grid(
-                        data_sub.shape, [(length, sigma, False)], np.random.default_rng(seed), 500.0
-                    )
-                    test = data_sub + flux * noise
-                    started = time.perf_counter()
-                    with contextlib.redirect_stdout(io.StringIO()):
-                        mask = ST.detect_streaks(test, rms, existing, dict(scfg))
-                    elapsed = time.perf_counter() - started
-                    exact, tolerant, line = trail_recall(mask, trails[0]["truth"])
-                    out["rows"].append(
-                        {
-                            "length": length,
-                            "sigma": sigma,
-                            "seed": seed,
-                            "recall": round(exact, 3),
-                            "recall5": round(tolerant, 3),
-                            "recall_line": round(line, 3),
-                            "px": int(mask.sum()),
-                            "s": round(elapsed, 1),
-                        }
-                    )
+                for dashed in dashed_kinds:
+                    for seed in seeds:
+                        flux, _truth, trails = inject_grid(
+                            data_sub.shape,
+                            [(length, sigma, dashed)],
+                            np.random.default_rng(seed),
+                            500.0,
+                        )
+                        test = data_sub + flux * noise
+                        started = time.perf_counter()
+                        with contextlib.redirect_stdout(io.StringIO()):
+                            mask = ST.detect_streaks(test, rms, existing, dict(scfg))
+                        elapsed = time.perf_counter() - started
+                        exact, tolerant, line = trail_recall(mask, trails[0]["truth"])
+                        out["rows"].append(
+                            {
+                                "length": length,
+                                "sigma": sigma,
+                                "dashed": bool(dashed),
+                                "seed": seed,
+                                "recall": round(exact, 3),
+                                "recall5": round(tolerant, 3),
+                                "recall_line": round(line, 3),
+                                "px": int(mask.sum()),
+                                "s": round(elapsed, 1),
+                            }
+                        )
     except Exception as exc:  # pragma: no cover - surfaced, never swallowed
         out["error"] = f"{type(exc).__name__}: {exc}"
     return out
@@ -147,10 +157,11 @@ def main(argv=None):
     )
     parser.add_argument("--workers", type=int, default=3)
     args = parser.parse_args(argv)
-    jobs = [(p, h, lab, SIGMAS, LENGTHS, SEEDS, tuple(args.disable)) for p, h, lab in AMPS]
+    jobs = [(p, h, lab, SIGMAS, LENGTHS, SEEDS, tuple(args.disable), DASHED_KINDS) for p, h, lab in AMPS]
     print(
-        f"{len(jobs)} amps x {len(LENGTHS)} lengths x {len(SIGMAS)} sigmas x {len(SEEDS)} seeds "
-        f"through the production path; disabled stages: {args.disable or 'none'}",
+        f"{len(jobs)} amps x {len(LENGTHS)} lengths x {len(SIGMAS)} sigmas x {len(DASHED_KINDS)} "
+        f"trail kinds x {len(SEEDS)} seeds through the production path; "
+        f"disabled stages: {args.disable or 'none'}",
         flush=True,
     )
     results = []

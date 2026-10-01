@@ -172,6 +172,15 @@ It cost 121.7 s/amp of a 125.7 s/amp stage, and removing it took the stage to
 `pixi run rescue-recall` re-derive those numbers; anyone proposing a replacement
 sensitive stage has to re-run them rather than argue from this file.
 
+`pixi run streak-recall-floor` measures where the stage stops finding injected
+trails, across {solid, dashed} trails at 4-12 sigma, two lengths and two seeds,
+on the production input path. `--disable {contours,houghpeaks,ransac}` repeats the
+same grid with one stage switched off, which is how a stage's cost is weighed
+against what only it finds. Both remaining prescreens are dormant on the local
+corpus -- contours and RANSAC accept on 0 of 224 real amps each -- yet each is the
+sole finder in the cells it helps and costs recall in none, which is why neither
+was removed.
+
 The synthetic benchmark suite has a known, pre-existing gate failure
 (`Synthetic-v2 average streak F1 0.159 < 0.200`) that is unchanged by any of
 the above -- the per-case F1 values are identical with and without the rescue.

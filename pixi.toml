@@ -5,7 +5,10 @@ platforms = ["osx-arm64", "linux-64"]
 
 [tasks]
 streak-sweep = "python benchmarks/streak_stage_sweep.py --stride 1 --out test_outputs/perf/streak_stage_sweep.json"
-streak-recall-floor = "python benchmarks/streak_recall_floor.py --out test_outputs/perf/streak_recall_floor.json"
+# Stage marginal-value grid. Pass extra args through, e.g.
+#   pixi run streak-recall-floor -- --disable contours
+#   pixi run streak-recall-floor -- --disable ransac
+streak-recall-floor = "python benchmarks/streak_recall_floor.py --out test_outputs/perf/recall_floor_dashed.json"
 lint = "ruff check ."
 format = "ruff format ."
 test = "pytest"
