@@ -2,6 +2,34 @@
 
 ## Unreleased
 
+### Contours keeps its place; the instrument that decides is now reusable
+
+The Radon rescue was removed below because it cost 121.7 s/amp and found nothing.
+Contours has the same two surface signals -- 0 acceptances on 224 real amps, and
+44% of what the stage now costs -- and the opposite answer underneath:
+
+| injected trail | with contours | without | |
+|---|---|---|---|
+| 800 px, 6 sigma | 0.167 | **0.000** | contours is the only finder |
+| 800 px, 8 sigma | 0.167 | **0.000** | contours is the only finder |
+| other 6 cells | equal | equal | no effect |
+| mean gain | **+0.042** | | costs 3.3 s/run, 56% of the stage |
+
+Contours costs recall on **0 of 8** cells. That asymmetry is the whole result:
+the rescue moved recall by +0.000 everywhere, contours is the sole reason some
+injected trails are found at all. Per-amp, the whole gain is on 1013719p:9 at
+seed 0, where houghpeaks reaches 0.000 and contours reaches 1.000.
+
+The two stage runs of `benchmarks/streak_recall_floor.py` that produced this are
+the same instrument that killed the rescue, so the comparison is like-for-like:
+same amps, same grid, same production input path, stages switched by their own
+config block rather than by monkeypatching.
+
+`benchmarks/streak_recall_floor.py` now takes `--disable {contours,houghpeaks,ransac}`
+(repeatable). A stage switch that is not in that list is a `ValueError` rather
+than a silently ignored flag -- the failure mode this whole section is about is a
+knob that looks connected and is not.
+
 ### Delete the Canny/Hough stage, and stop a re-mask of known-bad pixels
 
 Measured over 56 real MegaCam amps (every 4th HDU of six exposures, production

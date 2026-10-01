@@ -19,6 +19,7 @@ stage must beat the recall curve it can now measure, not argue from this file.
 
 import contextlib
 import io
+import json
 import unittest
 from pathlib import Path
 
@@ -95,6 +96,70 @@ class TestDetectorStillWorksWithoutTheRescue(unittest.TestCase):
         with contextlib.redirect_stdout(io.StringIO()):
             mask = detect_streaks(data, rms, existing_mask, dict(_shipped_streak_config()))
         self.assertEqual(int(np.count_nonzero(mask)), 0)
+
+
+class TestSurvivingStagesEarnTheirCost(unittest.TestCase):
+    """The complement of the tests above.
+
+    Deleting a stage needs evidence, and so does keeping one that costs more than
+    it appears to. ``contours`` accepted on 0 of 224 real amps and is 44% of the
+    remaining stage -- the same two signals that condemned the rescue. Measured on
+    injected trails it is the opposite: it adds recall in 2 of 8 cells and costs
+    recall in none. This pins that asymmetry so a future retune cannot quietly
+    turn contours into dead weight.
+
+    Full grid: ``pixi run streak-recall-floor -- --disable contours``.
+    """
+
+    #: 1013719p:9 is where the whole difference lands: at seed 0 and 6 sigma,
+    #: houghpeaks reaches 0.000 recall and contours reaches 1.000.
+    CLEAN_AMP = ("1013719p", 9)
+    #: Both were measured; only 6 sigma is asserted, so this stays a claim about
+    #: contours being the sole finder rather than about a specific recall value.
+    SIGMA = 6.0
+    SEED = 0
+    LENGTH = 800
+
+    @classmethod
+    def setUpClass(cls):
+        root = REPO / "test_outputs" / "perf"
+        with_ = root / "recall_floor.json"
+        without = root / "recall_no_contours.json"
+        if not (with_.exists() and without.exists()):
+            raise unittest.SkipTest(
+                "run: pixi run streak-recall-floor && pixi run streak-recall-floor -- --disable contours"
+            )
+        cls.on = json.load(open(with_))
+        cls.off = json.load(open(without))
+
+    def _cell(self, records):
+        for record in records:
+            if (record["exposure"], record["hdu"]) != self.CLEAN_AMP:
+                continue
+            for row in record["rows"]:
+                if row["length"] == self.LENGTH and row["sigma"] == self.SIGMA and row["seed"] == self.SEED:
+                    return row["recall_line"]
+        self.fail(f"no cell for {self.CLEAN_AMP} len={self.LENGTH} sigma={self.SIGMA} seed={self.SEED}")
+
+    def test_contours_is_the_only_stage_that_finds_a_trail_houghpeaks_misses(self):
+        self.assertEqual(self._cell(self.off), 0.0, "houghpeaks alone is expected to miss this cell entirely")
+        self.assertGreater(
+            self._cell(self.on), 0.5, "contours is the sole finder here; if this fails, contours is dead weight"
+        )
+
+    def test_no_real_amp_is_detected_by_the_contour_stage(self):
+        """Why the real-amp sweep alone would have got this deletion wrong."""
+        sweep = REPO / "test_outputs" / "perf" / "streak_stage_sweep.json"
+        if not sweep.exists():
+            raise unittest.SkipTest("run: pixi run streak-sweep")
+        records = [r for r in json.load(open(sweep)) if not r["error"]]
+        accepted = [
+            r
+            for r in records
+            if r["stages"].get("_detect_streaks_contours", {}).get("accepted")
+            and any(n > 0 for n in r["stages"]["_detect_streaks_contours"]["accepted"])
+        ]
+        self.assertEqual(accepted, [], "contours accepted nothing; that is why the injected-trail grid decides this")
 
 
 if __name__ == "__main__":

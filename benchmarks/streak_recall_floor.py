@@ -22,7 +22,8 @@ injected line counts); the width-convention ``recall`` is reported beside it and
 is not comparable across ``bin`` settings.
 
 Usage:
-    pixi run rescue-recall
+    pixi run streak-recall-floor                        # the shipped floor
+    pixi run streak-recall-floor -- --disable contours  # what contours uniquely finds
 """
 from __future__ import annotations
 
@@ -48,9 +49,9 @@ for path in (REPO, MODULE_DIR):
         sys.path.insert(0, path)
 
 from production_inputs import capture_detector_inputs, streak_config  # noqa: E402
+from streak_inject import inject_grid, trail_recall  # noqa: E402
 
 import weightmask.streaks as ST  # noqa: E402
-from streak_inject import inject_grid, trail_recall  # noqa: E402
 
 LONG = os.path.join(REPO, "benchmark_data", "megacam", "long", "996195p.fits.fz")
 PERF = os.path.join(REPO, "benchmark_data", "megacam", "perf")
@@ -64,14 +65,16 @@ AMPS = [
 SIGMAS = (4.0, 6.0, 8.0, 12.0)
 LENGTHS = (800, 1500)
 SEEDS = (0, 1)
+STAGES = ("contours", "houghpeaks", "ransac")
 
 
 def run_one(job):
-    path, hdu, label, sigmas, lengths, seeds = job
+    path, hdu, label, sigmas, lengths, seeds, disable = job
     out = {
         "exposure": os.path.basename(path).split(".")[0],
         "hdu": int(hdu),
         "label": label,
+        "disabled": list(disable),
         "rows": [],
     }
     try:
@@ -85,6 +88,19 @@ def run_one(job):
                     flat = np.ascontiguousarray(handle[hdu].read().astype(np.float32))
         cfg = yaml.safe_load(open(os.path.join(REPO, "weightmask.yml")))
         scfg = streak_config(cfg)
+        # Marginal-value measurement: switch a named stage off and re-run the same
+        # grid, so a stage's cost can be weighed against what it uniquely finds.
+        # Stages are switched by their own config block, never by monkeypatching,
+        # so what is measured is what ships.
+        for stage in disable:
+            if stage == "contours":
+                scfg["contour_params"] = {**scfg["contour_params"], "enable": False}
+            elif stage == "houghpeaks":
+                scfg["houghpeak_params"] = {**scfg["houghpeak_params"], "enable": False}
+            elif stage == "ransac":
+                scfg["enable_sparse_ransac"] = False
+            else:
+                raise ValueError(f"unknown stage {stage!r}; stages are {STAGES}")
         with contextlib.redirect_stdout(io.StringIO()):
             data_sub, rms, existing = capture_detector_inputs(science, header, cfg, flat=flat)
         finite = data_sub[np.isfinite(data_sub)]
@@ -121,12 +137,20 @@ def run_one(job):
 def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__.split("\n")[0])
     parser.add_argument("--out", default=os.path.join(MODULE_DIR, "streak_recall_floor.json"))
+    parser.add_argument(
+        "--disable",
+        action="append",
+        default=[],
+        choices=STAGES,
+        help="switch a stage off for the whole grid; repeatable. Measures what a stage "
+        "uniquely finds, at its true cost. Omit to measure the shipped floor.",
+    )
     parser.add_argument("--workers", type=int, default=3)
     args = parser.parse_args(argv)
-    jobs = [(p, h, lab, SIGMAS, LENGTHS, SEEDS) for p, h, lab in AMPS]
+    jobs = [(p, h, lab, SIGMAS, LENGTHS, SEEDS, tuple(args.disable)) for p, h, lab in AMPS]
     print(
         f"{len(jobs)} amps x {len(LENGTHS)} lengths x {len(SIGMAS)} sigmas x {len(SEEDS)} seeds "
-        f"through the production path",
+        f"through the production path; disabled stages: {args.disable or 'none'}",
         flush=True,
     )
     results = []
