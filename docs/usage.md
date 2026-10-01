@@ -195,8 +195,8 @@ Streak detection is **7% of a full exposure**, not the majority of it. Cosmics i
 67%. The remaining streaks-attributable cost is mostly reading the 350 MB flat,
 which happens either way.
 
-`--scaling 1 2 4 8` sweeps the worker count. On this 8-core M2 (4 performance +
-4 efficiency):
+`--scaling 1 2 4 8` sweeps the worker count with **streaks on**; it has no off-arm.
+On this 8-core M2 (4 performance + 4 efficiency):
 
 | `--nproc` | wall | speedup | efficiency |
 |---|---|---|---|
@@ -204,6 +204,11 @@ which happens either way.
 | 2 | 245.7 s | 1.75x | 88% |
 | 4 | 168.9 s | 2.55x | 64% |
 | 8 | 139.6 s | 3.08x | 39% |
+
+These absolute times sit ~2% above the 420.4 s single-core figure above for the
+same streaks-on configuration. That is run-to-run variance across separate
+invocations, not a difference in what was measured; the speedup ratios are taken
+within one session and are the trustworthy part of this table.
 
 The efficiency column falls because **the machine saturates, not because the
 pipeline serialises**. Per-chip wall time grows with the thread count -- median
