@@ -6,7 +6,7 @@ import scipy.ndimage as ndi
 from astropy.stats import mad_std
 from skimage.draw import line
 from skimage.measure import LineModelND, label, ransac
-from skimage.morphology import dilation, disk, white_tophat
+from skimage.morphology import dilation, disk
 
 from .utils import rms_or_robust, rms_valid_mask, robust_rms
 
@@ -54,21 +54,6 @@ def persistent_axis_mask(frames, min_other=2, sigma=3.0):
 def _normalize_angle_deg(angle_deg):
     """Normalize an angle to the [0, 180) degree range."""
     return (angle_deg + 180.0) % 180.0
-
-
-def _streak_image_core(data_sub):
-    """Mask-independent preparation: suppress compact-source residuals.
-
-    The 15x15 median filter plus the disk(3) top-hat is the entire cost (a few
-    seconds per Mpix), and only the final masking step depends on the streak
-    exclusion mask. Keeping it separate lets the callers share one
-    result across the several passes that reuse a single ``data_sub``.
-    """
-    positive = np.clip(data_sub, 0.0, None)
-    filtered = ndi.median_filter(positive, size=15)
-    prepared = np.clip(positive - filtered, 0.0, None)
-    prepared = white_tophat(prepared, footprint=disk(3))
-    return prepared.astype(np.float32)
 
 
 def _bin_array(data_sub, bin_factor):

@@ -12,11 +12,14 @@ This package includes modules for detecting various effects in astronomical imag
 """
 
 try:
-    from importlib.metadata import version as _distribution_version
+    from ._version import __version__
+except ImportError:  # pragma: no cover - source tree without the module
+    try:
+        from importlib.metadata import version as _distribution_version
 
-    __version__ = _distribution_version("weightmask")
-except Exception:
-    __version__ = "0.1.0"
+        __version__ = _distribution_version("weightmask")
+    except Exception:
+        __version__ = "0.0.0.dev0"
 
 # Legacy public dictionary kept stable; the contract adds INVALID_VARIANCE.
 from .contract import QUALITY_BITS

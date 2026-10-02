@@ -56,7 +56,8 @@ Polarity is `set_means_flagged` (`weightmask.contract.MASK_POLARITY`).
 is true. `MASK_DTYPE` is `"uint32"` in memory; FITS masks are written as
 uint16 (`output_params.mask_bitpix: 16`) because values 0–63 fit.
 
-`weightmask.__version__` is the installed package version (fallback `"0.1.0"`).
+`weightmask.__version__` is the installed package version. It is declared once, in
+`weightmask/_version.py`; nothing else should hold a literal.
 
 ## `weightmask.contract`
 
@@ -78,7 +79,7 @@ Non-finite or non-positive inverse variance is marked `INVALID_VARIANCE` and
 zeroed. Inverse-variance semantics are an F² sensitivity weight
 (`INVERSE_VARIANCE_SEMANTICS`).
 `CONTRACT_VERSION` (`"1.0"`) is the array-schema version; the package version
-is `weightmask.__version__` (`0.1.0`).
+is `weightmask.__version__` (`0.2.0`).
 
 `ArrayHeaderIO` is an optional read/write protocol. `TorchfitsArrayHeaderIO`
 implements it when torchfits is installed; torchfits is not a required

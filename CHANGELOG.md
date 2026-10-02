@@ -1,6 +1,68 @@
 # Changelog
 
-## Unreleased
+## 0.2.0 - 2026-10-02
+
+Streak detection rewritten on measurement, and the measurement code itself
+audited. Behavioural changes are listed first because a consumer's masks will
+change.
+
+### Removed
+
+- **The Radon rescue** (`mrt_rescue_params`). Measured on 83 real amps it
+  accepted on 3, all three false positives, and moved `recall_line` by +0.000
+  across 8 of 8 injected-trail cells at 4-12 sigma, two lengths, two seeds. It
+  cost 121.7 s/amp of a 125.7 s/amp stage. Removed with its config block, the
+  `curate_trail_truth` proposer that read it, and `tests/test_radon_rescue.py`.
+- **`_streak_image_core`**, unused since the Canny/Hough stage went.
+- **The version literal**, which appeared in five files. It is now declared once
+  in `weightmask/_version.py`; `pyproject.toml` is asserted to agree rather than
+  trusted, because `ProducerMetadata.version` stamps provenance into every
+  output map and a missed update writes a stale version into science products.
+
+### Unchanged, and now pinned
+
+- Both real satellite trails are still found: 996195p HDU 35 and 36, byte-identical
+  at 12,001 and 11,034 px. `tests/test_brightness_veto.py` asserts this at the
+  shipped default, with the brightness veto off, and with it wide open. A stage
+  deletion that dropped one of them to zero passed the suite green before that
+  test existed.
+- Zero of ~1,100 stars fall inside the mask on the two real-trail chips.
+
+### Changed
+
+- **The brightness veto is optional.** `max_component_sigma: null` disables it.
+  Trails are unaffected either way; a hot column group (10,734 px) and a bright
+  star arm (4,385 px) return. Both sit below `max_premasked_fraction`, so the
+  pre-masked veto cannot take them. The column is instead catchable without
+  reference to brightness, since it is static: it persists at 0.90 across epochs
+  of the same field against 0.02 for a trail, which is what `--persistence` uses.
+- Corrected the p90 table that config, usage and this file all carried. It read
+  "~2 sigma" for trails and "54-66" for bleed; re-measured they are 3.0/3.2 and
+  1138/1345, and a star arm at 155 was missing entirely.
+- `docs/detector_audit.md` is marked historical and lists the stages it
+  describes that no longer ship.
+
+### Measured, for reference
+
+- Full 36-chip MegaCam exposure, one core: **389.9 s** without streak detection,
+  **420.4 s** with. The stage is 7% of the run, not the majority of it.
+- With `--nproc 8`: 139.6 s, 3.08x. The fall-off is machine saturation, not
+  serialisation -- per-chip wall time rises from 11.06 s to 27.14 s as threads
+  are added, and the two candidate serial sections measure 2.4 s and 1.0 s.
+
+### Known limitations
+
+- The detector's angular response is limited. On injected trials it recovers
+  near-horizontal trails and misses 25-160 degrees. Both real trails are at
+  ~1 degree, so the local corpus does not expose this. The response may be
+  telescope-specific and was not investigated further.
+- `max_component_sigma: 20` is a 6x margin below a sample of two trails. It is
+  provisional, and it would suppress a bright satellite constellation without
+  anything local revealing it.
+- `synthetic_v2` fails its quality gate at F1 0.159 against a 0.200 threshold.
+  This predates the work in this release and is unchanged by it.
+
+### Per-stage findings behind the release
 
 ### Sparse RANSAC keeps its place, and its price is 0.82 s/amp
 

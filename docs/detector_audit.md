@@ -1,5 +1,25 @@
 # Detector and classifier audit
 
+> **Historical.** This is a point-in-time audit of the pipeline as it stood when
+> the review was done. Several stages it describes no longer exist and are not
+> part of the current detector:
+>
+> | described here | status |
+> |---|---|
+> | `satdet` (multi-scale Canny + probabilistic Hough) | deleted, `c154364` |
+> | `mrt_rescue_params` (angle-binned Radon rescue) | deleted, `49062d1` |
+>
+> Its latency tables and "identical products" claims describe that code, not the
+> current one. For what ships today see [usage.md](usage.md) for the
+> configuration surface, [algorithms.md](algorithms.md) for the method, and
+> `CHANGELOG.md` for what changed and why. Re-derive any number here with
+> `pixi run streak-sweep` rather than quoting it.
+>
+> One correction that survived into other documents: this audit credits the
+> binned Hough-peak stage (`houghpeaks`) with the real detections, and that is
+> correct -- isolating the stages on 996195p HDU 35 leaves 0 px with Hough
+> disabled. An intermediate claim that the contour stage found them was wrong.
+
 Every stage that flags pixels was reviewed for correctness, cost and latency, and
 the findings were either fixed (with a regression test) or measured and left
 alone. Numbers come from the real CFHT MegaPrime data in `benchmark_data/megacam/perf`

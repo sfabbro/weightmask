@@ -175,7 +175,9 @@ def test_producer_and_artifact_metadata_round_trip_with_ml_fields_reserved():
     assert "WMQDCNT" in artifact.to_header()
     assert CONFIDENCE_SEMANTICS == "normalized_weight_0_to_1"
     assert INVERSE_VARIANCE_SEMANTICS == "flat_fielded_poisson_weight"
-    assert weightmask.__version__ == "0.1.0"
+    from weightmask._version import __version__ as _declared
+
+    assert weightmask.__version__ == _declared
 
 
 def test_torchfits_adapter_uses_only_present_public_root_api():

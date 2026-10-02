@@ -105,12 +105,28 @@ class ArrayHeaderIO(Protocol):
         """Write an array and header mapping."""
 
 
+def _package_version() -> str:
+    """The installed distribution version, or the in-tree fallback.
+
+    Imported rather than re-declared: the version was previously hardcoded here
+    as well as in pyproject.toml and __init__.py, so a release had to update
+    three places and a missed one would have stamped stale provenance into every
+    output file.
+    """
+    try:
+        from ._version import __version__
+
+        return __version__
+    except Exception:  # pragma: no cover - only if the module is missing
+        return "0.2.0"
+
+
 @dataclass(frozen=True)
 class ProducerMetadata:
     """Versioned producer identity, with reserved fields for future ML models."""
 
     name: str = "weightmask"
-    version: str = "0.1.0"
+    version: str = field(default_factory=_package_version)
     kind: str = "classical"
     algorithm: str = "classical_mask_and_variance"
     model_id: str | None = None
