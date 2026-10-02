@@ -156,11 +156,30 @@ streak_masking:
     max_premasked_fraction: 0.25 # drop a streak component lying mostly in the upstream
                                  # mask: it is not a new finding. Real satellite trails
                                  # sit at 0.02 on MegaCam; saturated-star bleed at 0.45.
-    max_component_sigma: 20.0    # drop a component whose p90 exceeds this many background
-                                 # RMS. Trails measure ~2 sigma, saturated-star bleed
-                                 # 54-66, and a near-saturated column group ~2000. A
-                                 # stopgap: those columns sit at 97-99.5% of SATURATE and
-                                 # arguably belong to the saturation stage, not here.
+    # OPTIONAL brightness veto. Set to null to disable it entirely.
+    #
+    # Drop a component whose p90 exceeds this many background RMS. Measured on
+    # MegaCam, in sigma: real satellite trails 3.0 and 3.2; saturated-star bleed
+    # 1138 and 1345; hot column group ~2000; bright star arm 155.
+    #
+    # UNCALIBRATED AT THE HIGH END. 20 is a 6x margin below the two trails that
+    # exist locally -- a sample of two. A bright satellite constellation would be
+    # deleted by this rule, and nothing in the local corpus would ever show it.
+    # Raise it, or null it, if that matters more than the artefacts below.
+    #
+    # What turning it off actually costs, measured (veto ON -> OFF, px masked):
+    #   real satellite trails   12001 -> 12001    11034 -> 11034   unaffected
+    #   saturated-star bleed        0 -> 0 (pre-masked veto still suppresses it)
+    #   hot column group            0 -> 10734    returns
+    #   bright star arm            0 -> 4385     returns
+    # Both survivors sit below max_premasked_fraction (0.24 and 0.15 vs a 0.25
+    # threshold), so the pre-masked veto cannot catch them.
+    #
+    # The column is also catchable without brightness: it is static, so it
+    # persists at 0.90 across epochs of the same field, against 0.02 for a real
+    # trail. `--persistence` uses that. The star arm persists at only 0.41 and is
+    # not reliably caught that way.
+    max_component_sigma: 20.0
     max_row_gap: 0               # opt-in gap bridge for full-span Hough candidates (samples)
     min_row_run: 0               # when bridging, ignore runs shorter than this many samples
   enable_sparse_ransac: true     # dashed-trail recovery on residual bright pixels

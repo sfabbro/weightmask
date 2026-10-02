@@ -121,9 +121,24 @@ multiple of the local background RMS at p90, measured on real amps:
 
 | feature | p90 |
 |---|---|
-| satellite trail (996195p HDU 35/36) | ~2 sigma |
-| saturated-star bleed | 54-66 sigma |
+| satellite trail (996195p HDU 35/36) | 3.0 / 3.2 sigma |
+| saturated-star bleed | 1138 / 1345 sigma |
+| bright star arm | 155 sigma |
 | near-saturated column group | ~2000 sigma |
+
+**Optional and uncalibrated at the high end.** `max_component_sigma: null`
+disables the veto. Setting it that way leaves both real trails byte-identical
+(12,001 and 11,034 px) and lets two artefacts back in: the column group
+(10,734 px) and the star arm (4,385 px), both of which sit below
+`max_premasked_fraction` so the pre-masked veto cannot take them. The column is
+alternatively catchable by persistence -- it is static, so it holds at 0.90
+across epochs of the same field against 0.02 for a trail -- via the CLI's
+`--persistence`; the star arm holds at 0.41 and is not reliably caught that way.
+
+The threshold itself is a 6x margin below a sample of **two** trails. That is a
+provisional setting rather than a measured constant, and it would suppress a
+bright satellite constellation without anything local showing it. Pinned by
+`tests/test_brightness_veto.py`.
 
 Both real trails survive **byte-identically** (12,001 and 11,034 px). The
 column components fall 10,773 -> 7,182 and 9,256 -> 5,785: the veto removes the

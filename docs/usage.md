@@ -148,7 +148,7 @@ streak_masking:
     enable: true
   mask_params:
     max_premasked_fraction: 0.25          # drop a component the pipeline already flagged
-    max_component_sigma: 20.0             # drop a component far brighter than a trail
+    max_component_sigma: 20.0             # drop a component far brighter than a trail; null disables
   enable_sparse_ransac: true
 ```
 
@@ -157,9 +157,44 @@ narrower than `mask_params.max_support_width`. `max_premasked_fraction` drops a
 streak component lying mostly inside the mask the earlier stages already
 produced, because that is not a new finding: on real MegaCam amps a saturated
 star's bleed measures 0.45 and a genuine satellite trail 0.02.
-`max_component_sigma` drops a component whose 90th percentile exceeds 20
-background RMS: real trails sit near 2 sigma, saturated-star bleed at 54-66, and
-a near-saturated column group around 2000.
+### The brightness veto is optional, and uncalibrated
+
+`max_component_sigma` drops a component whose 90th percentile exceeds the given
+number of background RMS. **Set it to `null` to disable it.** Measured p90 on
+MegaCam, in sigma:
+
+| feature | p90 |
+|---|---|
+| satellite trail, 996195p HDU 35 / 36 | 3.0 / 3.2 |
+| saturated-star bleed | 1138 / 1345 |
+| bright star arm | 155 |
+| hot column group | ~2000 |
+
+The threshold is a **6x margin below a sample of two trails**. That is a
+deliberate provisional setting, not a measured constant: a bright satellite
+constellation would be deleted by this rule and nothing in the local corpus
+would ever reveal it. Raise it, or null it, if that trade is the wrong way round.
+
+What disabling it costs, measured (veto on -> off, pixels masked):
+
+| feature | veto on | veto off |
+|---|---|---|
+| real satellite trails | 12,001 / 11,034 | 12,001 / 11,034 -- unaffected |
+| saturated-star bleed | 0 | 0 -- the pre-masked veto still suppresses it |
+| hot column group | 0 | **10,734** -- returns |
+| bright star arm | 0 | **4,385** -- returns |
+
+The two that return sit below `max_premasked_fraction` (0.24 and 0.15 against a
+0.25 threshold), so the pre-masked veto cannot catch them either.
+
+The column can instead be caught without reference to brightness, because it is
+a static defect: it persists at **0.90** across epochs of the same field against
+**0.02** for a real trail. The CLI's `--persistence` uses exactly that. The star
+arm persists at only 0.41 and is not reliably caught that way, so on a
+single-exposure run the veto is currently the only thing suppressing it.
+
+`tests/test_brightness_veto.py` pins that both real trails survive at every
+setting including `null`, and that the veto still suppresses both artefacts.
 
 There used to be a third stage, an angle-binned Radon rescue
 (`mrt_rescue_params`), intended as the sensitive one -- the thing that finds
