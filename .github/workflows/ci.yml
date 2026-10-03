@@ -18,4 +18,9 @@ jobs:
       - run: pixi run lint
       - run: pixi run test
       - name: Entry-point smoke
-        run: pixi run python -c "from weightmask.cli import run_pipeline; from weightmask.reconstruct_sky import main; import weightmask; assert weightmask.__version__ == '0.1.0'"
+        # Version is asserted against its single declaration rather than a
+        # literal. A hardcoded copy here was still on 0.1.0 and failed every
+        # push after the 0.2.0 bump.
+        run: |
+          pixi run python -c "from weightmask.cli import run_pipeline; from weightmask.reconstruct_sky import main"
+          pixi run python -c "import weightmask; from weightmask._version import __version__; assert weightmask.__version__ == __version__"

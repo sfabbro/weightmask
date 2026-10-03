@@ -52,7 +52,7 @@ weightmask-reconstruct-sky = "weightmask.reconstruct_sky:main"
 
 [tool.ruff]
 line-length = 120
-extend-exclude = ["benchmarks"]
+extend-exclude = ["benchmarks", ".pixi"]
 
 [tool.ruff.lint]
 select = ["E", "F", "W", "I"]
