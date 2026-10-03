@@ -1,0 +1,127 @@
+name: Release
+
+# One button. Takes a version, proves the tree is releasable, tags it, publishes
+# the artifacts to PyPI, and writes the release notes from CHANGELOG.md.
+#
+# The validating logic is not in this file. It is benchmarks/release_check.py,
+# which runs locally with `pixi run release-check -- --version X.Y.Z` and is
+# exercised on every CI run. A workflow is the one place where a mistake is
+# expensive and invisible until it has published something, so this one only
+# orchestrates.
+#
+#   Actions -> Release -> Run workflow -> type the version -> Run.
+#
+# `release: published` is deliberately NOT a trigger. Having both a manual
+# dispatch and a release trigger means a release published from the GitHub UI
+# would publish to PyPI a second time, and trusted publishing would reject it.
+
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: "Version to release, e.g. 0.2.1 (must already be in pyproject.toml, _version.py and CHANGELOG.md)"
+        required: true
+        type: string
+      dry_run:
+        description: "Validate and build, but do not tag, publish, or create a release"
+        required: false
+        type: boolean
+        default: true
+
+jobs:
+  release:
+    # One at a time. Two concurrent releases could tag the same commit or race
+    # on the PyPI project.
+    runs-on: ubuntu-latest
+    environment:
+      name: pypi
+      url: https://pypi.org/p/weightmask
+    permissions:
+      contents: write   # to create the tag and the release
+      id-token: write   # trusted publishing to PyPI
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          # release_check refuses a dirty tree, and it checks that CHANGELOG.md
+          # already has the section for this version. So the release notes and
+          # the version bump must be committed on the branch, reviewed, and
+          # merged before this runs -- not written by this workflow.
+          fetch-depth: 0
+
+      - uses: prefix-dev/setup-pixi@v0.10.0
+        with:
+          locked: true
+          cache: true
+
+      - name: Validate the release
+        run: pixi run release-check -- --version "${{ inputs.version }}"
+
+      - name: Fail if the tag already exists
+        if: ${{ !inputs.dry_run }}
+        run: |
+          if git rev-parse "v${{ inputs.version }}" >/dev/null 2>&1; then
+            echo "::error::v${{ inputs.version }} already exists. Bump the version instead."
+            exit 1
+          fi
+          latest=$(git describe --tags --abbrev=0)
+          echo "latest tag: $latest"
+
+      - name: Tag
+        if: ${{ !inputs.dry_run }}
+        run: |
+          git config user.name  "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git tag -a "v${{ inputs.version }}" -m "weightmask ${{ inputs.version }}"
+          git push origin "v${{ inputs.version }}"
+
+      - name: Extract the changelog section for this release
+        if: ${{ !inputs.dry_run }}
+        id: notes
+        # Uses the same function the check used, so the notes cannot drift from
+        # what was validated. An inline copy of this regex was the one place the
+        # two could disagree -- and did, emitting the heading's date fragment as
+        # the first line of the release body.
+        # `pixi run python`, not a bare `python`: this job installs pixi but no
+        # setup-python, so nothing puts a `python` on PATH. A bare `python`
+        # fails with "command not found" before the notes are ever written.
+        run: |
+          pixi run python - <<'PY' >> "$GITHUB_OUTPUT"
+          import importlib.util, pathlib, sys
+          spec = importlib.util.spec_from_file_location("release_check", "benchmarks/release_check.py")
+          module = importlib.util.module_from_spec(spec)
+          spec.loader.exec_module(module)
+          version = "${{ inputs.version }}"
+          body = module.changelog_section(version)
+          if not body:
+              sys.exit(f"CHANGELOG.md has no section for {version}")
+          print("body<<__NOTES__")
+          print(body)
+          print("__NOTES__")
+          PY
+
+      - name: Publish to PyPI
+        if: ${{ !inputs.dry_run }}
+        uses: pypa/gh-action-pypi-publish@release/v1
+
+      - name: Create the GitHub release
+        if: ${{ !inputs.dry_run }}
+        uses: softprops/action-gh-release@v2
+        with:
+          name: weightmask ${{ inputs.version }}
+          tag_name: v${{ inputs.version }}
+          body: ${{ steps.notes.outputs.body }}
+
+      - name: Summary
+        if: ${{ always() }}
+        run: |
+          if [ "${{ inputs.dry_run }}" = "true" ]; then
+            echo "### Dry run for ${{ inputs.version }}" >> "$GITHUB_STEP_SUMMARY"
+            echo "" >> "$GITHUB_STEP_SUMMARY"
+            echo "Validated and built. Nothing was tagged or published." >> "$GITHUB_STEP_SUMMARY"
+            echo "Re-run with \`dry_run: false\` to publish." >> "$GITHUB_STEP_SUMMARY"
+          else
+            echo "### Released ${{ inputs.version }}" >> "$GITHUB_STEP_SUMMARY"
+            echo "" >> "$GITHUB_STEP_SUMMARY"
+            echo "- tag: \`v${{ inputs.version }}\`" >> "$GITHUB_STEP_SUMMARY"
+            echo "- PyPI: https://pypi.org/project/weightmask/${{ inputs.version }}/" >> "$GITHUB_STEP_SUMMARY"
+          fi

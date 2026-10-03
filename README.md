@@ -44,6 +44,7 @@ weightmask science.fits --config weightmask.yml --flat_image flat.fits \
 - [Usage](docs/usage.md)
 - [Algorithms](docs/algorithms.md)
 - [API](docs/api.md)
+- [Releasing](docs/releasing.md)
 - [CHANGELOG](CHANGELOG.md)
 
 ## License

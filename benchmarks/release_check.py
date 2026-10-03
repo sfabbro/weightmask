@@ -80,9 +80,17 @@ def parse_version(text):
 
 
 def changelog_section(version):
-    """The text under ``## <version>``, up to the next ``## `` heading."""
+    """The text under ``## <version>``, up to the next ``## `` heading.
+
+    The remainder of the heading line is dropped, so ``## 0.2.1 - 2026-10-03``
+    yields the body rather than a leading ``- 2026-10-03`` fragment. That
+    fragment was being carried straight into the GitHub release notes by the
+    workflow's own extraction.
+    """
     text = CHANGELOG.read_text()
-    match = re.search(rf"^##\s+{re.escape(version)}\b(.*?)(?=^##\s|\Z)", text, re.M | re.S)
+    match = re.search(
+        rf"^##\s+{re.escape(version)}\b[^\n]*(.*?)(?=^##\s|\Z)", text, re.M | re.S
+    )
     return match.group(1).strip() if match else None
 
 
@@ -170,14 +178,14 @@ def main(argv=None):
             # publish workflow installs it into a bare setup-python env, exactly
             # as PEP 517 intends, so the check mirrors that rather than relying
             # on a build tool the project itself never uses at runtime.
-            builder = workdir / "buildenv"
+            builder = Path(tempfile.mkdtemp(prefix="wm_buildenv_"))
             if builder.exists():
                 shutil.rmtree(builder)
             created_builder = run([sys.executable, "-m", "venv", str(builder)])
             if not check(created_builder.returncode == 0, "a build venv can be created"):
                 return finish()
             builder_python = str(builder / "bin" / "python")
-            got_build = run([builder_python, "-m", "pip", "install", "--quiet", "build"])
+            got_build = run([builder_python, "-m", "pip", "install", "--quiet", "build", "twine"])
             if not check(got_build.returncode == 0, "build can be installed into that venv"):
                 print(got_build.stderr[-1200:])
                 return finish()
@@ -203,12 +211,12 @@ def main(argv=None):
                         not any(n.startswith("benchmarks/") or n.startswith("tests/") for n in names),
                         "the wheel contains no benchmarks or tests",
                     )
-                twine = run([sys.executable, "-m", "twine", "check", *sorted(workdir.glob("*"))])
+                artifacts = sorted(a for a in workdir.iterdir() if a.suffix in (".whl", ".gz"))
+                check(len(artifacts) == 2, f"exactly two artifacts to check: {[a.name for a in artifacts]}")
+                twine = run([builder_python, "-m", "twine", "check", *[str(a) for a in artifacts]])
+                check(twine.returncode == 0, "twine check passes on both artifacts")
                 if twine.returncode != 0:
-                    # twine is optional; report but do not fail the release on it
-                    print("  note  twine not available; skipping the metadata check")
-                else:
-                    check(True, "twine check passes on both artifacts")
+                    print(twine.stdout[-1200:], twine.stderr[-800:])
 
                 venv = workdir / "venv"
                 created = run([builder_python, "-m", "venv", str(venv)])
@@ -246,6 +254,8 @@ def main(argv=None):
                     )
         finally:
             shutil.rmtree(workdir, ignore_errors=True)
+            if "builder" in dir() and builder:
+                shutil.rmtree(builder, ignore_errors=True)
 
     return finish()
 
