@@ -87,9 +87,7 @@ class TestLintCannotWalkThePixiEnvironment(unittest.TestCase):
         ``benchmarks/ci_local.py`` exists to test, by exporting HEAD and running
         the real command there.
         """
-        result = subprocess.run(
-            ["pixi", "run", "lint"], cwd=REPO, capture_output=True, text=True
-        )
+        result = subprocess.run(["pixi", "run", "lint"], cwd=REPO, capture_output=True, text=True)
         self.assertEqual(result.returncode, 0, result.stdout[-2000:])
 
 
