@@ -11,6 +11,7 @@ streak-sweep = "python benchmarks/streak_stage_sweep.py --stride 1 --out test_ou
 streak-recall-floor = "python benchmarks/streak_recall_floor.py --out test_outputs/perf/recall_floor_dashed.json"
 exposure-time = "python benchmarks/exposure_time.py"
 ci-local = "python benchmarks/ci_local.py"
+release-check = "python benchmarks/release_check.py"
 lint = "ruff check ."
 format = "ruff format ."
 test = "pytest"

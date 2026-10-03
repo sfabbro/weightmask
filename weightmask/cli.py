@@ -35,6 +35,11 @@ def validate_fits_file(file_path: str) -> bool:
 
 def parse_arguments(argv=None) -> argparse.Namespace:
     parser = argparse.ArgumentParser(
+        # Pinned so `--version` and the usage line read the same whether invoked
+        # as the `weightmask` console script or via `python -m weightmask.cli`,
+        # which would otherwise report prog "cli.py". Matches the prog that
+        # reconstruct_sky already sets.
+        prog="weightmask",
         description=(
             "Build weight, mask, inverse-variance, and sky maps for astronomical "
             "FITS/MEF images. A YAML config is required."

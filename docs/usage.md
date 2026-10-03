@@ -204,7 +204,7 @@ accepted on three, all three false positives, while `houghpeaks` explained all
 lengths and two seeds, it moved `recall_line` by +0.000 in eight of eight cells.
 It cost 121.7 s/amp of a 125.7 s/amp stage, and removing it took the stage to
 4.0 s/amp with both real trails byte-identical. `pixi run streak-sweep` and
-`pixi run rescue-recall` re-derive those numbers; anyone proposing a replacement
+`pixi run streak-recall-floor` re-derive those numbers; anyone proposing a replacement
 sensitive stage has to re-run them rather than argue from this file.
 
 `pixi run streak-recall-floor` measures where the stage stops finding injected

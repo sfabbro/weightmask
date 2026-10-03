@@ -18,10 +18,12 @@ installed with the package.
 
 ```bash
 git clone https://github.com/astroai/weightmask.git
+git clone https://github.com/astroai/weightmask
 cd weightmask
 pixi install
-pixi run weightmask --help
 pixi run test
+# the CLI entry point, from the environment
+pixi run python -m weightmask.cli --help
 ```
 
 ## pip from a clone

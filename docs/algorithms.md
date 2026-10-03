@@ -115,7 +115,7 @@ angle-binned Radon rescue accepted on 3 of 83, all false positives, and changed
 `recall_line` by +0.000 across 8 of 8 injected-trail cells spanning 4-12 sigma,
 two lengths and two seeds, while costing 121.7 s/amp of a 125.7 s/amp stage. The
 remains of the two -- houghpeaks explains every real detection on the corpus.
-Re-derive with `pixi run streak-sweep` and `pixi run rescue-recall`.
+Re-derive with `pixi run streak-sweep` and `pixi run streak-recall-floor`.
 
 Frangi-ridge comparison code is not in the package; it lives in
 `benchmarks/frangi_legacy.py`.
