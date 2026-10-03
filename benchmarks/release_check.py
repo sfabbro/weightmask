@@ -43,6 +43,7 @@ VERSION_MODULE = REPO / "weightmask" / "_version.py"
 CHANGELOG = REPO / "CHANGELOG.md"
 
 FAILURES: list[str] = []
+CURRENT = [""]
 
 
 def check(condition, message):
@@ -89,6 +90,18 @@ def run(command, cwd=None, env=None):
     return subprocess.run(command, cwd=cwd or REPO, capture_output=True, text=True, env=env)
 
 
+def finish():
+    """Print the verdict and return it, for early exit from the build section."""
+    print()
+    if FAILURES:
+        print(f"NOT RELEASABLE -- {len(FAILURES)} problem(s):")
+        for failure in FAILURES:
+            print(f"  - {failure}")
+        return 1
+    print(f"releasable: {CURRENT[0]}")
+    return 0
+
+
 def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__.split("\n")[0])
     parser.add_argument("--version", help="version to release, e.g. 0.2.1")
@@ -96,6 +109,7 @@ def main(argv=None):
     args = parser.parse_args(argv)
 
     version = args.version
+    CURRENT[0] = version or ""
     if not version:
         pyproject, _module = declared_versions()
         version = pyproject
@@ -152,7 +166,22 @@ def main(argv=None):
         section("5. artifacts")
         workdir = Path(tempfile.mkdtemp(prefix="wm_release_check_"))
         try:
-            build = run([sys.executable, "-m", "build", "--outdir", str(workdir)])
+            # `build` is deliberately absent from the pixi environment: the
+            # publish workflow installs it into a bare setup-python env, exactly
+            # as PEP 517 intends, so the check mirrors that rather than relying
+            # on a build tool the project itself never uses at runtime.
+            builder = workdir / "buildenv"
+            if builder.exists():
+                shutil.rmtree(builder)
+            created_builder = run([sys.executable, "-m", "venv", str(builder)])
+            if not check(created_builder.returncode == 0, "a build venv can be created"):
+                return finish()
+            builder_python = str(builder / "bin" / "python")
+            got_build = run([builder_python, "-m", "pip", "install", "--quiet", "build"])
+            if not check(got_build.returncode == 0, "build can be installed into that venv"):
+                print(got_build.stderr[-1200:])
+                return finish()
+            build = run([builder_python, "-m", "build", "--outdir", str(workdir)])
             if not check(build.returncode == 0, "python -m build succeeds"):
                 print(build.stdout[-1500:], build.stderr[-1500:])
             else:
@@ -182,9 +211,7 @@ def main(argv=None):
                     check(True, "twine check passes on both artifacts")
 
                 venv = workdir / "venv"
-                if venv.exists():
-                    shutil.rmtree(venv)
-                created = run([sys.executable, "-m", "venv", str(venv)])
+                created = run([builder_python, "-m", "venv", str(venv)])
                 if check(created.returncode == 0, "a clean venv can be created"):
                     pip = [str(venv / "bin" / "python"), "-m", "pip", "install", "--quiet"]
                     for artifact in sorted(workdir.glob("*")):
@@ -220,14 +247,7 @@ def main(argv=None):
         finally:
             shutil.rmtree(workdir, ignore_errors=True)
 
-    print()
-    if FAILURES:
-        print(f"NOT RELEASABLE -- {len(FAILURES)} problem(s):")
-        for failure in FAILURES:
-            print(f"  - {failure}")
-        return 1
-    print(f"releasable: {version}")
-    return 0
+    return finish()
 
 
 if __name__ == "__main__":
