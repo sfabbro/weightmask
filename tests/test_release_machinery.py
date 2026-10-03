@@ -29,9 +29,7 @@ RELEASE_WORKFLOW = WORKFLOWS / "release.yml"
 
 def _load_release_check():
     """Import the script by path; it lives in benchmarks/, not on the package path."""
-    spec = importlib.util.spec_from_file_location(
-        "release_check", REPO / "benchmarks" / "release_check.py"
-    )
+    spec = importlib.util.spec_from_file_location("release_check", REPO / "benchmarks" / "release_check.py")
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)
     return module
@@ -167,8 +165,7 @@ class TestReleaseWorkflowShape(unittest.TestCase):
         self.assertRegex(
             config_text,
             r"fetch-depth:\s*0",
-            "the checkout must fetch tags, or the 'greater than the latest tag' "
-            "check is silently skipped",
+            "the checkout must fetch tags, or the 'greater than the latest tag' check is silently skipped",
         )
 
     def test_it_does_not_rely_on_a_bare_python(self):
@@ -197,12 +194,8 @@ class TestReleaseWorkflowShape(unittest.TestCase):
         """
         config_text = RELEASE_WORKFLOW.read_text()
         notes = config_text[config_text.index("Extract the changelog") :]
-        self.assertIn(
-            "module.changelog_section", notes, "must call release_check.changelog_section"
-        )
-        self.assertNotIn(
-            "re.search", notes, "an inline copy of the extraction can drift from the check"
-        )
+        self.assertIn("module.changelog_section", notes, "must call release_check.changelog_section")
+        self.assertNotIn("re.search", notes, "an inline copy of the extraction can drift from the check")
 
 
 class TestCheckTaskIsWiredUp(unittest.TestCase):

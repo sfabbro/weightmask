@@ -383,11 +383,7 @@ class TestCliHelp(unittest.TestCase):
         parser = captured[0]
 
         source = inspect.getsource(cli)
-        options = [
-            action
-            for action in parser._actions
-            if action.option_strings and action.dest != argparse.SUPPRESS
-        ]
+        options = [action for action in parser._actions if action.option_strings and action.dest != argparse.SUPPRESS]
         self.assertGreater(len(options), 10, "failed to find the declared options")
 
         for action in options:
