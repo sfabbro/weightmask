@@ -93,7 +93,11 @@ def parse_arguments(argv=None) -> argparse.Namespace:
         "-o",
         type=str,
         default=None,
-        help="Primary map (weight or confidence). Default: <input_base>.weight.fits",
+        help=(
+            "Primary map (weight or confidence). Default: <input_base>.weight.fits "
+            "next to the input, or .weight.fits.fz when output_params.compress "
+            "is true."
+        ),
     )
     outputs.add_argument(
         "--output_mask",
@@ -146,7 +150,10 @@ def parse_arguments(argv=None) -> argparse.Namespace:
         dest="max_workers",
         type=int,
         default=None,
-        help="Max parallel HDU workers (default min(8, ncpu); 0/1 = sequential).",
+        help=(
+            "Max parallel HDU workers (default min(8, ncpu); 0/1 = sequential). "
+            "Capped at the number of HDUs being processed."
+        ),
     )
     run.add_argument(
         "--version",
@@ -469,7 +476,10 @@ def _cleanup_hdul(hdul_input, hdul_flat, hdul_badpix=None, hdul_dark=None):
 def run_pipeline(argv=None) -> int:
     """Main function to parse arguments and run the pipeline."""
     argv = list(sys.argv[1:] if argv is None else argv)
-    # Compat: `weightmask reconstruct-sky ...` delegates to the dedicated entry.
+    # `weightmask reconstruct-sky ...` delegates to the dedicated entry point.
+    # This is the original spelling, from fb2d623; the `weightmask-reconstruct-sky`
+    # console script was added later in 5648d72. Both are supported and neither
+    # is deprecated -- `weightmask-reconstruct-sky` is the one to document.
     if argv and argv[0] == "reconstruct-sky":
         from .reconstruct_sky import main as reconstruct_sky_main
 

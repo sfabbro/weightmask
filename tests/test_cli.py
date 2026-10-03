@@ -334,6 +334,71 @@ class TestCliHelp(unittest.TestCase):
         self.assertTrue(text.strip())
         self.assertIn("--output", text)
 
+    def test_version_names_the_program_not_the_module_file(self):
+        """`python -m weightmask.cli --version` used to print `cli.py 0.2.0`.
+
+        argparse derives prog from sys.argv[0], so the same install reported
+        "cli.py" by module and "weightmask" as the console script.
+        """
+        from io import StringIO
+
+        from weightmask import __version__
+        from weightmask.cli import parse_arguments
+
+        buf = StringIO()
+        with patch("sys.stdout", buf):
+            with self.assertRaises(SystemExit) as cm:
+                parse_arguments(["--version"])
+        self.assertEqual(cm.exception.code, 0)
+        self.assertEqual(buf.getvalue().strip(), f"weightmask {__version__}")
+
+    def test_every_declared_flag_is_actually_read(self):
+        """A flag in --help that the pipeline ignores is worse than no flag.
+
+        Captures the real parser rather than re-deriving dests from flag names,
+        because --nproc carries an explicit dest="max_workers". Each option's
+        dest must be referenced somewhere besides its own declaration, or the
+        flag shows in help and silently does nothing.
+        """
+        import argparse
+        import inspect
+        import re
+
+        from weightmask import cli
+
+        # Spy on the method rather than rebinding argparse.ArgumentParser to a
+        # subclass: Python 3.13's argparse calls super(ArgumentParser, self),
+        # so rebinding the module name makes that super() resolve to the
+        # subclass and __init__ recurses forever.
+        captured = []
+        real_parse_known_args = argparse.ArgumentParser.parse_known_args
+
+        def spy(self, args=None, namespace=None):
+            captured.append(self)
+            return real_parse_known_args(self, args, namespace)
+
+        with patch.object(argparse.ArgumentParser, "parse_known_args", spy):
+            cli.parse_arguments(["in.fits"])
+        self.assertEqual(len(captured), 1, "failed to capture the parser")
+        parser = captured[0]
+
+        source = inspect.getsource(cli)
+        options = [
+            action
+            for action in parser._actions
+            if action.option_strings and action.dest != argparse.SUPPRESS
+        ]
+        self.assertGreater(len(options), 10, "failed to find the declared options")
+
+        for action in options:
+            occurrences = len(re.findall(rf"\b{re.escape(action.dest)}\b", source))
+            self.assertGreater(
+                occurrences,
+                1,
+                f"{'/'.join(action.option_strings)} (dest {action.dest!r}) is declared "
+                "but never read in cli.py: it would show in --help and do nothing",
+            )
+
 
 class TestReconstructSkyCLI(unittest.TestCase):
     def test_reconstruct_sky_roundtrip_fits(self):

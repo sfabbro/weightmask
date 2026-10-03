@@ -299,7 +299,10 @@ weightmask-reconstruct-sky sky_mesh.fits -o sky_full.fits
 weightmask-reconstruct-sky sky_mesh.fits -o sky_full.fits --hdu 1
 ```
 
-Compatibility dispatch: `weightmask reconstruct-sky sky_mesh.fits -o sky_full.fits`.
+Also spelled `weightmask reconstruct-sky sky_mesh.fits -o sky_full.fits`, which
+dispatches to the same program. That was the original interface; the
+`weightmask-reconstruct-sky` console script was added later, and is the one to
+use.
 
 ### Weight plane
 
