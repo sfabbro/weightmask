@@ -1,5 +1,58 @@
 # Changelog
 
+## 0.2.1 - 2026-10-03
+
+Release machinery and user-visible corrections. No algorithm, config key, or
+product changed; masks from 0.2.0 and 0.2.1 are identical.
+
+### Fixed
+
+- **`weightmask --version` printed `cli.py` under `python -m weightmask.cli`.**
+  argparse derives the program name from `sys.argv[0]`, so the same install
+  reported `cli.py 0.2.0` by module and `weightmask 0.2.0` as the console
+  script. `prog` is now pinned in `cli.py`, as `reconstruct_sky.py` already did.
+- **`.gitignore` only hid `.venv` by accident.** It matched `.venv-wm/` through
+  the obsolete `lib/` line of the GitHub Python template, so removing that line
+  would have made a stale 282 MB virtualenv committable. The template has been
+  trimmed to what this repository produces, and `.venv*/` and `.uv-cache/` are
+  now listed directly. That stale environment is the one pinned to weightmask
+  0.1 that made ruff report 3721 errors in CI
+  (`tests/test_ci_workflow.py`).
+- **Three doc references to a renamed pixi task.** `pixi run rescue-recall`
+  became `pixi run streak-recall-floor` in `docs/usage.md` and
+  `docs/algorithms.md`; `docs/installation.md` showed `pixi run weightmask`,
+  which is not a task.
+
+### Changed
+
+- **`--output_map` and `--nproc` help text corrected.** `--output_map` omitted
+  that the default sits next to the input rather than the working directory,
+  and that it is `.weight.fits.fz` when `output_params.compress` is true.
+  `--nproc` omitted that the worker count is capped at the number of HDUs.
+- **`docs/releasing.md`** documents the release process and the trusted-publisher
+  setup it depends on.
+
+### Added
+
+- **`benchmarks/release_check.py` (`pixi run release-check`).** Validates a
+  version before anything is tagged: that it exceeds the latest tag, agrees
+  across `pyproject.toml`, `weightmask/_version.py` and the installed package,
+  has a `CHANGELOG.md` section with content, and sits on a clean tree; then
+  builds an sdist and wheel, runs `twine check`, and confirms the wheel
+  installs and imports outside the source tree with the right version and
+  console scripts.
+- **`.github/workflows/release.yml`.** One button, `dry_run` true by default. A
+  dry run validates and builds and touches nothing. A real run re-validates,
+  tags, publishes to PyPI, and opens a release whose notes are the changelog
+  section. `publish.yml` is removed: with both a manual trigger and a
+  `release: published` trigger, a release created from the GitHub UI would
+  publish to PyPI twice.
+- **`tests/test_release_machinery.py`**, 19 tests over the checks and the
+  workflow's shape. Each guard is mutation-checked: reverting the fix fails it.
+- **`tests/test_cli.py`** gains two tests pinning the program name in
+  `--version`, and that every declared flag's dest is actually read by
+  `cli.py` -- a flag in `--help` that nothing consumes is worse than no flag.
+
 ## 0.2.0 - 2026-10-02
 
 Streak detection rewritten on measurement, and the measurement code itself

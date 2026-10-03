@@ -79,7 +79,7 @@ Non-finite or non-positive inverse variance is marked `INVALID_VARIANCE` and
 zeroed. Inverse-variance semantics are an F² sensitivity weight
 (`INVERSE_VARIANCE_SEMANTICS`).
 `CONTRACT_VERSION` (`"1.0"`) is the array-schema version; the package version
-is `weightmask.__version__` (`0.2.0`).
+is `weightmask.__version__` (`0.2.1`).
 
 `ArrayHeaderIO` is an optional read/write protocol. `TorchfitsArrayHeaderIO`
 implements it when torchfits is installed; torchfits is not a required
