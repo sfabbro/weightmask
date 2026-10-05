@@ -54,7 +54,7 @@ jobs:
             exit 1
           fi
 
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
         with:
           # release_check refuses a dirty tree, and it checks that CHANGELOG.md
           # already has the section for this version. So the release notes and
