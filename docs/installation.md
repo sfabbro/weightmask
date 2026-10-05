@@ -18,7 +18,6 @@ installed with the package.
 
 ```bash
 git clone https://github.com/astroai/weightmask.git
-git clone https://github.com/astroai/weightmask
 cd weightmask
 pixi install
 pixi run test
@@ -42,7 +41,7 @@ conda create -n weightmask python=3.10
 conda activate weightmask
 conda install numpy astropy fitsio scipy scikit-image sep pyyaml
 pip install astroscrappy
-pip install -e .
+pip install weightmask
 weightmask --help
 ```
 

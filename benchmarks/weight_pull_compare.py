@@ -22,7 +22,7 @@ def pull_stats(pull):
     out = {
         "n": int(v.size),
         "std": float(np.std(v)),
-        "rsig": float(1.4826 * np.median(np.abs(v))),
+        "rsig": float(1.4826 * np.median(np.abs(v - np.median(v)))),
         "f3": float(np.mean(np.abs(v) > 3)),
         "f4": float(np.mean(np.abs(v) > 4)),
         "f5": float(np.mean(np.abs(v) > 5)),

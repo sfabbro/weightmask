@@ -33,13 +33,27 @@ jobs:
     # One at a time. Two concurrent releases could tag the same commit or race
     # on the PyPI project.
     runs-on: ubuntu-latest
+    concurrency:
+      group: release
+      cancel-in-progress: false
     environment:
       name: pypi
       url: https://pypi.org/p/weightmask
     permissions:
       contents: write   # to create the tag and the release
       id-token: write   # trusted publishing to PyPI
+    env:
+      RELEASE_VERSION: ${{ inputs.version }}
+      RELEASE_DRY_RUN: ${{ inputs.dry_run }}
     steps:
+      - name: Check release source
+        if: ${{ !inputs.dry_run }}
+        run: |
+          if [ "$GITHUB_REPOSITORY" != "astroai/weightmask" ] || [ "$GITHUB_REF" != "refs/heads/main" ]; then
+            echo "::error::Publishing requires astroai/weightmask on main. Use a dry run for other repositories or branches."
+            exit 1
+          fi
+
       - uses: actions/checkout@v4
         with:
           # release_check refuses a dirty tree, and it checks that CHANGELOG.md
@@ -53,26 +67,34 @@ jobs:
           locked: true
           cache: true
 
+      - run: pixi run lint
+      - run: pixi run test
+
       - name: Validate the release
-        run: pixi run release-check -- --version "${{ inputs.version }}"
+        run: pixi run release-check -- --version "$RELEASE_VERSION" --outdir dist
+
+      - name: Save validated artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: weightmask-${{ inputs.version }}
+          path: dist/*
+          if-no-files-found: error
 
       - name: Fail if the tag already exists
         if: ${{ !inputs.dry_run }}
         run: |
-          if git rev-parse "v${{ inputs.version }}" >/dev/null 2>&1; then
-            echo "::error::v${{ inputs.version }} already exists. Bump the version instead."
+          if git rev-parse "v$RELEASE_VERSION" >/dev/null 2>&1; then
+            echo "::error::v$RELEASE_VERSION already exists. Bump the version instead."
             exit 1
           fi
-          latest=$(git describe --tags --abbrev=0)
-          echo "latest tag: $latest"
 
       - name: Tag
         if: ${{ !inputs.dry_run }}
         run: |
           git config user.name  "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git tag -a "v${{ inputs.version }}" -m "weightmask ${{ inputs.version }}"
-          git push origin "v${{ inputs.version }}"
+          git tag -a "v$RELEASE_VERSION" -m "weightmask $RELEASE_VERSION"
+          git push origin "v$RELEASE_VERSION"
 
       - name: Extract the changelog section for this release
         if: ${{ !inputs.dry_run }}
@@ -86,11 +108,11 @@ jobs:
         # fails with "command not found" before the notes are ever written.
         run: |
           pixi run python - <<'PY' >> "$GITHUB_OUTPUT"
-          import importlib.util, pathlib, sys
+          import importlib.util, os, sys
           spec = importlib.util.spec_from_file_location("release_check", "benchmarks/release_check.py")
           module = importlib.util.module_from_spec(spec)
           spec.loader.exec_module(module)
-          version = "${{ inputs.version }}"
+          version = os.environ["RELEASE_VERSION"]
           body = module.changelog_section(version)
           if not body:
               sys.exit(f"CHANGELOG.md has no section for {version}")
@@ -113,15 +135,20 @@ jobs:
 
       - name: Summary
         if: ${{ always() }}
+        env:
+          RELEASE_STATUS: ${{ job.status }}
         run: |
-          if [ "${{ inputs.dry_run }}" = "true" ]; then
-            echo "### Dry run for ${{ inputs.version }}" >> "$GITHUB_STEP_SUMMARY"
+          if [ "$RELEASE_STATUS" != "success" ]; then
+            echo "### Release $RELEASE_STATUS for $RELEASE_VERSION" >> "$GITHUB_STEP_SUMMARY"
+            echo "See the failed step before retrying. Publication may be incomplete." >> "$GITHUB_STEP_SUMMARY"
+          elif [ "$RELEASE_DRY_RUN" = "true" ]; then
+            echo "### Dry run for $RELEASE_VERSION" >> "$GITHUB_STEP_SUMMARY"
             echo "" >> "$GITHUB_STEP_SUMMARY"
             echo "Validated and built. Nothing was tagged or published." >> "$GITHUB_STEP_SUMMARY"
             echo "Re-run with \`dry_run: false\` to publish." >> "$GITHUB_STEP_SUMMARY"
           else
-            echo "### Released ${{ inputs.version }}" >> "$GITHUB_STEP_SUMMARY"
+            echo "### Released $RELEASE_VERSION" >> "$GITHUB_STEP_SUMMARY"
             echo "" >> "$GITHUB_STEP_SUMMARY"
-            echo "- tag: \`v${{ inputs.version }}\`" >> "$GITHUB_STEP_SUMMARY"
-            echo "- PyPI: https://pypi.org/project/weightmask/${{ inputs.version }}/" >> "$GITHUB_STEP_SUMMARY"
+            echo "- tag: \`v$RELEASE_VERSION\`" >> "$GITHUB_STEP_SUMMARY"
+            echo "- PyPI: https://pypi.org/project/weightmask/$RELEASE_VERSION/" >> "$GITHUB_STEP_SUMMARY"
           fi

@@ -21,10 +21,15 @@ it is a decision someone has to see, not a skip that passes quietly.
 export of HEAD.
 """
 
+import importlib.util
+import io
 import re
 import subprocess
+import tempfile
 import unittest
+from contextlib import redirect_stdout
 from pathlib import Path
+from unittest.mock import patch
 
 import tomllib
 
@@ -32,6 +37,10 @@ REPO = Path(__file__).resolve().parents[1]
 WORKFLOW = REPO / ".github" / "workflows" / "ci.yml"
 PYPROJECT = REPO / "pyproject.toml"
 GITIGNORE = REPO / ".gitignore"
+
+spec = importlib.util.spec_from_file_location("ci_local", REPO / "benchmarks" / "ci_local.py")
+ci_local = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(ci_local)
 
 
 def _workflow() -> str:
@@ -123,6 +132,58 @@ class TestRealDataAssertionsAreVisible(unittest.TestCase):
                 text,
                 f"{test} should name {needed} in its skip message so the reason is traceable",
             )
+
+
+class TestLocalWorkflow(unittest.TestCase):
+    def test_skips_step_propagates_test_failure(self):
+        failed = subprocess.CompletedProcess([], 1, "1 failed in 0.01s\n", "")
+        with (
+            patch.object(ci_local, "export_checkout"),
+            patch.object(ci_local, "carry_uncommitted", return_value=[]),
+            patch.object(ci_local.subprocess, "run", return_value=failed),
+            redirect_stdout(io.StringIO()),
+        ):
+            self.assertEqual(ci_local.main(["--step", "skips"]), 1)
+
+    def test_all_step_runs_test_suite_once(self):
+        with (
+            patch.object(ci_local, "export_checkout"),
+            patch.object(ci_local, "carry_uncommitted", return_value=[]),
+            patch.object(ci_local.subprocess, "run", return_value=subprocess.CompletedProcess([], 0, "", "")) as run,
+            redirect_stdout(io.StringIO()),
+        ):
+            self.assertEqual(ci_local.main(["--step", "all"]), 0)
+            test_runs = [call for call in run.call_args_list if "test" in call.args[0] or "pytest" in call.args[0]]
+            self.assertEqual(len(test_runs), 1, "the skip report must reuse the test run")
+
+    def test_overlay_handles_quoted_names_renames_deletions_and_symlinks(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            source = Path(tmp) / "source"
+            source.mkdir()
+            destination = Path(tmp) / "destination"
+            destination.mkdir()
+            for name in ('quoted "name".txt', "rename old.txt", "delete.txt"):
+                (source / name).write_text("old")
+                (destination / name).write_text("old")
+            for args in (
+                ("init",),
+                ("config", "user.email", "audit@example.invalid"),
+                ("config", "user.name", "Audit"),
+                ("add", "."),
+                ("commit", "-m", "initial"),
+                ("mv", "rename old.txt", 'new\nname -> "quoted".txt'),
+            ):
+                subprocess.run(["git", *args], cwd=source, check=True, capture_output=True)
+            (source / 'quoted "name".txt').write_text("new")
+            (source / "delete.txt").unlink()
+            (source / "new link").symlink_to('quoted "name".txt')
+            with patch.object(ci_local, "REPO", str(source)):
+                ci_local.carry_uncommitted(str(destination))
+            self.assertEqual((destination / 'quoted "name".txt').read_text(), "new")
+            self.assertEqual((destination / 'new\nname -> "quoted".txt').read_text(), "old")
+            self.assertFalse((destination / "rename old.txt").exists())
+            self.assertFalse((destination / "delete.txt").exists())
+            self.assertTrue((destination / "new link").is_symlink())
 
 
 if __name__ == "__main__":

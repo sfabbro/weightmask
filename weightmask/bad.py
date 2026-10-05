@@ -142,8 +142,8 @@ def detect_bad_pixels(flat_data, config, using_unit_flat=False):
         ndarray: Boolean mask of bad pixels and columns (True = bad).
     """
     if not np.isfinite(flat_data).any():
-        warnings.warn("Flat data contains no finite values. Returning empty mask.", RuntimeWarning)
-        return np.zeros(flat_data.shape, dtype=bool)
+        warnings.warn("Flat data contains no finite values. Masking the entire flat.", RuntimeWarning)
+        return np.ones(flat_data.shape, dtype=bool)
 
     if using_unit_flat:
         print("  Skipping bad pixel/column detection (using unit flat).")
@@ -180,14 +180,31 @@ def compute_flat_bad_mask(flat_data, config, tile_size=1024):
         for x in range(0, flat_data.shape[1], tile_size):
             tile = (slice(y, y + tile_size), slice(x, x + tile_size))
             flat_tile = flat_data[tile]
-            if not np.isfinite(flat_tile).any():
-                continue
             bad_mask[tile] = detect_bad_pixels(flat_tile, config, using_unit_flat=False)
     return bad_mask
 
 
+def detect_dark_hot_pixels(dark_data, config):
+    """Upper-tail hot pixels in a mostly healthy, bias-subtracted dark HDU."""
+    if set(config) - {"hot_sigma"}:
+        raise ValueError("dark_masking accepts only hot_sigma")
+    hot_sigma = float(config.get("hot_sigma", 8.0))
+    if isinstance(config.get("hot_sigma"), bool) or not np.isfinite(hot_sigma) or hot_sigma <= 0:
+        raise ValueError("dark_masking.hot_sigma must be finite and positive")
+    valid = np.isfinite(dark_data)
+    if not np.any(valid):
+        return ~valid
+    values = dark_data[valid]
+    # ponytail: one global median/MAD assumes a uniform dark pedestal and a
+    # healthy majority; use per-amplifier/local baselines for structured darks.
+    center = np.median(values)
+    scatter = 1.4826 * np.median(np.abs(values - center))
+    threshold = center + hot_sigma * scatter
+    return (~valid) | (dark_data > threshold)
+
+
 # Bump when the cache layout or the mask computation changes incompatibly.
-_FLAT_BAD_CACHE_VERSION = 1
+_FLAT_BAD_CACHE_VERSION = 2
 # flat_masking keys that configure the cache rather than the mask.
 _FLAT_BAD_CACHE_CONTROL_KEYS = ("bad_mask_cache", "bad_mask_cache_dir")
 

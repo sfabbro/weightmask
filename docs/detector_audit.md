@@ -36,8 +36,8 @@ same exposure, same HDUs and same flags against the pre-change code:
 ```bash
 # reference: previous revision of the tree, same harness, separate output dir
 git worktree add /tmp/base HEAD          # or stash the changes
-pixi run -w /tmp/base python benchmarks/perf_megacam.py \
-    --out-dir /tmp/base_out --tag ref --exposure-ids 1013719p --hdu-limit 2 --all-products
+(cd /tmp/base && pixi run python benchmarks/perf_megacam.py \
+    --out-dir /tmp/base_out --tag ref --exposure-ids 1013719p --hdu-limit 2 --all-products)
 
 # current code, compared HDU by HDU against it
 pixi run python benchmarks/perf_megacam.py \

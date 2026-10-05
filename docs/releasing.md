@@ -7,33 +7,48 @@ happens before a tag exists, not after.
 ## Do the check first
 
 ```bash
+pixi run lint
+pixi run test
 pixi run release-check -- --version 0.2.1
 ```
 
-This is the same script the release workflow runs. It refuses to proceed on:
+For 0.2.1, also qualify the complete MegaCam fixture with `pixi run science-gate`
+and require a passed report before publication. Missing data produces a skip,
+which is not qualification. This data-backed gate remains an explicit local
+check; ordinary CI does not download or run the campaign.
+
+The release workflow runs the same `release-check` script. It refuses to proceed on:
 
 | Check | What it catches |
 |---|---|
-| Version > latest tag | re-releasing a version PyPI already has |
-| Version agreement across three files | a bumped `pyproject.toml` with a stale `_version.py` |
+| Version > newest numeric release tag across all branches | reusing or lowering a tagged version |
+| Version agreement across `pyproject.toml`, `_version.py`, and installed package | a bumped `pyproject.toml` with a stale `_version.py` |
 | `CHANGELOG.md` has a `## <version>` section, with content | a release with no notes |
 | Clean working tree | tagging something other than what was reviewed |
 | `python -m build` succeeds, `twine check` passes | broken packaging metadata |
-| Wheel contains `_version.py`, installs outside the source tree, imports, reports the right version | the artifact that actually gets uploaded is broken |
+| Wheel contains `_version.py`; wheel and sdist each install in separate environments, import outside the source tree, and report the right version | a broken artifact hidden by the source tree or the other artifact |
 
-`--skip-build` runs everything except section 5, for when you only want the
-version and changelog consistency check.
+`--skip-build` skips artifact validation and the installed-package import. It
+still checks declared versions, tags, changelog, and the clean working tree.
 
 Run it on the exact commit you intend to tag. A clean tree is part of the check.
+`--outdir dist` exports the validated wheel and sdist. The destination must be
+absent or empty; existing files are never removed. The tag guard is local:
+fetch tags and check the project's published PyPI versions before dispatching.
 
 ## The button
 
 **Actions → Release → Run workflow**, type the version, leave `dry_run` true.
 
-A dry run validates and builds. Nothing is tagged, nothing is uploaded. Read the
-log; if it is green, re-run with `dry_run: false`.
+A dry run runs lint/tests, validates, builds, and saves a downloadable workflow
+artifact. It creates no tag or PyPI release. Read the log and inspect the
+artifacts; if it is green, re-run with `dry_run: false` on the same commit.
+Publishing is allowed only from `astroai/weightmask` on `main`; fork and branch
+dry runs are allowed. Merge the workflow into upstream `main` first for the
+Release button to exist there.
 
-That run then, in order: re-validates, fails if the tag already exists, creates
+That run then, in order: runs lint/tests, re-validates and saves the artifacts,
+fails if the tag already exists, creates
 and pushes the annotated tag, publishes to PyPI, and opens a GitHub release
 whose notes are the `CHANGELOG.md` section for that version.
 
@@ -53,8 +68,15 @@ test_release_machinery.py` asserts the single trigger.
 
 ## After the tag
 
-`v0.2.0` was tagged before the CI fixes landed, so a tag can predate the
-commits that made the release safe. If a fix matters to users — not just to the
-build — cut a new version rather than moving a published tag. PyPI forbids
+If a fix matters to users, cut a new version rather than moving a published
+tag. PyPI forbids
 re-uploading a version, and a moved tag makes the sdist on PyPI disagree with
 the git history.
+
+Tagging precedes PyPI publication. If publication fails after the tag is pushed,
+the workflow cannot simply be rerun for that version: the existing-tag guard
+will refuse. Preserve the saved validated artifacts, fix the publisher problem,
+and complete the missing upload/release from those exact artifacts. Check PyPI
+first to distinguish a failed upload from a successful upload followed by a
+GitHub-release failure. Never move the tag or rebuild different artifacts under
+the same version. Partial-release recovery is manual.

@@ -34,6 +34,50 @@ def _tiny_flat_config():
     }
 
 
+class TestRetiredConfig(unittest.TestCase):
+    def test_retired_keys_are_rejected_even_when_disabled(self):
+        from weightmask.process import validate_config
+
+        for section, key in (
+            ("saturation", "method"),
+            ("variance", "unbias_variance"),
+            ("variance", "flat_fielded_poisson"),
+            ("variance", "readnoise_keyword"),
+            ("streak_masking", "method"),
+            ("dark_masking", "local_high_thresh"),
+            ("dark_masking", "col_enable"),
+            ("dark_masking", "unknown_key"),
+        ):
+            with self.subTest(section=section, key=key):
+                self.assertFalse(validate_config({section: {key: False}}))
+
+    def test_canonical_config_uses_current_options(self):
+        from weightmask.process import validate_config
+
+        with open("weightmask.yml") as stream:
+            config = yaml.safe_load(stream)
+        self.assertTrue(validate_config(config))
+        self.assertNotIn("method", config["saturation"])
+        self.assertNotIn("flat_fielded_poisson", config["variance"])
+
+    def test_process_rejects_retired_keys_before_running_stages(self):
+        from weightmask.process import process_image
+
+        for section, key in (
+            ("variance", "unbias_variance"),
+            ("variance", "flat_fielded_poisson"),
+            ("variance", "readnoise_keyword"),
+            ("streak_masking", "method"),
+            ("streak_masking", "dilation_radius"),
+        ):
+            config = {section: {key: False}}
+            config.setdefault("streak_masking", {})["enable"] = False
+            with self.subTest(section=section, key=key):
+                with patch("weightmask.process.estimate_background", side_effect=AssertionError("stage ran")):
+                    with self.assertRaises(ValueError):
+                        process_image(np.ones((16, 16), dtype=np.float32), {}, None, config)
+
+
 class TestSingleFlatPrecompute(unittest.TestCase):
     def test_each_flat_hdu_computed_once(self):
         from weightmask import bad as bad_mod
@@ -311,13 +355,11 @@ class TestGlobalConfidenceRescale(unittest.TestCase):
             hdul = [None, None, None]
             w = _StreamingMapWriter(path, hdul, None)
             hdr = {}
-            # HDU1 weights ~1.0 -> conf 1.0; HDU2 weights ~10.0 -> conf 1.0 (per-HDU norm)
+            # Global normalization runs once on raw weights, before any clipping.
             w.write(1, np.ones((8, 8), dtype=np.float32), hdr, "C1")
-            w.write(2, np.ones((8, 8), dtype=np.float32), hdr, "C2")
-            s1 = np.full(64, 1.0)
-            s2 = np.full(64, 10.0)
+            w.write(2, np.full((8, 8), 10.0, dtype=np.float32), hdr, "C2")
             cfg = {"output_params": {"output_map_format": "confidence"}}
-            _rescale_confidence_to_global({"out_map_path": path}, {"map": w}, {1: s1, 2: s2}, {1: 1.0, 2: 10.0}, cfg)
+            _rescale_confidence_to_global({"out_map_path": path}, {"map": w}, cfg)
             import fitsio
 
             with fitsio.FITS(path) as f:
@@ -332,8 +374,6 @@ class TestGlobalConfidenceRescale(unittest.TestCase):
         _rescale_confidence_to_global(
             {"out_map_path": "/nonexistent.fits"},
             {},
-            {1: np.ones(8)},
-            {1: 1.0},
             {"output_params": {"output_map_format": "weight"}},
         )
 

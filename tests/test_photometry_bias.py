@@ -1,14 +1,12 @@
 """Aperture flux on original pixels, with the weight plane used as a mask.
 
-The vignette ratio is the frozen formula over the flat-fielded Poisson formula.
-The yaml default flips only when a spatially varying flat moves that flux by
-more than this fixture's read-noise floor.
+The flat-fielded Poisson formula must be used for a spatially varying flat;
+omitting F from its sky term moves weighted flux beyond the read-noise floor.
 """
 
 import unittest
 
 import numpy as np
-import yaml
 
 from weightmask.variance import _calculate_inverse_variance_theoretical
 
@@ -63,26 +61,21 @@ class TestPhotometryBias(unittest.TestCase):
         flat_value = 0.7
         sky = np.full((32, 32), sky_adu, dtype=np.float32)
         uniform = np.full((32, 32), flat_value, dtype=np.float32)
-        frozen = _calculate_inverse_variance_theoretical(sky, uniform, gain, 0.0, 1e-9, flat_fielded_poisson=False)
-        photon = _calculate_inverse_variance_theoretical(sky, uniform, gain, 0.0, 1e-9, flat_fielded_poisson=True)
-        self.assertAlmostEqual(float(frozen[0, 0] / photon[0, 0]), flat_value, places=5)
+        photon = _calculate_inverse_variance_theoretical(sky, uniform, gain, 0.0, 1e-9)
+        np.testing.assert_allclose(photon, gain * flat_value / sky_adu, rtol=1e-6)
 
         varying = np.ones((32, 32), dtype=np.float32)
         varying[:, :16] = flat_value
         yy, xx = np.ogrid[:32, :32]
         star = 800.0 * np.exp(-0.5 * ((yy - 16) ** 2 + (xx - 10) ** 2) / 4.0)
         aperture = _aperture((32, 32), 16, 12, 8)
-        w_frozen = _calculate_inverse_variance_theoretical(
-            sky, varying, gain, read_noise_e, 1e-9, flat_fielded_poisson=False
-        )
-        w_photon = _calculate_inverse_variance_theoretical(
-            sky, varying, gain, read_noise_e, 1e-9, flat_fielded_poisson=True
-        )
-        delta = abs(_weighted_flux(star, w_frozen, aperture) - _weighted_flux(star, w_photon, aperture))
+        w_photon = _calculate_inverse_variance_theoretical(sky, varying, gain, read_noise_e, 1e-9)
+        expected = gain**2 * varying**2 / (sky * gain * varying + read_noise_e**2)
+        np.testing.assert_allclose(w_photon, expected, rtol=1e-6)
+        wrong_sky_term = gain**2 * varying**2 / (sky * gain + read_noise_e**2)
+        delta = abs(_weighted_flux(star, wrong_sky_term, aperture) - _weighted_flux(star, w_photon, aperture))
         floor = (read_noise_e / gain) * np.sqrt(float(np.count_nonzero(aperture)))
-        moved = delta > floor
-        default = bool(yaml.safe_load(open("weightmask.yml"))["variance"].get("flat_fielded_poisson", False))
-        self.assertEqual(default, moved)
+        self.assertGreater(delta, floor)
 
 
 if __name__ == "__main__":

@@ -258,50 +258,30 @@ class TestCLIConfigFallback(unittest.TestCase):
             self.assertEqual(result, 1)
             mock_print.assert_any_call("Using default config file found at: weightmask.yml")
 
-    @patch("weightmask.cli.validate_fits_file")
-    @patch("os.path.exists")
-    @patch("builtins.open")
-    @patch.object(sys, "argv", ["weightmask", "dummy.fits"])
-    def test_second_fallback_config_found(self, mock_open, mock_exists, mock_validate_fits):
-        def exists_side_effect(path):
-            if path == "dummy.fits":
-                return True
-            if path == "config.yml":
-                return True
-            return False
+    def test_only_weightmask_yml_is_implicitly_loaded(self):
+        from weightmask.cli import load_configuration
 
-        mock_exists.side_effect = exists_side_effect
-        mock_validate_fits.return_value = True
-        mock_open.side_effect = OSError("Mocked error to stop pipeline")
-
-        with patch("builtins.print") as mock_print:
-            result = run_pipeline()
-            self.assertEqual(result, 1)
-            mock_print.assert_any_call("Using default config file found at: config.yml")
-
-    @patch("weightmask.cli.validate_fits_file")
-    @patch("os.path.exists")
-    @patch("builtins.open")
-    @patch.object(sys, "argv", ["weightmask", "dummy.fits"])
-    def test_third_fallback_config_found(self, mock_open, mock_exists, mock_validate_fits):
-        def exists_side_effect(path):
-            if path == "dummy.fits":
-                return True
-            if path == ".weightmask.yml":
-                return True
-            return False
-
-        mock_exists.side_effect = exists_side_effect
-        mock_validate_fits.return_value = True
-        mock_open.side_effect = OSError("Mocked error to stop pipeline")
-
-        with patch("builtins.print") as mock_print:
-            result = run_pipeline()
-            self.assertEqual(result, 1)
-            mock_print.assert_any_call("Using default config file found at: .weightmask.yml")
+        with tempfile.TemporaryDirectory() as tmp, contextlib.chdir(tmp):
+            for name in ("config.yml", ".weightmask.yml"):
+                with self.subTest(name=name):
+                    with open(name, "w") as handle:
+                        handle.write("{}\n")
+                    self.assertIsNone(load_configuration(None))
+                    self.assertIsNotNone(load_configuration(name))
+            with open("weightmask.yml", "w") as handle:
+                handle.write("{}\n")
+            self.assertIsNotNone(load_configuration(None))
 
 
 class TestCliHelp(unittest.TestCase):
+    def test_nproc_is_the_only_worker_option(self):
+        from weightmask.cli import parse_arguments
+
+        self.assertEqual(parse_arguments(["in.fits", "--nproc", "4"]).max_workers, 4)
+        with self.assertRaises(SystemExit) as cm:
+            parse_arguments(["in.fits", "--max-workers", "4"])
+        self.assertEqual(cm.exception.code, 2)
+
     def test_weightmask_help_mentions_config(self):
         from io import StringIO
 
@@ -427,12 +407,13 @@ class TestReconstructSkyCLI(unittest.TestCase):
             reconstruct_sky_main(["missing.fits"])
         self.assertEqual(cm.exception.code, 2)
 
-    def test_weightmask_compat_dispatch(self):
-        from weightmask.cli import run_pipeline
-
-        with self.assertRaises(SystemExit) as cm:
-            run_pipeline(["reconstruct-sky", "missing.fits"])
-        self.assertEqual(cm.exception.code, 2)
+    def test_reconstruct_sky_is_an_ordinary_science_filename(self):
+        with tempfile.TemporaryDirectory() as tmp, contextlib.chdir(tmp):
+            fitsio.write("reconstruct-sky", np.full((32, 32), 1000.0, dtype=np.float32), clobber=True)
+            with open("weightmask.yml", "w") as handle:
+                handle.write("{}\n")
+            self.assertEqual(run_pipeline(["reconstruct-sky", "-o", "out.weight.fits"]), 0)
+            self.assertEqual(fitsio.read("out.weight.fits").shape, (32, 32))
 
 
 class TestValidateInputFiles(unittest.TestCase):

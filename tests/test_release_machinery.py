@@ -15,12 +15,15 @@ These tests never build, tag or publish anything.
 """
 
 import importlib.util
+import os
 import re
 import subprocess
 import sys
 import tempfile
 import unittest
+import zipfile
 from pathlib import Path
+from unittest.mock import patch
 
 REPO = Path(__file__).resolve().parents[1]
 WORKFLOWS = REPO / ".github" / "workflows"
@@ -44,12 +47,31 @@ class TestVersionParsing(unittest.TestCase):
         self.assertEqual(release_check.parse_version("v1.0.0"), (1, 0, 0))
 
     def test_malformed_versions_are_rejected(self):
-        for bad in ("0.2", "zero.point.two", "", None, "0.2.x"):
+        for bad in ("0.2", "zero.point.two", "", None, "0.2.x", "0.2.1rc1", "0.2.1.2", "release-0.2.1"):
             self.assertIsNone(release_check.parse_version(bad), f"{bad!r} must not parse")
 
     def test_ordering_is_numeric_not_lexicographic(self):
         """0.2.10 is newer than 0.2.9; string comparison says otherwise."""
         self.assertGreater(release_check.parse_version("0.2.10"), release_check.parse_version("0.2.9"))
+
+    def test_latest_tag_includes_releases_on_other_branches(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            repo = Path(tmp)
+            for args in (
+                ("init", "-b", "main"),
+                ("config", "user.email", "audit@example.invalid"),
+                ("config", "user.name", "Audit"),
+                ("commit", "--allow-empty", "-m", "base"),
+                ("tag", "v0.1.0"),
+                ("checkout", "-b", "other"),
+                ("commit", "--allow-empty", "-m", "newer release"),
+                ("tag", "v0.3.0"),
+                ("tag", "v9.0.0rc1"),
+                ("checkout", "main"),
+            ):
+                subprocess.run(["git", *args], cwd=repo, check=True, capture_output=True)
+            with patch.object(release_check, "REPO", repo):
+                self.assertEqual(release_check.latest_tag(), "0.3.0")
 
 
 class TestChangelogSectionExtraction(unittest.TestCase):
@@ -83,6 +105,9 @@ class TestChangelogSectionExtraction(unittest.TestCase):
         """0.2.1 must not pick up 0.2.10's section."""
         body = self._with_changelog("## 0.2.10\n\nTen.\n")
         self.assertIsNone(body)
+
+    def test_a_prerelease_heading_is_not_the_stable_release(self):
+        self.assertIsNone(self._with_changelog("## 0.2.1-rc1\n\nPreview only.\n"))
 
 
 class TestReleaseWorkflowShape(unittest.TestCase):
@@ -154,7 +179,7 @@ class TestReleaseWorkflowShape(unittest.TestCase):
     def test_it_checks_out_the_tags(self):
         """Otherwise the newest-tag guard is skipped without saying so.
 
-        ``latest_tag()`` shells out to ``git describe --tags --abbrev=0``. The
+        ``latest_tag()`` shells out to ``git tag --list``. The
         actions/checkout default is ``fetch-depth: 1``, which fetches no tags:
         the command fails, ``latest_tag()`` returns None, and check 1 quietly
         turns into "no tags found; treating this as the first release". The
@@ -197,6 +222,96 @@ class TestReleaseWorkflowShape(unittest.TestCase):
         self.assertIn("module.changelog_section", notes, "must call release_check.changelog_section")
         self.assertNotIn("re.search", notes, "an inline copy of the extraction can drift from the check")
 
+    def test_validate_step_exports_dist_for_pypi_publish(self):
+        """gh-action-pypi-publish uploads from dist/ by default; release_check builds
+        in a tempdir unless --outdir dist is passed."""
+        config_text = RELEASE_WORKFLOW.read_text()
+        validate = config_text[config_text.index("Validate the release") : config_text.index("name: Tag")]
+        self.assertRegex(
+            validate,
+            r"--outdir\s+dist\b",
+            "Validate step must pass `--outdir dist` so gh-action-pypi-publish has wheels/sdists in dist/",
+        )
+
+    def test_publishing_requires_upstream_main(self):
+        import yaml
+
+        steps = yaml.safe_load(RELEASE_WORKFLOW.read_text())["jobs"]["release"]["steps"]
+        guard = next((step for step in steps if step.get("name") == "Check release source"), None)
+        self.assertIsNotNone(guard, "publishing must reject fork repositories and unmerged branches")
+        self.assertIn("!inputs.dry_run", guard.get("if", ""), "forks and branches must still allow dry runs")
+        self.assertLess(steps.index(guard), next(i for i, step in enumerate(steps) if step.get("name") == "Tag"))
+        for repository, ref, code in (
+            ("astroai/weightmask", "refs/heads/main", 0),
+            ("sfabbro/weightmask", "refs/heads/main", 1),
+            ("astroai/weightmask", "refs/heads/wip/unreviewed", 1),
+            ("astroai/weightmask", "refs/tags/v0.2.1", 1),
+        ):
+            result = subprocess.run(
+                ["bash", "-c", guard["run"]],
+                env={**os.environ, "GITHUB_REPOSITORY": repository, "GITHUB_REF": ref},
+                capture_output=True,
+            )
+            self.assertEqual(result.returncode, code, (repository, ref, result.stdout, result.stderr))
+
+    def test_lint_and_tests_pass_before_tagging(self):
+        import yaml
+
+        steps = yaml.safe_load(RELEASE_WORKFLOW.read_text())["jobs"]["release"]["steps"]
+        tag = next(i for i, step in enumerate(steps) if step.get("name") == "Tag")
+        for command in ("pixi run lint", "pixi run test"):
+            index = next((i for i, step in enumerate(steps) if step.get("run") == command), None)
+            self.assertIsNotNone(index, f"{command} must gate a release")
+            self.assertLess(index, tag)
+            self.assertNotIn("continue-on-error", steps[index])
+
+    def test_version_inputs_are_data_instead_of_script_text(self):
+        import yaml
+
+        job = yaml.safe_load(RELEASE_WORKFLOW.read_text())["jobs"]["release"]
+        self.assertEqual(job.get("env", {}).get("RELEASE_VERSION"), "${{ inputs.version }}")
+        for step in job["steps"]:
+            self.assertNotIn("${{ inputs.version }}", step.get("run", ""))
+
+    def test_failed_runs_do_not_claim_a_release_or_successful_build(self):
+        import yaml
+
+        steps = yaml.safe_load(RELEASE_WORKFLOW.read_text())["jobs"]["release"]["steps"]
+        summary = next(step for step in steps if step.get("name") == "Summary")
+        self.assertEqual(summary.get("env", {}).get("RELEASE_STATUS"), "${{ job.status }}")
+        for dry_run in ("true", "false"):
+            with tempfile.TemporaryDirectory() as tmp:
+                output = Path(tmp) / "summary.md"
+                subprocess.run(
+                    ["bash", "-c", summary["run"]],
+                    check=True,
+                    env={
+                        **os.environ,
+                        "GITHUB_STEP_SUMMARY": str(output),
+                        "RELEASE_STATUS": "failure",
+                        "RELEASE_VERSION": "0.2.1",
+                        "RELEASE_DRY_RUN": dry_run,
+                    },
+                    capture_output=True,
+                )
+                text = output.read_text()
+                self.assertIn("failure", text)
+                self.assertNotIn("Released", text)
+                self.assertNotIn("Validated and built", text)
+
+    def test_validated_artifacts_are_saved_before_tagging(self):
+        import yaml
+
+        steps = yaml.safe_load(RELEASE_WORKFLOW.read_text())["jobs"]["release"]["steps"]
+        upload = next(
+            (i for i, step in enumerate(steps) if step.get("uses", "").startswith("actions/upload-artifact@")), None
+        )
+        self.assertIsNotNone(upload, "dry runs and failed publications must retain validated artifacts")
+        self.assertLess(upload, next(i for i, step in enumerate(steps) if step.get("name") == "Tag"))
+        self.assertNotIn("if", steps[upload], "dry runs also need reviewable artifacts")
+        self.assertEqual(steps[upload]["with"]["path"], "dist/*")
+        self.assertEqual(steps[upload]["with"]["if-no-files-found"], "error")
+
 
 class TestCheckTaskIsWiredUp(unittest.TestCase):
     def test_pixi_exposes_release_check(self):
@@ -216,9 +331,106 @@ class TestCheckTaskIsWiredUp(unittest.TestCase):
         )
         self.assertIn(result.returncode, (0, 1), result.stdout + result.stderr)
         self.assertTrue(
-            re.search(r"^(releasable:|NOT RELEASABLE)", result.stdout, re.M),
-            "the script must end with an explicit verdict:\n" + result.stdout[-1500:],
+            re.search(r"^(releasable: \S+|NOT RELEASABLE)", result.stdout, re.M),
+            "the script must end with an explicit verdict and version:\n" + result.stdout[-1500:],
         )
+
+    def test_output_directory_does_not_delete_existing_files(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            output = Path(tmp) / "keep"
+            output.mkdir()
+            sentinel = output / "important.txt"
+            sentinel.write_text("preserve me")
+            with patch.object(release_check, "run", return_value=subprocess.CompletedProcess([], 1, "", "")):
+                with self.assertRaises(SystemExit) as raised:
+                    release_check.main(["--version", "0.2.1", "--outdir", str(output)])
+            self.assertEqual(raised.exception.code, 2)
+            self.assertEqual(sentinel.read_text(), "preserve me")
+
+    def test_failed_validation_does_not_start_building(self):
+        def command(args, **kwargs):
+            if "venv" in args or "pip" in args or "build" in args:
+                self.fail("failed preflight must stop before creating a venv or downloading packages")
+            return subprocess.CompletedProcess(args, 0, "", "")
+
+        with patch.object(release_check, "run", side_effect=command):
+            self.assertEqual(release_check.main(["--version", "invalid"]), 1)
+
+    def test_git_failure_is_not_treated_as_a_clean_tree(self):
+        def command(args, **kwargs):
+            if "venv" in args:
+                self.fail("git failures must stop before building")
+            if args[0] == "git":
+                return subprocess.CompletedProcess(args, 128, "", "not a git repository")
+            return subprocess.CompletedProcess(args, 0, "0.2.1\n", "")
+
+        with (
+            patch.object(release_check, "run", side_effect=command),
+            patch.object(release_check, "latest_tag", return_value=None),
+            patch.object(release_check, "declared_versions", return_value=("0.2.1", "0.2.1")),
+        ):
+            self.assertEqual(release_check.main(["--version", "0.2.1"]), 1)
+
+    def test_each_artifact_installs_in_its_own_isolated_environment_and_is_exported(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            workdir = root / "work"
+            workdir.mkdir()
+            output = root / "dist"
+            changelog = root / "CHANGELOG.md"
+            changelog.write_text("## 0.2.1\n\n" + "Fixture release notes. " * 20)
+            installed = []
+
+            def command(args, **kwargs):
+                text = ""
+                if "build" in args and "--outdir" in args:
+                    artifacts = Path(args[-1])
+                    with zipfile.ZipFile(artifacts / "weightmask-0.2.1-py3-none-any.whl", "w") as wheel:
+                        wheel.writestr("weightmask/_version.py", '__version__ = "0.2.1"')
+                    (artifacts / "weightmask-0.2.1.tar.gz").write_bytes(b"test sdist")
+                elif "venv" in args:
+                    scripts = Path(args[-1]) / "bin"
+                    scripts.mkdir(parents=True, exist_ok=True)
+                    for name in ("weightmask", "weightmask-reconstruct-sky"):
+                        (scripts / name).touch()
+                elif "install" in args and Path(args[-1]).suffix in (".whl", ".gz"):
+                    installed.append((args[0], args[-1]))
+                elif "-c" in args:
+                    if "ProducerMetadata" in args[-1]:
+                        self.assertIn("-I", args, "artifact imports must ignore PYTHONPATH and the user site")
+                        text = "0.2.1 0.2.1\n"
+                    else:
+                        text = "0.2.1\n"
+                return subprocess.CompletedProcess(args, 0, text, "")
+
+            with (
+                patch.object(release_check.tempfile, "mkdtemp", return_value=str(workdir)),
+                patch.object(release_check, "run", side_effect=command),
+                patch.object(release_check, "latest_tag", return_value=None),
+                patch.object(release_check, "declared_versions", return_value=("0.2.1", "0.2.1")),
+                patch.object(release_check, "CHANGELOG", changelog),
+            ):
+                self.assertEqual(release_check.main(["--version", "0.2.1", "--outdir", str(output)]), 0)
+            self.assertEqual(len(installed), 2)
+            self.assertEqual(len({python for python, _ in installed}), 2, "sdist cannot shadow the wheel smoke check")
+            self.assertEqual({p.name for p in output.iterdir()}, {Path(artifact).name for _, artifact in installed})
+            self.assertFalse(workdir.exists(), "build tools and test environments must be cleaned up")
+
+
+class TestDocsMatchCurrentSurface(unittest.TestCase):
+    def test_user_docs_do_not_reference_deleted_pipeline_class(self):
+        for rel in ("docs/api.md", "docs/usage.md", "docs/algorithms.md", "docs/installation.md", "README.md"):
+            text = (REPO / rel).read_text()
+            self.assertNotIn("WeightMapGenerator", text, f"{rel} still references deleted WeightMapGenerator")
+            self.assertNotIn("weightmask.pipeline", text, f"{rel} still references deleted weightmask.pipeline")
+
+    def test_user_docs_list_all_quality_bits(self):
+        from weightmask.contract import QUALITY_BITS
+
+        for rel in ("docs/api.md", "docs/usage.md", "docs/algorithms.md"):
+            text = (REPO / rel).read_text()
+            for bit_name in QUALITY_BITS:
+                self.assertIn(bit_name, text, f"{rel} is missing QUALITY_BITS[{bit_name!r}]")
 
 
 if __name__ == "__main__":

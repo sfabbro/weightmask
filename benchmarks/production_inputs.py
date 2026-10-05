@@ -7,11 +7,10 @@ that -- take the science frame, run one background pass with an empty mask, call
 differ, and both change the answer:
 
 ``existing_mask``
-    ``detect_streaks`` gates its full-resolution sweep, its Radon rescue and its
-    sparse RANSAC on the exclusion mask. With no exclusions the cheap binned
-    prescreen accepts chip-fixed clutter, which sets ``prescreen_confirmed`` and
-    silently skips all three, so a detector scored that way never runs the stages
-    that find faint trails. Production always passes
+    ``detect_streaks`` uses exclusions in its Hough and contour searches, and
+    searches residual bright pixels with sparse RANSAC. With no exclusions,
+    the binned prescreen can accept chip-fixed clutter as trails.
+    Production passes
     ``interim_mask_bool | final_obj_mask | detector_prior``.
 
 the background

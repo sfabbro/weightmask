@@ -158,7 +158,7 @@ def _axis_lengths(region):
     return float(region.axis_major_length), float(region.axis_minor_length)
 
 
-def _post_filter_components(crmask_bool, sci_data, bkg_rms_map, config):
+def _post_filter_components(crmask_bool, sci_data, bkg_rms_map, config, sky_map=None):
     """Reject large, diffuse components that are unlikely to be cosmic rays."""
     from skimage.measure import label, regionprops
 
@@ -177,11 +177,16 @@ def _post_filter_components(crmask_bool, sci_data, bkg_rms_map, config):
     else:
         safe_rms = np.ones_like(sci_data, dtype=np.float32)
 
+    if sky_map is None:
+        finite = sci_data[np.isfinite(sci_data)]
+        sky_map = np.median(finite) if finite.size else 0.0
+    contrast = sci_data - sky_map
+
     for region in regionprops(labeled, intensity_image=sci_data):
         coords = region.coords
         if region.area > max_component_area:
             continue
-        local_values = sci_data[coords[:, 0], coords[:, 1]]
+        local_values = contrast[coords[:, 0], coords[:, 1]]
         local_rms = safe_rms[coords[:, 0], coords[:, 1]]
         snr = np.nanmax(local_values / np.maximum(local_rms, 1e-6))
         if not np.isfinite(snr) or snr < min_contrast_sigma:
@@ -190,7 +195,7 @@ def _post_filter_components(crmask_bool, sci_data, bkg_rms_map, config):
     return filtered
 
 
-def _filter_faint_components(crmask_bool, sci_data, bkg_rms_map, faint_cfg):
+def _filter_faint_components(crmask_bool, sci_data, bkg_rms_map, faint_cfg, sky_map=None):
     """Keep only elongated, high-contrast components from a low-threshold CR pass.
 
     Single/double-pixel hits at low sigclip are indistinguishable from noise
@@ -213,6 +218,10 @@ def _filter_faint_components(crmask_bool, sci_data, bkg_rms_map, faint_cfg):
         safe_rms = rms_or_robust(bkg_rms_map, fallback=med_rms)
     else:
         safe_rms = np.ones_like(sci_data, dtype=np.float32)
+    if sky_map is None:
+        finite = sci_data[np.isfinite(sci_data)]
+        sky_map = np.median(finite) if finite.size else 0.0
+    contrast = sci_data - sky_map
     filtered = np.zeros_like(crmask_bool, dtype=bool)
     for region in regionprops(labeled, intensity_image=sci_data):
         if not (min_area <= region.area <= max_area):
@@ -222,7 +231,7 @@ def _filter_faint_components(crmask_bool, sci_data, bkg_rms_map, faint_cfg):
         if elongation < min_elongation:
             continue
         coords = region.coords
-        snr = np.nanmax(sci_data[coords[:, 0], coords[:, 1]] / np.maximum(safe_rms[coords[:, 0], coords[:, 1]], 1e-6))
+        snr = np.nanmax(contrast[coords[:, 0], coords[:, 1]] / np.maximum(safe_rms[coords[:, 0], coords[:, 1]], 1e-6))
         if not np.isfinite(snr) or snr < min_contrast_sigma:
             continue
         filtered[coords[:, 0], coords[:, 1]] = True
@@ -255,8 +264,8 @@ def _detect_residual_faint_components(
     if bkg_rms_map is None:
         safe_rms = np.ones(sci_data.shape, dtype=np.float32)
     else:
-        med_rms = robust_rms(bkg_rms_map, default=1.0)
-        safe_rms = rms_or_robust(bkg_rms_map, fallback=med_rms)
+        # Detection requires a measured RMS; unknown pixels cannot seed a CR.
+        safe_rms = rms_or_robust(bkg_rms_map, fallback=np.inf)
 
     threshold_sig = float(config.get("threshold_sig", 4.0))
     candidate = residual >= threshold_sig * safe_rms
@@ -281,7 +290,7 @@ def _detect_residual_faint_components(
         "min_elongation": float(config.get("min_elongation", 4.0)),
         "min_contrast_sigma": float(config.get("min_contrast_sigma", 4.0)),
     }
-    return _filter_faint_components(candidate, sci_data, bkg_rms_map, faint_cfg)
+    return _filter_faint_components(candidate, sci_data, bkg_rms_map, faint_cfg, sky_map=sky_map)
 
 
 def detect_cosmic_rays(
@@ -369,13 +378,13 @@ def detect_cosmic_rays(
         # round, so it fails min_elongation) and the component post-filter,
         # which is exactly why one pass can replace two.
         crmask_bool = _filter_faint_components(
-            np.ascontiguousarray(crmask_bool.astype(bool)), sci_data, bkg_rms_map, faint_cfg
+            np.ascontiguousarray(crmask_bool.astype(bool)), sci_data, bkg_rms_map, faint_cfg, sky_map=sky_map
         )
     else:
         crmask_bool = _apply_psf_protection(
             crmask_bool, sci_data, config, gain, read_noise, bkg_rms_map, sky_map=sky_map, header=header
         )
-        crmask_bool = _post_filter_components(crmask_bool.astype(bool), sci_data, bkg_rms_map, config)
+        crmask_bool = _post_filter_components(crmask_bool.astype(bool), sci_data, bkg_rms_map, config, sky_map=sky_map)
 
     crmask_bool = _apply_morphological_dilation(crmask_bool, config)
 
@@ -394,7 +403,7 @@ def detect_cosmic_rays(
                 psf_aware=bool(config.get("psf_aware", True)),
             )
         elif enhancement == "lacosmic":
-            print("    Running faint-CR pass (raised sigclip + morphology gate)...")
+            print("    Running faint-CR pass (configured sigclip + morphology gate)...")
             try:
                 faint_raw, _ = detect_cosmics(
                     sci_data,
@@ -416,7 +425,7 @@ def detect_cosmic_rays(
                 print(f"  ERROR: astroscrappy failed on faint CR pass: {e}")
                 faint_raw = np.zeros(sci_data.shape, dtype=bool)
             faint_kept = _filter_faint_components(
-                np.ascontiguousarray(faint_raw.astype(bool)), sci_data, bkg_rms_map, faint_cfg
+                np.ascontiguousarray(faint_raw.astype(bool)), sci_data, bkg_rms_map, faint_cfg, sky_map=sky_map
             )
         n_faint = int(np.count_nonzero(faint_kept))
         if n_faint:

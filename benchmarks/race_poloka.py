@@ -40,10 +40,10 @@ def load(pid, hdu, crop=None):
 
 
 def race(name, data, sky, rms, ex, sat, truth, scfg):
-    import sys
 
     sys.path.insert(0, "benchmarks")
     from poloka_tracks import poloka_satellite_mask
+
     from weightmask.streaks import detect_streaks
 
     # NOTE poloka works on raw (sky-level) images: re-add the background.

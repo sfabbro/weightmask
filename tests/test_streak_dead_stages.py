@@ -51,8 +51,21 @@ class TestRescueStageIsGone(unittest.TestCase):
             "_radon_pad_offsets",
             "_valid_rho_range",
             "_subtract_hot_axis_bands",
+            "_PERIMETER_4CONN_CORNER_WEIGHT",
+            "_PERIMETER_HV_STEP_WEIGHT",
+            "_PERIMETER_DIAG_STEP_WEIGHT",
         ):
             self.assertFalse(hasattr(streaks, gone), f"{gone} should be removed")
+
+    def test_debug_flag_populates_last_run_without_mrt(self):
+        data, rms, existing_mask = _quiet_scene((64, 64))
+        config = dict(_shipped_streak_config())
+        config["debug"] = True
+        with contextlib.redirect_stdout(io.StringIO()):
+            detect_streaks(data, rms, existing_mask, config)
+        self.assertIn("_last_run", config, "debug: True must record diagnostics in config['_last_run']")
+        self.assertNotIn("mrt", config["_last_run"], "obsolete 'mrt' key must not appear in _last_run")
+        self.assertEqual(set(config["_last_run"].keys()), {"mode", "houghpeaks", "contours", "sparse_ransac"})
 
     def test_shipped_config_carries_no_rescue_or_satdet_keys(self):
         streak_masking = _shipped_streak_config()
@@ -65,20 +78,12 @@ class TestRescueStageIsGone(unittest.TestCase):
         ):
             self.assertNotIn(gone, streak_masking, f"{gone} is dead config")
 
-    def test_a_stale_rescue_key_in_a_user_config_is_simply_ignored(self):
-        """A config carried over from an older release must not reach the stage.
-
-        Nothing reads ``mrt_rescue_params`` any more, so the key is inert rather
-        than an error. That is the only sensible reading for a tuning block whose
-        stage is gone: refuse to invent behaviour for a knob nothing owns.
-        """
+    def test_a_stale_rescue_key_fails_before_detection(self):
         data, rms, existing_mask = _quiet_scene()
         config = dict(_shipped_streak_config())
         config["mrt_rescue_params"] = {"enable": True, "max_candidates": 4}
-        with contextlib.redirect_stdout(io.StringIO()) as captured:
-            mask = detect_streaks(data, rms, existing_mask, dict(config))
-        self.assertEqual(mask.shape, data.shape)
-        self.assertNotIn("MRT rescue", captured.getvalue())
+        with self.assertRaisesRegex(ValueError, "mrt_rescue_params"):
+            detect_streaks(data, rms, existing_mask, config)
 
 
 class TestDetectorStillWorksWithoutTheRescue(unittest.TestCase):
@@ -134,7 +139,7 @@ class TestSurvivingStagesEarnTheirCost(unittest.TestCase):
         cls.off = json.load(open(without))
 
     def _cell(self, records):
-        """Recall for this amp/length/sigma/seed, averaged over trail kinds.
+        """Best recall for this amp/length/sigma/seed across trail kinds.
 
         Filters on every key including ``seed``: two seeds place the trail
         differently and contours recovers only one of them, so a lookup that ignored
@@ -163,6 +168,7 @@ class TestSurvivingStagesEarnTheirCost(unittest.TestCase):
         if not sweep.exists():
             raise unittest.SkipTest("run: pixi run streak-sweep")
         records = [r for r in json.load(open(sweep)) if not r["error"]]
+        self.assertTrue(records, "no successful real-amp records in the sweep")
         accepted = [
             r
             for r in records
@@ -173,19 +179,15 @@ class TestSurvivingStagesEarnTheirCost(unittest.TestCase):
 
 
 class TestRansacEarnsItsCost(unittest.TestCase):
-    """Sparse RANSAC: 0 acceptances on 222 real amps, 0.82 s/amp, and it stays.
+    """Historical sparse RANSAC evidence, before unconditional residual detection.
+
+    The archived real-amp sweep measured 0 acceptances on 222 amps and 0.82 s/amp.
 
     Same shape of question as contours, same instrument. It is the only finder on
     1500 px dashed trails at 12 sigma, and it costs recall on none of the 16
-    cells. Two traps this test exists to keep closed:
-
-    * the grid must inject *dashed* trails. RANSAC's stated job is dashed-trail
-      recovery; a solid-only grid measures it on inputs it was never built for and
-      returns a clean +0.000 for the wrong reason.
-    * the grid cannot price it. ``sparse_on_primary_weak_only`` shuts the gate in
-      94 of 96 injected runs, so a cost read from that grid is noise -- and a
-      *negative* cost is the signature of a stage that never ran. The price comes
-      from the real-amp sweep, where the gate is open on 222 of 224.
+    cells. The grid must inject *dashed* trails: a solid-only grid measures RANSAC
+    on inputs it was never built for and returns a clean +0.000 for the wrong
+    reason. These artifacts record the earlier qualification, not current cost.
 
     Full grid: ``pixi run streak-recall-floor`` and the same with
     ``--disable ransac``.
@@ -210,7 +212,7 @@ class TestRansacEarnsItsCost(unittest.TestCase):
 
     @staticmethod
     def _rows(records):
-        """Key on seed as well as cell.
+        """Key on exposure, HDU and seed as well as cell.
 
         Two seeds place the trail differently and RANSAC recovers only one of them,
         so a key without ``seed`` silently lets the last row overwrite the first --
@@ -218,7 +220,9 @@ class TestRansacEarnsItsCost(unittest.TestCase):
         belonged to a different placement than the one being claimed.
         """
         return {
-            (r["length"], r["sigma"], r["dashed"], r["seed"]): r["recall_line"] for rec in records for r in rec["rows"]
+            (r["length"], r["sigma"], r["dashed"], r["seed"], rec["exposure"], rec["hdu"]): r["recall_line"]
+            for rec in records
+            for r in rec["rows"]
         }
 
     def _matching(self, rows):
@@ -228,15 +232,18 @@ class TestRansacEarnsItsCost(unittest.TestCase):
         """Some placement of a long dashed trail is found only with RANSAC."""
         on, off = self._matching(self._rows(self.on)), self._matching(self._rows(self.off))
         self.assertTrue(on, "no dashed cell at this length/sigma in the grid")
+        self.assertEqual(set(on), set(off), "stage-on and stage-off artifacts must contain the same cells")
         self.assertTrue(
-            any(v > 0.5 and off.get(k, 0.0) == 0.0 for k, v in on.items()),
+            any(v > 0.5 and off[k] == 0.0 for k, v in on.items()),
             "expected at least one placement of a 1500px dashed 12-sigma trail that "
             f"RANSAC finds and nothing else does; got {on}",
         )
 
     def test_ransac_never_costs_recall_anywhere(self):
         on, off = self._rows(self.on), self._rows(self.off)
-        hurt = {k: (on[k], off[k]) for k in on if k in off and on[k] < off[k] - 0.02}
+        self.assertTrue(on, "no injected trail cells in the artifacts")
+        self.assertEqual(set(on), set(off), "stage-on and stage-off artifacts must contain the same cells")
+        hurt = {k: (on[k], off[k]) for k in on if on[k] < off[k] - 0.02}
         self.assertEqual(hurt, {}, "RANSAC costs recall on these cells")
 
     def test_the_grid_really_does_inject_dashed_trails(self):
@@ -250,15 +257,15 @@ class TestRansacEarnsItsCost(unittest.TestCase):
         self.assertIn(True, kinds, "the grid must inject dashed trails")
 
     def test_the_grid_cannot_price_ransac_and_the_suite_says_so(self):
-        """Guard the trap. If this inverts, the 0.82 s/amp price is stale.
+        """The historical grid predates unconditional residual detection.
 
-        RANSAC is currently shut out of 94 of 96 injected runs by
-        ``sparse_on_primary_weak_only``. Were that to change, the grid's timing
-        column would become a real cost and the changelog's figure would need
-        re-deriving rather than carrying over.
+        Its primary-acceptance shortcut skipped RANSAC in 94 of 96 injected
+        runs, so its timing cannot establish the current detector's cost.
         """
         on, off = self._rows(self.on), self._rows(self.off)
-        differing = sum(1 for k in on if k in off and on[k] != off[k])
+        self.assertTrue(on, "no injected trail cells in the artifacts")
+        self.assertEqual(set(on), set(off), "stage-on and stage-off artifacts must contain the same cells")
+        differing = sum(1 for k in on if on[k] != off[k])
         total = len(on)
         self.assertLess(
             differing * 4,

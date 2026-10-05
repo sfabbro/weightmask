@@ -13,7 +13,8 @@
 #   benchmarks/canfar/submit_all.sh e8               # winners last (waits)
 #   benchmarks/canfar/submit_all.sh all              # setup+e0+main (E8 manual; needs winners)
 #   benchmarks/canfar/submit_all.sh submit E4        # one group, no wait
-# Append --no-wait to skip polling.
+# Append --no-wait to skip measurement polling. Setup still waits for its
+# dependent clone/fetch/checkout steps.
 set -euo pipefail
 
 HERE="$(cd "$(dirname "$0")" && pwd)"
@@ -100,16 +101,24 @@ for k, v in next(j for j in g['jobs'] if j['tag'] == '$tag').get('env', {}).item
     echo "$out" | grab_id
 }
 
-submit_group() { # exp_id: one headless job per manifest job entry, echoes last id
-    local exp="$1" tags last=""
+submit_group() { # exp_id: one headless job per manifest entry, echoes every id
+    local exp="$1" tags t
     tags="$(manifest_py "print(' '.join(j['tag'] for j in next(x for x in m['groups'] if x['exp_id']=='$exp')['jobs']))")"
-    for t in $tags; do last="$(submit_job "$exp" "$t")"; done
-    echo "$last"
+    for t in $tags; do submit_job "$exp" "$t" || return 1; done
 }
 
-phase_e0() { local id; id="$(submit_group E0)"; wait_for "$id"; }
-phase_main() { local e id; for e in E1 E2 E3 E4 E5 E6 E7; do id="$(submit_group "$e")"; wait_for "$id" || return 1; done; }
-phase_e8() { local id; id="$(submit_group E8)"; wait_for "$id"; }
+run_group() {
+    local ids id failed=0
+    ids="$(submit_group "$1")" || return 1
+    if [ "$WAIT" -eq 1 ]; then
+        for id in $ids; do wait_for "$id" || failed=1; done
+    fi
+    return "$failed"
+}
+
+phase_e0() { run_group E0; }
+phase_main() { local e; for e in E1 E2 E3 E4 E5 E6 E7; do run_group "$e" || return 1; done; }
+phase_e8() { run_group E8; }
 
 case "${1:-}" in
     setup) do_setup;;

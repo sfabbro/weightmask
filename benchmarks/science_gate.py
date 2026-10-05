@@ -9,6 +9,7 @@ is not part of ``pixi run test``.
 from __future__ import annotations
 
 import argparse
+import math
 import os
 import subprocess
 import sys
@@ -41,16 +42,22 @@ def _read_tsv(path):
     if not lines:
         return []
     header = lines[0].split("\t")
+    if len(set(header)) != len(header) or any(not key for key in header):
+        raise ValueError("invalid TSV header")
     rows = []
     for line in lines[1:]:
         parts = line.split("\t")
+        if len(parts) != len(header):
+            raise ValueError("TSV row does not match its header")
         rows.append(dict(zip(header, parts)))
     return rows
 
 
 def _mean(values):
     nums = [float(value) for value in values]
-    return sum(nums) / len(nums) if nums else float("nan")
+    if not nums or any(not math.isfinite(value) or not 0 <= value <= 1 for value in nums):
+        raise ValueError("recall metrics must be nonempty, finite, and between 0 and 1")
+    return sum(nums) / len(nums)
 
 
 def _run(args):
@@ -97,8 +104,7 @@ def _score(data_dir, out_dir, failures, notes):
             "--detector",
             "streaks",
             "--apply-persistence",
-            "--data-root",
-            data_dir,
+            *(["--data-root", data_dir] if data_dir is not None else []),
             "--report",
             os.path.join(out_dir, "trail_truth.score.json"),
         ]
@@ -131,9 +137,13 @@ def _inject(exposure, hdu, out_dir, failures, notes):
     if code != 0 or not os.path.exists(tsv):
         failures.append(f"streak_inject exited {code}")
         return
-    rows = [row for row in _read_tsv(tsv) if str(row.get("dashed", "")).lower() in ("false", "0")]
-    recall = _mean(row["recall"] for row in rows)
-    recall5 = _mean(row["recall5"] for row in rows)
+    try:
+        rows = [row for row in _read_tsv(tsv) if str(row.get("dashed", "")).lower() in ("false", "0")]
+        recall = _mean(row["recall"] for row in rows)
+        recall5 = _mean(row["recall5"] for row in rows)
+    except (OSError, KeyError, ValueError) as exc:
+        failures.append(f"streak_inject invalid metrics: {exc}")
+        return
     notes.append(f"streak_inject continuous recall {recall:.3f}, recall5 {recall5:.3f} on {exposure} HDU {hdu}")
     if recall < CONTINUOUS_RECALL:
         failures.append(f"continuous recall {recall:.3f} < {CONTINUOUS_RECALL:.2f}")
@@ -159,12 +169,13 @@ def _cosmics(exposure, hdu, out_dir, failures, notes):
     if code != 0 or not os.path.exists(tsv):
         failures.append(f"cr_faint_curves exited {code}")
         return
-    rows = [row for row in _read_tsv(tsv) if row.get("variant") == "main+faint"]
-    if not rows:
-        failures.append("cr_faint_curves produced no main+faint row")
+    try:
+        rows = [row for row in _read_tsv(tsv) if row.get("variant") == "main+faint"]
+        worm = _mean(row["worm_recall"] for row in rows)
+        single = _mean(row["single_recall"] for row in rows)
+    except (OSError, KeyError, ValueError) as exc:
+        failures.append(f"cr_faint_curves invalid metrics: {exc}")
         return
-    worm = _mean(row["worm_recall"] for row in rows)
-    single = _mean(row["single_recall"] for row in rows)
     notes.append(f"cr two-pass worm {worm:.3f} (audit {WORM_AUDIT:.3f}), single-pixel {single:.3f}")
     if worm < WORM_AUDIT - WORM_DROP:
         failures.append(f"worm recall {worm:.3f} dropped by more than {WORM_DROP:.2f} from {WORM_AUDIT:.3f}")
@@ -172,14 +183,14 @@ def _cosmics(exposure, hdu, out_dir, failures, notes):
         failures.append(f"single-pixel recall {single:.3f} < {SINGLE_FLOOR:.2f}")
 
 
-def _perf(out_dir, failures, notes):
+def _perf(exposure, out_dir, failures, notes):
     perf_dir = os.path.join(out_dir, "perf")
     code, text = _run(
         [
             sys.executable,
             "benchmarks/perf_megacam.py",
-            "--exposure-ids",
-            "1013719p",
+            "--exposure-file",
+            exposure,
             "--hdu-limit",
             "2",
             "--no-cprofile",
@@ -188,7 +199,7 @@ def _perf(out_dir, failures, notes):
         ]
     )
     notes.append(
-        "perf_megacam on 2 HDUs of 1013719p without --compare-baseline "
+        f"perf_megacam on 2 HDUs of {os.path.basename(exposure)} without --compare-baseline "
         "(streak prior, sky handoff, and sentinel weights are allowed to differ)"
     )
     if code != 0:
@@ -200,12 +211,15 @@ def _perf(out_dir, failures, notes):
 
 def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--data-dir", default=DEFAULT_DATA)
+    parser.add_argument(
+        "--data-dir", help=f"Relocate fixture inputs here (default uses fixture paths; probe {DEFAULT_DATA})."
+    )
     parser.add_argument("--out", default=DEFAULT_OUT)
     parser.add_argument("--hdu", type=int, default=1)
     args = parser.parse_args(argv)
 
-    data_dir = args.data_dir if os.path.isabs(args.data_dir) else os.path.join(ROOT, args.data_dir)
+    selected_data = args.data_dir if args.data_dir is not None else DEFAULT_DATA
+    data_dir = selected_data if os.path.isabs(selected_data) else os.path.join(ROOT, selected_data)
     out_path = args.out if os.path.isabs(args.out) else os.path.join(ROOT, args.out)
     fits = _fits_paths(data_dir)
     if not fits:
@@ -216,10 +230,10 @@ def main(argv=None):
     exposure = next((path for path in fits if "1013719p" in os.path.basename(path)), fits[0])
     failures = []
     notes = [f"data: `{exposure}`"]
-    _score(data_dir, out_dir, failures, notes)
+    _score(data_dir if args.data_dir is not None else None, out_dir, failures, notes)
     _inject(exposure, args.hdu, out_dir, failures, notes)
     _cosmics(exposure, args.hdu, out_dir, failures, notes)
-    _perf(out_dir, failures, notes)
+    _perf(exposure, out_dir, failures, notes)
     status = "failed" if failures else "passed"
     lines = ["# science-gate", "", f"status: {status}", ""]
     if failures:

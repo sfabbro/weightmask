@@ -1,57 +1,133 @@
 # Changelog
 
-## 0.2.1 - 2026-10-03
+## 0.2.1 - 2026-10-05
 
-Release machinery and user-visible corrections. No algorithm, config key, or
-product changed; masks from 0.2.0 and 0.2.1 are identical.
+Correctness, I/O safety, and release validation fixes. Masks, skies, weights,
+and confidence maps can change from 0.2.0.
 
 ### Fixed
 
-- **`weightmask --version` printed `cli.py` under `python -m weightmask.cli`.**
-  argparse derives the program name from `sys.argv[0]`, so the same install
-  reported `cli.py 0.2.0` by module and `weightmask 0.2.0` as the console
-  script. `prog` is now pinned in `cli.py`, as `reconstruct_sky.py` already did.
-- **`.gitignore` only hid `.venv` by accident.** It matched `.venv-wm/` through
-  the obsolete `lib/` line of the GitHub Python template, so removing that line
-  would have made a stale 282 MB virtualenv committable. The template has been
-  trimmed to what this repository produces, and `.venv*/` and `.uv-cache/` are
-  now listed directly. That stale environment is the one pinned to weightmask
-  0.1 that made ruff report 3721 errors in CI
-  (`tests/test_ci_workflow.py`).
-- **Three doc references to a renamed pixi task.** `pixi run rescue-recall`
-  became `pixi run streak-recall-floor` in `docs/usage.md` and
-  `docs/algorithms.md`; `docs/installation.md` showed `pixi run weightmask`,
-  which is not a task.
+- Object detection retains bright first-pass seeds instead of excluding them
+  from both passes. Elongated-source sky handoff also works with an empty config.
+- Streak refits retain coherent along-trail support instead of choosing a narrow
+  fragment and rejecting the whole trail. Hough support can bridge short gaps
+  from star masks without treating missing samples as empty sky; minimum run
+  length is enforced for isolated runs too. The two real-trail regressions now
+  produce 17,321 and 10,041 pixels, unchanged by the brightness-veto setting.
+- A primary streak no longer suppresses the residual RANSAC search for another
+  trail. Its sigma threshold uses the measured RMS directly, so changing ADU
+  units does not change which residual pixels qualify.
+  Rejected clutter models do not consume the accepted-trail budget or stop the
+  search. Confirmed Hough bands cross interior source masks with finite science
+  and measured RMS; occluded pixels do not supply detection or brightness-veto
+  evidence, and unknown-noise gaps remain excluded. Each prediction must retain
+  its own coherent support after component vetoes; unrelated crossing trails
+  cannot revive a rejected model.
+- Cosmic-ray contrast gates measure signal above the sky. Unknown RMS pixels
+  cannot seed residual CR detections or authorize negative-sky repairs. Masked
+  pixels are excluded from the explicit median-filter background method.
+- Non-finite science pixels receive `NO_DATA` and zero weight. Entire invalid
+  flat tiles are `BAD`; cached masks are invalidated for this correction.
+  Integer bad masks are interpreted per pixel, and mismatched masks are rejected.
+- Integer science retains its native saturation ceiling with the canonical
+  configuration as well as an empty configuration. Amplifier gains
+  use valid local, disjoint sections when mosaic `DETSEC` coordinates do not
+  describe the HDU. Invalid header gain/read-noise values use validated defaults.
+- A zero or signed, bias-subtracted dark is valid. Dark hot pixels use the HDU
+  median plus `dark_masking.hot_sigma` times the robust scatter, rather than
+  dividing by a flat-like positive response. Non-finite dark values are `BAD`.
+- Output paths cannot alias inputs or other products, including through links.
+  Failed FITS writes and partial runs report failure. Invalid YAML section
+  shapes and unsupported float16 FITS output are rejected before processing.
+  Supplied keep-maps must be matching, finite, binary arrays.
+- Confidence normalization uses unclipped weights and the configured percentile
+  once per exposure. Compressed outputs track their actual image HDUs.
+  Chip-replica clearing restores confidence/raw weights while respecting
+  detected-source exclusions.
+- Sky reconstruction strips consumed FITS scaling/compression cards, streams
+  full-resolution images, and reports reconstruction/write failures.
+  Persistence priors require distinct other exposures and accept a later
+  compatible extension after a mismatched one.
+- Contract inverse variance is sanitized after float32 conversion, including
+  overflow/underflow. Direct products reject invalid inverse variance, and
+  truncated provenance warns rather than silently becoming empty provenance.
+- Flat-mask `tile_size` is honored. Big-endian FITS arrays use native,
+  contiguous buffers for SEP. Streak debug output is restored, and obsolete
+  perimeter constants and diagnostics are removed.
+- Release validation preserves existing `--outdir` contents, checks the newest
+  numeric release tag across branches, and independently installs/tests both
+  wheel and sdist outside the source tree. Local CI carries deletions, renames,
+  links, and quoted filenames correctly, reports test failures, and runs the
+  suite once.
+- Examples resolve repository configuration independently of the current
+  directory and report processing failures. Downloads replace an existing
+  science image only after transfer and complete FITS structure checks.
+- Test assertions now exercise elongated-source bits, cosmic failures, and
+  instrument mismatches. Synthetic injection honors flux/complex settings,
+  uses the known read noise, and seeds sweeps and pre-masks deterministically.
+  Recall measures recovered truth pixels; tolerated halos affect precision.
+- Benchmark gates reject empty, non-finite, failed, or mismatched evidence.
+  Reference crops and stage-ablation cells must match their actual inputs;
+  dark diagnostics use the production dark detector without self-truth baselines.
+  The science gate preserves declared fixture paths and profiles its selected
+  FITS input rather than depending on an unrelated cached exposure list.
+- Real-image injections add signal to finite, measured pixels; tolerant recall
+  counts truth pixels near the mask. Baseline caches include detector inputs,
+  configuration, and source. Timing comparisons retain calibration, reject
+  self-comparison, and fail on incomplete HDUs; CPU time matches the timed
+  region. Pull scatter is centered, and worker scaling requires a one-worker
+  reference. Historical scores and timings remain historical.
+- CANFAR runs honor manifest thread settings and `--no-wait`, wait for every
+  submitted job when requested, and compare masks across all image HDUs and
+  matching exposure identifiers.
 
 ### Changed
 
-- **`--output_map` and `--nproc` help text corrected.** `--output_map` omitted
-  that the default sits next to the input rather than the working directory,
-  and that it is `.weight.fits.fz` when `output_params.compress` is true.
-  `--nproc` omitted that the worker count is capped at the number of HDUs.
-- **`docs/releasing.md`** documents the release process and the trusted-publisher
-  setup it depends on.
+- Removed obsolete variance switches and the old theoretical denominator;
+  theoretical inverse variance always uses `g² F² / (S g F + RN²)`.
+  Background-only variance is never reduced by source noise a second time.
+- Removed ignored saturation selectors, retired streak parameters, the
+  `readnoise_keyword` configuration alias, `--max-workers`, and the old
+  reconstruction subcommand. Implicit configuration discovery uses
+  `weightmask.yml`; sky reconstruction uses `weightmask-reconstruct-sky`.
+  Supplied dark frames always use hot-pixel detection, with defaults when the
+  section is omitted. Unsupported settings are rejected.
+- Package and producer versions come directly from the required version module;
+  missing code cannot silently stamp a development version into products.
+- `WMSEM` / `INVERSE_VARIANCE_SEMANTICS` now describes the shared units as
+  `inverse_variance_adu^-2`, rather than labeling every estimator as a
+  flat-fielded Poisson weight. The array schema and quality-bit values stay 1.0.
+- Release is manual, dry-run by default, and runs lint/tests before building or
+  tagging. Publishing requires `astroai/weightmask` on `main`; version inputs
+  are passed as data, validated artifacts are saved, and failed jobs do not
+  announce successful releases. The old duplicate publish workflow is removed.
+- User docs/examples match the callable API, `NO_DATA` bit, configuration,
+  command names, and output behavior. README links work from PyPI.
 
-### Added
+### Known limitations
 
-- **`benchmarks/release_check.py` (`pixi run release-check`).** Validates a
-  version before anything is tagged: that it exceeds the latest tag, agrees
-  across `pyproject.toml`, `weightmask/_version.py` and the installed package,
-  has a `CHANGELOG.md` section with content, and sits on a clean tree; then
-  builds an sdist and wheel, runs `twine check`, and confirms the wheel
-  installs and imports outside the source tree with the right version and
-  console scripts.
-- **`.github/workflows/release.yml`.** One button, `dry_run` true by default. A
-  dry run validates and builds and touches nothing. A real run re-validates,
-  tags, publishes to PyPI, and opens a release whose notes are the changelog
-  section. `publish.yml` is removed: with both a manual trigger and a
-  `release: published` trigger, a release created from the GitHub UI would
-  publish to PyPI twice.
-- **`tests/test_release_machinery.py`**, 19 tests over the checks and the
-  workflow's shape. Each guard is mutation-checked: reverting the fix fails it.
-- **`tests/test_cli.py`** gains two tests pinning the program name in
-  `--version`, and that every declared flag's dest is actually read by
-  `cli.py` -- a flag in `--help` that nothing consumes is worse than no flag.
+- Streak angular/dashed-trail recovery and the high-brightness veto remain
+  limited by the evidence described under 0.2.0; the veto can be disabled.
+- Exposure confidence uses a bounded sample per HDU, so its percentile is
+  approximate for differently sized detectors. Dark hot-pixel detection assumes
+  a mostly healthy HDU with a uniform pedestal; structured darks need calibrated
+  per-amplifier/local baselines.
+- Full science benchmarks are opt-in. Historical scores under 0.2.0 used the
+  earlier generator and recall metric. The corrected compact MegaCam release
+  gate passes; broad multi-seed/angular sweeps and other instrument campaigns
+  remain unqualified. Stage diagnostics with a global sky and empty initial
+  mask do not establish production-pipeline quality.
+
+### Qualification
+
+- The MegaCam release gate scores all 89 annotated HDUs: zero false positives
+  on 241 labelled artefacts. Injected continuous-trail mean recall is 0.753
+  exact and 0.903 within five pixels; the faint dashed case remains undetected.
+  Two-pass cosmic-ray mean recall is 0.322 for worms and 0.167 for single pixels.
+  The selected two-HDU production/timing run completes successfully.
+- The local suite passes 524 tests, including both real satellite-trail
+  regressions. One optional torchfits test skips. A clean export passes lint,
+  516 tests with nine expected data/optional skips, and entry-point smoke.
 
 ## 0.2.0 - 2026-10-02
 
@@ -67,8 +143,8 @@ change.
   cost 121.7 s/amp of a 125.7 s/amp stage. Removed with its config block, the
   `curate_trail_truth` proposer that read it, and `tests/test_radon_rescue.py`.
 - **`_streak_image_core`**, unused since the Canny/Hough stage went.
-- **The version literal**, which appeared in five files. It is now declared once
-  in `weightmask/_version.py`; `pyproject.toml` is asserted to agree rather than
+- **The version literal**, which appeared in five files. Runtime consumers now
+  import `weightmask/_version.py`; the packaging copy in `pyproject.toml` is asserted to agree rather than
   trusted, because `ProducerMetadata.version` stamps provenance into every
   output map and a missed update writes a stale version into science products.
 
@@ -109,7 +185,7 @@ change.
   near-horizontal trails and misses 25-160 degrees. Both real trails are at
   ~1 degree, so the local corpus does not expose this. The response may be
   telescope-specific and was not investigated further.
-- `max_component_sigma: 20` is a 6x margin below a sample of two trails. It is
+- `max_component_sigma: 20` is a 6x margin above a sample of two trails. It is
   provisional, and it would suppress a bright satellite constellation without
   anything local revealing it.
 - `synthetic_v2` fails its quality gate at F1 0.159 against a 0.200 threshold.
@@ -250,7 +326,7 @@ alternatively catchable by persistence -- it is static, so it holds at 0.90
 across epochs of the same field against 0.02 for a trail -- via the CLI's
 `--persistence`; the star arm holds at 0.41 and is not reliably caught that way.
 
-The threshold itself is a 6x margin below a sample of **two** trails. That is a
+The threshold itself is a 6x margin above a sample of **two** trails. That is a
 provisional setting rather than a measured constant, and it would suppress a
 bright satellite constellation without anything local showing it. Pinned by
 `tests/test_brightness_veto.py`.

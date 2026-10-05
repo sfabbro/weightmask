@@ -12,7 +12,7 @@ import fitsio
 import numpy as np
 
 from . import __version__
-from .bad import _get_global_median, compute_flat_bad_mask_cached, detect_bad_pixels
+from .bad import _get_global_median, compute_flat_bad_mask_cached, detect_dark_hot_pixels
 from .contract import (
     CONFIDENCE_SEMANTICS,
     CONFIDENCE_SEMANTICS_SCALED,
@@ -22,6 +22,7 @@ from .contract import (
     ArtifactMetadata,
     ProducerMetadata,
     QualityBit,
+    build_weight_product,
 )
 from .process import _effective_tile_size, process_image
 
@@ -49,7 +50,7 @@ def process_hdu(
     print(f"\n--- Processing HDU {hdu_index} ({hdu_name}) ---")
 
     try:
-        sci_data_full = np.ascontiguousarray(hdu_sci.read().astype(np.float32, copy=False))
+        sci_data_full = np.asarray(hdu_sci.read())
         sci_hdr = hdu_sci.read_header()
     except (OSError, fitsio.FITSFormatError) as e:
         print(f"Skipping HDU: Cannot read science data: {e}")
@@ -81,18 +82,22 @@ def process_hdu(
     badpix_mask = None
     if hdu_badpix is not None:
         try:
-            ext = hdu_badpix.read()
+            ext = np.asarray(hdu_badpix.read())
             if ext.shape == sci_data_full.shape:
-                # External mask uses the Elixir keep-map convention: 0 = bad, 1 = good.
+                if not np.all((ext == 0) | (ext == 1)):
+                    print("Skipping HDU: Provided keep-map must contain only 0 (bad) and 1 (good).")
+                    return None, None, None, None, None, None
                 badpix_mask = ext == 0
                 frac = float(np.mean(badpix_mask))
                 thresh = float(config.get("flat_masking", {}).get("dead_ccd_badpix_fraction", 0.9))
                 if frac > thresh:
                     print(f"  NOTE: external mask flags {frac:.1%} of HDU {hdu_index} bad (dead CCD?) -- zero weight.")
             else:
-                print(f"  Skipping badpix mask: shape mismatch {ext.shape} != {sci_data_full.shape}")
-        except OSError as e:
-            print(f"Skipping badpix mask: cannot read: {e}")
+                print(f"Skipping HDU: Provided keep-map shape mismatch {ext.shape} != {sci_data_full.shape}.")
+                return None, None, None, None, None, None
+        except (OSError, fitsio.FITSFormatError, TypeError, ValueError) as e:
+            print(f"Skipping HDU: Cannot read provided keep-map: {e}")
+            return None, None, None, None, None, None
 
     return process_image(
         sci_data_full,
@@ -319,6 +324,12 @@ def _store_output_maps(
     if paths["out_map_path"]:
         output_format = config.get("output_params", {}).get("output_map_format", "weight").lower()
         map_data = confidence_map if output_format == "confidence" else weight_map
+        if (
+            output_format == "confidence"
+            and config.get("confidence_params", {}).get("normalize_scope") == "per_exposure"
+        ):
+            # Normalize once after streaming; per-HDU clipping loses high weights.
+            map_data = weight_map
         if output_format != "confidence":
             semantics = "masked_inverse_variance"
         elif config.get("confidence_params", {}).get("scale_to_100", False):
@@ -378,47 +389,43 @@ def _store_output_maps(
         )
 
 
-def _rescale_confidence_to_global(paths, writers, conf_samples, conf_p99, config):
-    """Rewrite an exposure-global confidence normalization into the map file.
-
-    Per-HDU confidence was normalized by each HDU's own p99 at stream time;
-    rescale stored values by p99_hdu/global_p99 so confidence is comparable
-    across CCDs. Only applies when the map product holds confidence
-    (output_map_format=confidence); weight maps keep physical units.
-    """
+def _rescale_confidence_to_global(paths, writers, config):
+    """Normalize streamed raw weights once to exposure-global confidence."""
     if config.get("output_params", {}).get("output_map_format", "weight").lower() != "confidence":
         print("  Confidence global norm skipped (map product holds weight, not confidence).")
-        return
+        return True
     map_path = (paths or {}).get("out_map_path")
     writer = (writers or {}).get("map")
     if not map_path or writer is None:
-        return
-    pooled = np.concatenate([np.ravel(s) for s in conf_samples.values()])
-    global_p99 = float(np.percentile(pooled, 99.0))
-    if not np.isfinite(global_p99) or global_p99 <= 0:
-        print(f"  WARNING: global confidence p99 is invalid ({global_p99}); skipping global rescale.")
-        return
-    factors = {i: p99 / global_p99 for i, p99 in conf_p99.items() if p99 > 0}
-    # Rewriting an existing HDU: only pass ``compress`` when actually
-    # compressing. fitsio ignores/ warns about a placeholder value.
-    compress = bool((config or {}).get("output_params", {}).get("compress", False)) or str(map_path).endswith(".fz")
-    write_kwargs = {"compress": "RICE_1"} if compress else {}
-    # Clip to the range the map is actually in. With `scale_to_100` the file
-    # holds 0-100, so clipping at 1.0 would flatten every value above 1% of the
-    # normalisation to exactly 1.0 and silently destroy the map.
+        return True
+    percentile = config.get("confidence_params", {}).get("normalize_percentile", 99.0)
     upper = 100.0 if (config or {}).get("confidence_params", {}).get("scale_to_100", False) else 1.0
     try:
         with fitsio.FITS(map_path, "rw") as f:
-            for hdu_index, factor in factors.items():
-                pos = writer.positions.get(hdu_index)
-                if pos is None or pos >= len(f):
-                    continue
+            samples = []
+            for pos in writer.positions.values():
                 data = f[pos].read()
-                f[pos].write(np.clip(data * factor, 0.0, upper).astype(np.float32, copy=False), **write_kwargs)
+                positive = data[data > 0]
+                if positive.size:
+                    # ponytail: at most 20k samples per HDU; use a streaming
+                    # quantile if heterogeneous detector sizes require exact pooling.
+                    step = max(1, (positive.size + 19999) // 20000)
+                    samples.append(positive[::step])
+            if not samples:
+                return True
+            normalization = float(np.percentile(np.concatenate(samples), percentile))
+            if not np.isfinite(normalization) or normalization <= 0:
+                print(f"  ERROR: global confidence normalization is invalid ({normalization}).")
+                return False
+            for pos in writer.positions.values():
+                data = f[pos].read()
+                confidence = np.clip(data / normalization, 0.0, 1.0) * upper
+                f[pos].write(confidence.astype(writer.dtype or np.float32, copy=False))
     except OSError as e:
-        print(f"  WARNING: confidence global rescale failed: {e}")
-        return
-    print(f"  Confidence renormalized to exposure-global p99 {global_p99:.3g}.")
+        print(f"  ERROR: confidence global normalization failed: {e}")
+        return False
+    print(f"  Confidence normalized to exposure-global p{percentile:g} {normalization:.3g}.")
+    return True
 
 
 def _veto_dead_ccd_hdus(flat_bad_masks, flat_meds, flat_cfg, flat_shapes=None):
@@ -623,9 +630,9 @@ def _streak_catalog(hdu_index, mask_data):
     }
 
 
-def _rewrite_hdu(fits_obj, pos, data, compress):
-    kwargs = {"compress": "RICE_1"} if compress else {}
-    fits_obj[pos].write(np.ascontiguousarray(data), **kwargs)
+def _rewrite_hdu(fits_obj, pos, data):
+    # Existing HDUs retain their compression; ImageHDU.write has no compress option.
+    fits_obj[pos].write(np.ascontiguousarray(data))
 
 
 def _clear_chip_replicas(catalogs, writers, config):
@@ -636,27 +643,26 @@ def _clear_chip_replicas(catalogs, writers, config):
     only zero-weight bit and the map product is a weight.
     """
     if len(catalogs) < 2:
-        return
+        return True
     geoms = [line_geometry(cat["ys"], cat["xs"], cat["shape"]) for cat in catalogs]
     cleared = replica_indices(geoms)
     if not cleared:
-        return
+        return True
     mask_writer = (writers or {}).get("mask")
     if mask_writer is None or not getattr(mask_writer, "out_path", None):
-        return
+        return True
     output_format = str((config or {}).get("output_params", {}).get("output_map_format", "weight")).lower()
-    weight_format = output_format == "weight"
-    # Resolve compression once for every product HDU: explicit config OR the
-    # fpack convention that a .fz file carries RICE-compressed HDUs. All products
-    # share the same output dir/base, so they are .fz together or not at all.
-    compress = bool((config or {}).get("output_params", {}).get("compress", False)) or str(
-        mask_writer.out_path
-    ).endswith(".fz")
+    conf_cfg = (config or {}).get("confidence_params", {})
+    per_hdu_confidence = output_format == "confidence" and conf_cfg.get("normalize_scope") != "per_exposure"
     streak_bit = np.uint32(QualityBit.STREAK)
-    other_bits = np.uint32(int(DEFAULT_ZERO_WEIGHT_BITS & ~QualityBit.STREAK))
-    map_writer = writers.get("map") if weight_format else None
-    ivar_writer = writers.get("invvar") if weight_format else None
-    raw_writer = writers.get("weight_raw") if weight_format else None
+    exclusion = DEFAULT_ZERO_WEIGHT_BITS & ~QualityBit.STREAK
+    exclude_detected = bool((config or {}).get("output_params", {}).get("mask_detected_in_weight", False))
+    if exclude_detected:
+        exclusion |= QualityBit.DETECTED
+    other_bits = np.uint32(exclusion)
+    map_writer = writers.get("map")
+    ivar_writer = writers.get("invvar")
+    raw_writer = writers.get("weight_raw")
     ind_writer = writers.get("ind_streak")
 
     def _open(writer):
@@ -687,62 +693,48 @@ def _clear_chip_replicas(catalogs, writers, config):
                 continue
             pixels = data[ys, xs]
             only = ((pixels & streak_bit) != 0) & ((pixels & other_bits) == 0)
+            needs_restore = bool(np.any(only)) and (fmap is not None or fraw is not None)
+            ipos = ivar_writer.positions.get(cat["hdu"]) if ivar_writer is not None else None
+            ivar = fivar[ipos].read() if fivar is not None and ipos is not None else None
+            if needs_restore and np.shape(ivar) != data.shape:
+                print(
+                    f"  WARNING: chip-replica veto: weight map could not be restored on HDU {cat['hdu']}; retaining STREAK."
+                )
+                continue
             data[ys, xs] = pixels & ~np.array(streak_bit, dtype=data.dtype)
-            _rewrite_hdu(fmask, pos, data, compress)
-            # The mask is already rewritten above, so a failed weight restore
-            # leaves STREAK cleared but the weight map still zeroed there.
-            # Only the regular weight map is tracked: with no weight map
-            # requested there is nothing to restore and nothing to report.
-            # Note a writer is only opened when its product was requested, so
-            # a weight map with no inverse-variance product leaves ivar_writer
-            # None. Looking up its positions anyway raised AttributeError,
-            # which escaped this function and left the mask and weight
-            # products permanently disagreeing.
-            needs_restore = bool(np.any(only))
-            needs_map_restore = needs_restore and fmap is not None
-            weight_restored = not needs_map_restore
-            if needs_map_restore:
-                wpos = map_writer.positions.get(cat["hdu"])
-                ipos = ivar_writer.positions.get(cat["hdu"]) if ivar_writer is not None else None
-                if (
-                    fivar is not None
-                    and ipos is not None
-                    and wpos is not None
-                    and wpos < len(fmap)
-                    and ipos < len(fivar)
-                ):
-                    weight = fmap[wpos].read()
-                    ivar = fivar[ipos].read()
-                    weight_restored = weight.shape == data.shape and np.shape(ivar) == data.shape
-                    if weight_restored:
-                        weight[ys[only], xs[only]] = ivar[ys[only], xs[only]]
-                        _rewrite_hdu(fmap, wpos, weight.astype(np.float32, copy=False), compress)
-            if needs_restore and fraw is not None and fivar is not None:
-                rpos = raw_writer.positions.get(cat["hdu"])
-                ipos = ivar_writer.positions.get(cat["hdu"])
-                if rpos is not None and ipos is not None and rpos < len(fraw) and ipos < len(fivar):
-                    raw = fraw[rpos].read()
-                    ivar = fivar[ipos].read()
-                    if raw.shape == np.shape(ivar):
-                        raw[ys[only], xs[only]] = ivar[ys[only], xs[only]]
-                        _rewrite_hdu(fraw, rpos, raw.astype(np.float32, copy=False), compress)
+            for handle, writer in ((fmap, map_writer), (fraw, raw_writer)):
+                if handle is None or not needs_restore:
+                    continue
+                wpos = writer.positions.get(cat["hdu"])
+                if wpos is None:
+                    raise OSError(f"missing output position for HDU {cat['hdu']}")
+                if writer is map_writer and per_hdu_confidence:
+                    product = build_weight_product(
+                        ivar,
+                        data.astype(np.uint32, copy=False),
+                        exclude_detected=exclude_detected,
+                        confidence_percentile=conf_cfg.get("normalize_percentile", 99.0),
+                    )
+                    output = product.confidence * (100.0 if conf_cfg.get("scale_to_100", False) else 1.0)
+                else:
+                    output = handle[wpos].read()
+                    output[ys[only], xs[only]] = ivar[ys[only], xs[only]]
+                _rewrite_hdu(handle, wpos, output.astype(writer.dtype or np.float32, copy=False))
+            _rewrite_hdu(fmask, pos, data)
             if find is not None:
                 spos = ind_writer.positions.get(cat["hdu"])
                 if spos is not None and spos < len(find):
                     ind = find[spos].read()
                     if ind.shape == cat["shape"]:
                         ind[ys, xs] = 0
-                        _rewrite_hdu(find, spos, ind.astype(np.uint8, copy=False), compress)
-            if not weight_restored:
-                print(
-                    f"  WARNING: chip-replica veto cleared STREAK on HDU {cat['hdu']} "
-                    f"but the weight map could not be restored there."
-                )
+                        _rewrite_hdu(find, spos, ind.astype(np.uint8, copy=False))
             n_cleared += 1
         if n_cleared:
             print(f"  Chip-replica veto cleared STREAK on {n_cleared} HDUs.")
+        return True
     except OSError as exc:
-        print(f"  WARNING: chip-replica veto failed: {exc}")
+        print(f"  ERROR: chip-replica veto failed: {exc}")
+        return False
     finally:
         for handle in handles:
             try:
@@ -817,13 +809,9 @@ def process_all_hdus(
         _veto_dead_ccd_hdus(flat_bad_masks, flat_meds, flat_cfg, flat_shapes=flat_shapes)
         print(f"  Flat medians ready for {len(flat_meds)} HDUs ({len(flat_bad_masks)} vetoed dead)")
     conf_scope = config.get("confidence_params", {}).get("normalize_scope", "per_hdu")
-    conf_samples: dict = {}
-    conf_p99: dict = {}
-    dark_cfg_global = config.get("dark_masking")
+    dark_cfg_global = config.get("dark_masking", {})
 
     def _merge_dark(i, hdu_sci, pre):
-        if dark_cfg_global is None:
-            return pre
         dark_hdu = None
         fd_local = None
         close_fd = False
@@ -860,7 +848,7 @@ def process_all_hdus(
                 return pre
             try:
                 dark_data = np.ascontiguousarray(dark_hdu.read().astype(np.float32, copy=False))
-                dark_hot = detect_bad_pixels(dark_data, dark_cfg_global, using_unit_flat=False)
+                dark_hot = detect_dark_hot_pixels(dark_data, dark_cfg_global)
                 sci_shape = tuple(hdu_sci.get_dims())
                 if dark_hot.shape != sci_shape:
                     print(f"    Skipping dark mask for HDU {i}: shape mismatch.")
@@ -927,19 +915,12 @@ def process_all_hdus(
                 print(f"Skipping HDU {i} due to processing errors.")
                 return
             (mask_data, inv_var_data, weight_map, confidence_map, sky_map, header_info) = result
-            if conf_scope == "per_exposure" and weight_map is not None:
-                wpos = weight_map[weight_map > 0]
-                if wpos.size > 0:
-                    step = max(1, wpos.size // 20000)
-                    conf_samples[i] = np.ascontiguousarray(wpos[::step])
-                    conf_p99[i] = float(np.percentile(conf_samples[i], 99.0))
             bad_mask, sat_mask, cr_mask, obj_mask, streak_mask, nodata_mask = extract_individual_masks(
                 header_info, mask_data
             )
             catalog = _streak_catalog(i, mask_data)
             if catalog is not None:
                 streak_catalogs.append(catalog)
-            process_success_count += 1
             hdu_name = hdu_name_raw
             hdu_header = hdu_header_raw
             if hdu_header is None:
@@ -970,6 +951,7 @@ def process_all_hdus(
                 sky_header=sky_header,
             )
             _flush_hdu_output(writers, hdu_output, i)
+            process_success_count += 1
         except Exception as e:
             import traceback
 
@@ -1012,9 +994,10 @@ def process_all_hdus(
                     _i, _res, _hdr, _nm = i, (None, None, None, None, None, None), None, f"HDU{i}"
                 _emit(_i, _res, _hdr, _nm)
                 _submit_next()
-    _clear_chip_replicas(streak_catalogs, writers, config)
-    if conf_scope == "per_exposure" and conf_samples:
-        _rescale_confidence_to_global(paths, writers, conf_samples, conf_p99, config)
+    if not _clear_chip_replicas(streak_catalogs, writers, config):
+        return 0
+    if conf_scope == "per_exposure" and not _rescale_confidence_to_global(paths, writers, config):
+        return 0
     return process_success_count
 
 
@@ -1038,7 +1021,6 @@ class _StreamingMapWriter:
         self.primary_header = primary_header
         self._opened = False
         self.positions: dict = {}
-        self._next_data_pos = 0
         self._lock = threading.Lock()
         self.compress = bool(compress)
         self.dtype = np.dtype(dtype) if dtype is not None else None
@@ -1058,30 +1040,22 @@ class _StreamingMapWriter:
         kwargs = {"compress": "RICE_1"} if self.compress else {}
         with self._lock:
             if not self._opened:
-                single_hdu0 = hdu_index == 0 and len(self.hdul_input) == 1
-                if single_hdu0:
-                    fitsio.write(self.out_path, data, header=header, clobber=True, **kwargs)
-                    self._opened = True
-                    self.positions[hdu_index] = 0
-                    self._next_data_pos = 1
-                    return
                 if hdu_index == 0:
                     primary_data = data
                     primary_header = header
                 else:
                     primary_data = None
                     primary_header = self.primary_header
-                    self._next_data_pos = 1
                 fitsio.write(self.out_path, primary_data, header=primary_header, clobber=True, **kwargs)
                 self._opened = True
                 if hdu_index == 0:
-                    self.positions[hdu_index] = 0
-                    self._next_data_pos = 1
+                    with fitsio.FITS(self.out_path, "r") as f_out:
+                        # Compressed primary images live at HDU 1, not HDU 0.
+                        self.positions[hdu_index] = len(f_out) - 1
                     return
             with fitsio.FITS(self.out_path, "rw") as f_out:
                 f_out.write(data, header=header, extname=extname, **kwargs)
-            self.positions[hdu_index] = self._next_data_pos
-            self._next_data_pos += 1
+                self.positions[hdu_index] = len(f_out) - 1
 
 
 def _wire_dtype(bitpix, *, is_mask: bool):
@@ -1092,7 +1066,7 @@ def _wire_dtype(bitpix, *, is_mask: bool):
         return np.uint16 if is_mask else np.float32
     if is_mask:
         return {8: np.uint8, 16: np.uint16, 32: np.uint32, 64: np.uint64}.get(b, np.uint16)
-    return {16: np.float16, 32: np.float32, 64: np.float64, -32: np.float32, -64: np.float64}.get(b, np.float32)
+    return {32: np.float32, 64: np.float64, -32: np.float32, -64: np.float64}.get(b, np.float32)
 
 
 def _make_output_writers(paths: dict, hdul_input, config: dict | None = None) -> dict:

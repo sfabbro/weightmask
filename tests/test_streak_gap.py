@@ -1,6 +1,7 @@
 """Regression tests for gap-tolerant streak-mask support selection."""
 
 import unittest
+from unittest.mock import patch
 
 import numpy as np
 
@@ -8,6 +9,31 @@ from weightmask.streaks import _largest_contiguous_run, _refine_trail_mask
 
 
 class TestGapTolerantStreakSupport(unittest.TestCase):
+    def test_narrow_refit_cannot_replace_a_coherent_trail_with_a_short_fragment(self):
+        rng = np.random.default_rng(0)
+        yy, xx = np.indices((200, 40))
+        strips = []
+        for rows, columns in ((slice(5, 195), slice(18, 23)), (slice(60, 100), slice(20, 21))):
+            sampled = rng.normal(0, 0.1, yy.shape).astype(np.float32)
+            sampled[rows, columns] += 20
+            strips.append({"sampled": sampled, "inside": np.ones(yy.shape, bool), "y_coords": yy, "x_coords": xx})
+        candidate = {"source": "houghpeaks", "clipped_endpoints": ((20, 0), (20, 199))}
+        config = {
+            "padding": 0,
+            "profile_percentile": 85,
+            "min_col_hit_fraction": 0.1,
+            "min_row_hit_fraction": 0.5,
+            "max_support_width": 8,
+        }
+        data = np.zeros(yy.shape, np.float32)
+        with (
+            patch("weightmask.streaks._sample_trail_strip", side_effect=strips),
+            patch("weightmask.streaks._refit_endpoints_from_strip", return_value=candidate["clipped_endpoints"]),
+        ):
+            mask, info = _refine_trail_mask(data, np.ones_like(data), candidate, config)
+        self.assertGreater(info["row_hit_fraction"], 0.9)
+        self.assertGreater(mask.sum(), 900)
+
     def test_short_gaps_do_not_truncate_one_validated_trail(self):
         support = np.zeros(2200, dtype=bool)
         support[100:1100] = True
@@ -34,6 +60,21 @@ class TestGapTolerantStreakSupport(unittest.TestCase):
         self.assertTrue(selected[10:50].all())
         self.assertTrue(selected[70:110].all())
         self.assertFalse(selected[58:62].any())
+
+    def test_minimum_run_length_also_rejects_a_single_short_run(self):
+        support = np.zeros(100, dtype=bool)
+        support[10:14] = True
+        self.assertFalse(_largest_contiguous_run(support, max_gap=24, min_run_length=8).any())
+
+    def test_masked_samples_do_not_split_support_or_become_detection(self):
+        support = np.zeros(160, dtype=bool)
+        support[10:50] = support[90:130] = True
+        valid = np.ones_like(support)
+        valid[50:90] = False
+        selected = _largest_contiguous_run(support, min_run_length=8, valid=valid)
+        self.assertTrue(selected[10:50].all())
+        self.assertTrue(selected[90:130].all())
+        self.assertFalse(selected[50:90].any())
 
     def test_zero_gap_retains_the_longest_run_only(self):
         support = np.zeros(100, dtype=bool)

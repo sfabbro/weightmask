@@ -37,7 +37,6 @@ class TestProcessHDU(unittest.TestCase):
         product.inverse_variance = np.ones((100, 100), dtype=np.float32)
         self.mock_product = product
 
-    @patch("weightmask.process.detect_bad_pixels")
     @patch("weightmask.process.detect_saturated_pixels")
     @patch("weightmask.process.estimate_background")
     @patch("weightmask.process.detect_cosmic_rays")
@@ -52,10 +51,8 @@ class TestProcessHDU(unittest.TestCase):
         mock_detect_crs,
         mock_est_bkg,
         mock_detect_sat,
-        mock_detect_bad,
     ):
         # Setup mocks to return minimal expected values
-        mock_detect_bad.return_value = np.zeros((100, 100), dtype=bool)
         mock_detect_sat.return_value = (
             65000.0,
             "mock",
@@ -163,25 +160,24 @@ class TestProcessHDU(unittest.TestCase):
         np.testing.assert_allclose(passed_flat, 0.25)
         self.assertIs(mock_process_image.call_args.kwargs["bad_mask"], precomputed)
 
-    @patch("weightmask.process.detect_bad_pixels")
     @patch("weightmask.process.detect_saturated_pixels")
     @patch("weightmask.process.estimate_background")
     @patch("weightmask.process.detect_cosmic_rays")
     @patch("weightmask.process.detect_objects")
     @patch("weightmask.process.calculate_inverse_variance")
     @patch("weightmask.process.generate_weight_and_confidence")
+    @patch("weightmask.process.compute_flat_bad_mask")
     def test_process_hdu_no_flat(
         self,
+        mock_compute_flat_bad,
         mock_generate_weight,
         mock_calc_inv_var,
         mock_detect_objs,
         mock_detect_crs,
         mock_est_bkg,
         mock_detect_sat,
-        mock_detect_bad,
     ):
-        # Setup mocks (tile-agnostic: return tile-shaped mask for any tile_size)
-        mock_detect_bad.side_effect = lambda data, cfg=None, using_unit=False: np.zeros(np.shape(data), dtype=bool)
+        # Setup mocks
         mock_detect_sat.return_value = (
             65000.0,
             "mock",
@@ -209,12 +205,9 @@ class TestProcessHDU(unittest.TestCase):
         self.assertIsNotNone(weight_map)
         self.assertIsNotNone(mask_data)
 
-        # Verify using_unit_flat flag logic
-        # When flat is None, using_unit_flat is True
-        mock_detect_bad.assert_called()
-        self.assertTrue(mock_detect_bad.call_args[0][2])  # The third argument to detect_bad_pixels is using_unit_flat
+        mock_compute_flat_bad.assert_not_called()
+        self.assertFalse(header_info["individual_masks"]["bad"].any())
 
-    @patch("weightmask.process.detect_bad_pixels")
     @patch("weightmask.process.detect_saturated_pixels")
     @patch("weightmask.process.estimate_background")
     @patch("weightmask.process.detect_cosmic_rays")
@@ -231,13 +224,11 @@ class TestProcessHDU(unittest.TestCase):
         mock_detect_crs,
         mock_est_bkg,
         mock_detect_sat,
-        mock_detect_bad,
     ):
         # Enable streak masking
         self.config["streak_masking"] = {"enable": True}
 
         # Setup mocks
-        mock_detect_bad.return_value = np.zeros((100, 100), dtype=bool)
         mock_detect_sat.return_value = (
             65000.0,
             "mock",
@@ -270,7 +261,6 @@ class TestProcessHDU(unittest.TestCase):
         mock_detect_streaks.assert_called_once()
         self.assertIsNotNone(weight_map)
 
-    @patch("weightmask.process.detect_bad_pixels")
     @patch("weightmask.process.detect_saturated_pixels")
     @patch("weightmask.process.estimate_background")
     @patch("weightmask.process.detect_cosmic_rays")
@@ -287,13 +277,11 @@ class TestProcessHDU(unittest.TestCase):
         mock_detect_crs,
         mock_est_bkg,
         mock_detect_sat,
-        mock_detect_bad,
     ):
         # Enable bleed trail masking
         self.config["saturation"]["mask_bleed_trails"] = True
 
         # Setup mocks
-        mock_detect_bad.return_value = np.zeros((100, 100), dtype=bool)
         mock_detect_sat.return_value = (
             65000.0,
             "mock",
@@ -326,7 +314,6 @@ class TestProcessHDU(unittest.TestCase):
         mock_grow_bleed.assert_called_once()
         self.assertIsNotNone(weight_map)
 
-    @patch("weightmask.process.detect_bad_pixels")
     @patch("weightmask.process.detect_saturated_pixels")
     @patch("weightmask.process.estimate_background")
     @patch("weightmask.process.detect_cosmic_rays")
@@ -341,10 +328,8 @@ class TestProcessHDU(unittest.TestCase):
         mock_detect_crs,
         mock_est_bkg,
         mock_detect_sat,
-        mock_detect_bad,
     ):
         # Setup mocks to return minimal expected values
-        mock_detect_bad.return_value = np.zeros((100, 100), dtype=bool)
         mock_detect_sat.return_value = (
             65000.0,
             "mock",

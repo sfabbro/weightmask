@@ -4,9 +4,15 @@ Example: Download and process CFHT MegaPrime image 2079618p from CADC
 """
 
 import os
+import shutil
 import subprocess
 import sys
+import tempfile
+import urllib.request
+from http.client import HTTPException
 from pathlib import Path
+
+from astropy.io import fits
 
 
 def download_cfht_image():
@@ -19,29 +25,29 @@ def download_cfht_image():
 
     print(f"Downloading {filename} from CADC...")
 
-    # Use curl or wget to download
+    temporary = None
     try:
-        subprocess.run(
-            ["curl", "-L", "-o", filename, url],
-            check=True,
-            capture_output=True,
-            text=True,
-        )
+        # ponytail: stdlib HTTP errors and atomic replacement preserve an existing image.
+        with urllib.request.urlopen(url, timeout=60) as response:
+            with tempfile.NamedTemporaryFile(dir=".", prefix=f".{filename}.", delete=False) as download:
+                temporary = Path(download.name)
+                shutil.copyfileobj(response, download)
+        with fits.open(temporary) as hdul:
+            hdul.verify("exception")
+            size = temporary.stat().st_size
+            for hdu in hdul:
+                info = hdu.fileinfo()
+                if info["datLoc"] + info["datSpan"] > size:
+                    raise OSError("Downloaded FITS data are truncated")
+        os.replace(temporary, filename)
         print(f"Downloaded {filename}")
         return filename
-    except subprocess.CalledProcessError:
-        try:
-            subprocess.run(
-                ["wget", "-O", filename, url],
-                check=True,
-                capture_output=True,
-                text=True,
-            )
-            print(f"Downloaded {filename}")
-            return filename
-        except subprocess.CalledProcessError as e:
-            print(f"ERROR: Failed to download {filename}: {e}")
-            return None
+    except (OSError, HTTPException, ValueError, fits.verify.VerifyError) as e:
+        print(f"ERROR: Failed to download {filename}: {e}")
+        return None
+    finally:
+        if temporary is not None:
+            temporary.unlink(missing_ok=True)
 
 
 def run_weightmask(input_file):

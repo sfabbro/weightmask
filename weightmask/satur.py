@@ -1,5 +1,3 @@
-import warnings
-
 import numpy as np
 import scipy.ndimage
 from scipy.signal import find_peaks
@@ -237,8 +235,8 @@ def _choose_saturation_level(hist_level, plateau_level, effective_full_scale, ad
     return float(effective_full_scale), "default guarded fallback"
 
 
-def _saturation_for_region(sci_data, sci_hdr, config, header_keyword, effective_full_scale, advisory, finite_data=None):
-    """Estimate one saturation level for a data region (full frame or amp half)."""
+def _saturation_for_region(sci_data, config, effective_full_scale, advisory, finite_data=None):
+    """Estimate the full-frame saturation level."""
     hist_params = config.get("histogram_params", {})
     hist_level = estimate_saturation_robust_clump(
         sci_data,
@@ -252,7 +250,7 @@ def _saturation_for_region(sci_data, sci_hdr, config, header_keyword, effective_
 
 def detect_saturated_pixels(sci_data, sci_hdr, config):
     """
-    Detect saturated pixels in the science data using the configured method.
+    Detect saturated pixels using the guarded histogram cascade.
 
     Args:
         sci_data (ndarray): Science image data array (float32 recommended).
@@ -267,22 +265,9 @@ def detect_saturated_pixels(sci_data, sci_hdr, config):
                'header advisory fallback', or 'default guarded fallback').
                sat_mask_bool (ndarray): Boolean mask where True indicates saturated pixels.
     """
-    saturation_level = None
-    sat_method_used = "none"
-
-    # Ensure data is float for calculations
-    if not np.issubdtype(sci_data.dtype, np.floating):
-        warnings.warn(
-            "Science data is not float, casting to float32 for saturation check.",
-            UserWarning,
-        )
-        sci_data = sci_data.astype(np.float32)
-
-    method = config.get("method", "histogram")
+    if "method" in config:
+        raise ValueError("saturation.method is unsupported; saturation uses the guarded histogram cascade")
     header_keyword = config.get("keyword")
-
-    if method not in {"histogram", "header"}:
-        warnings.warn(f"Unknown saturation method '{method}', using guarded histogram logic.", RuntimeWarning)
 
     print("Attempting guarded histogram-based saturation detection...")
     finite_data = sci_data[np.isfinite(sci_data)]
@@ -290,7 +275,7 @@ def detect_saturated_pixels(sci_data, sci_hdr, config):
         sci_data, sci_hdr, config, header_keyword, finite_data=finite_data
     )
     saturation_level, sat_method_used = _saturation_for_region(
-        sci_data, sci_hdr, config, header_keyword, effective_full_scale, advisory, finite_data=finite_data
+        sci_data, config, effective_full_scale, advisory, finite_data=finite_data
     )
     if sat_method_used == "default guarded fallback":
         print(f"  WARNING: Falling back to guarded full-scale saturation level: {saturation_level:.1f} ADU.")

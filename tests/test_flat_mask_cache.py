@@ -152,5 +152,15 @@ class TestFlatBadMaskCache(unittest.TestCase):
         np.testing.assert_array_equal(mask, bad.compute_flat_bad_mask(flat, self.cfg, 1024))
 
 
+class TestEffectiveTileSize(unittest.TestCase):
+    def test_requested_size_caps_the_tiles(self):
+        from weightmask.process import _effective_tile_size
+
+        for size in (16, 128, 1024):
+            self.assertEqual(_effective_tile_size(size, (4644, 2112)), size)
+        self.assertEqual(_effective_tile_size(1024, (32, 32)), 16)
+        self.assertEqual(_effective_tile_size(1024, (1, 7)), 1)
+
+
 if __name__ == "__main__":
     unittest.main()

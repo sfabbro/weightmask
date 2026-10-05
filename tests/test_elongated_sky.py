@@ -41,7 +41,7 @@ class TestElongatedSkyHandoff(unittest.TestCase):
         bar = np.zeros(shape, dtype=bool)
         bar[58:62, 20:100] = True
         self.assertGreater(int(np.count_nonzero(seen[-1] & bar)), 0)
-        self.assertEqual(int(np.count_nonzero(mask & int(QualityBit.DETECTED) & bar)), 0)
+        self.assertEqual(int(np.count_nonzero(((mask & int(QualityBit.DETECTED)) != 0) & bar)), 0)
 
 
 if __name__ == "__main__":

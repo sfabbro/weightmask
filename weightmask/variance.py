@@ -7,6 +7,8 @@ from scipy.stats import iqr, linregress
 from .bad import _parse_section
 from .utils import rms_valid_mask
 
+_OBSOLETE_VARIANCE_KEYS = frozenset({"unbias_variance", "flat_fielded_poisson", "readnoise_keyword"})
+
 
 def _calculate_empirical_noise_params(sci_data, obj_mask, patch_size, robust_sigma_clip):
     """
@@ -157,23 +159,34 @@ def amplifier_gain_map(header, shape, fallback):
         gain_b = float(_value("GAINB"))
     except (TypeError, ValueError):
         return None
-    if not np.isfinite(gain_a) or not np.isfinite(gain_b):
+    if not np.isfinite(gain_a) or not np.isfinite(gain_b) or gain_a <= 0 or gain_b <= 0:
         return None
 
+    h, w = shape
     sec_a = sec_b = None
     for prefix in ("DETSEC", "DATASEC", "AMPSEC"):
         sec_a = _parse_section(_value(prefix + "A"))
         sec_b = _parse_section(_value(prefix + "B"))
-        if sec_a is not None and sec_b is not None:
+        if sec_a is None or sec_b is None:
+            continue
+        # DETSEC can use mosaic coordinates. Only an in-image, disjoint pair
+        # identifies these HDU pixels; otherwise try the local section cards.
+        in_image = all(0 <= r0 < r1 <= h and 0 <= c0 < c1 <= w for r0, r1, c0, c1 in (sec_a, sec_b))
+        overlap = max(sec_a[0], sec_b[0]) < min(sec_a[1], sec_b[1]) and max(sec_a[2], sec_b[2]) < min(
+            sec_a[3], sec_b[3]
+        )
+        if in_image and not overlap:
             break
+        sec_a = sec_b = None
     if sec_a is None or sec_b is None:
         return None
     try:
         base = float(fallback)
     except (TypeError, ValueError):
         base = gain_a
+    if not np.isfinite(base) or base <= 0:
+        base = gain_a
     gain = np.full(shape, base, dtype=np.float32)
-    h, w = shape
     for section, value in ((sec_a, gain_a), (sec_b, gain_b)):
         r0, r1, c0, c1 = section
         r0, r1 = max(int(r0), 0), min(int(r1), h)
@@ -200,36 +213,25 @@ def _mask_unmeasured_rms(inv_var, bkg_rms_map):
     return out
 
 
-def _calculate_inverse_variance_theoretical(
-    sky_map, flat_map, gain, read_noise_e, epsilon, flat_rel_noise=0.0, flat_fielded_poisson=False
-):
-    """Elixir-style F² coadd weight, in ADU⁻².
+def _calculate_inverse_variance_theoretical(sky_map, flat_map, gain, read_noise_e, epsilon, flat_rel_noise=0.0):
+    """Flat-fielded Poisson and read-noise inverse variance, in ADU⁻².
 
-    Frozen 0.1 formula (sky ``S`` in ADU, flat ``F``, gain ``g`` in e⁻/ADU,
+    For sky ``S`` in ADU, flat ``F``, gain ``g`` in e⁻/ADU,
     read noise ``r`` in e⁻)::
 
-        ivar = g² F² / (S g + r²)
-
-    At ``F = 1`` this is Poisson + read noise. At ``F ≠ 1`` it is a sensitivity
-    weight (``F²`` in the numerator, Poisson term from the flattened sky), not
-    the flat-fielded identity ``g² F² / (S g F + r²)``.
+        ivar = g² F² / (S g F + r²)
 
     ``flat_rel_noise`` is an optional extra term ``(S g · rel)²`` in the
     electron denominator, with ``rel`` boosted where the flat is below its
     median. Zero disables it.
 
-    ``flat_fielded_poisson`` switches the sky term to ``S g F``, which is the
-    Poisson identity after the image has been divided by ``F``. Default off:
-    the 0.1 contract stays ``S g``.
     """
     valid_flat_mask = flat_map > epsilon
     safe_flat = np.where(valid_flat_mask, flat_map, epsilon)
     safe_sky = np.maximum(sky_map, 0.0)
     gain = np.asarray(gain, dtype=np.float64)
 
-    # Frozen 0.1: ivar = g² F² / (S g + RN²). Exact Poisson+RN at F=1.
-    # Opt-in: denominator sky term is S g F for an already flat-fielded image.
-    poisson = safe_sky * gain * (safe_flat if flat_fielded_poisson else 1.0)
+    poisson = safe_sky * gain * safe_flat
     denom = poisson + read_noise_e**2
     if flat_rel_noise > 0:
         med_flat = float(np.median(safe_flat[valid_flat_mask])) if np.any(valid_flat_mask) else 1.0
@@ -283,47 +285,6 @@ def _rescale_variance_robust(inv_variance, sci_data, sky_map, obj_mask, epsilon)
     return inv_variance
 
 
-def _unbias_variance(inv_variance, sci_data, sky_map, gain, epsilon):
-    """
-    Internal: Remove signal-dependent Poisson noise to get background-only variance.
-    Mimics LSST remove_signal_from_variance.
-    """
-    if inv_variance is None or gain <= 0:
-        if gain <= 0:
-            print(f"  WARNING: gain is invalid ({gain}); skipping variance unbiasing.")
-        return inv_variance
-
-    # Signal is (sci_data - sky_map)
-    signal = np.maximum(sci_data - sky_map, 0.0)
-
-    # Work in variance space
-    with np.errstate(divide="ignore", invalid="ignore"):
-        valid = (inv_variance > epsilon) & np.isfinite(inv_variance)
-        var_total = np.where(valid, 1.0 / inv_variance, np.inf)
-        var_bg = var_total - (signal / gain)
-
-        # If var_bg is positive, unbiasing succeeded.
-        # If var_bg <= epsilon, var_total was already background-only; retain var_total.
-        n_negative = int(np.count_nonzero(valid & (var_bg <= epsilon)))
-        if n_negative:
-            frac = n_negative / max(int(np.count_nonzero(valid)), 1)
-            print(
-                f"    WARNING: variance unbiasing negative on {n_negative} pixels ({frac:.1%}); retained total variance."
-            )
-        effective_var = np.where(var_bg > epsilon, var_bg, var_total)
-        new_inv_variance = np.where(
-            valid & np.isfinite(effective_var) & (effective_var > 0),
-            1.0 / effective_var,
-            0.0,
-        )
-
-    n_nonfinite = int(np.count_nonzero(~np.isfinite(new_inv_variance)))
-    if n_nonfinite:
-        print(f"    WARNING: {n_nonfinite} non-finite inverse-variance pixels set to 0.")
-    new_inv_variance[~np.isfinite(new_inv_variance)] = 0.0
-    return new_inv_variance.astype(np.float32)
-
-
 def _calculate_inverse_variance_rms(bkg_rms_map, epsilon):
     """
     Internal: Calculate inverse variance based on SEP's background RMS map.
@@ -343,10 +304,6 @@ def _calculate_inverse_variance_rms(bkg_rms_map, epsilon):
     return inv_variance.astype(np.float32)
 
 
-def _poisson_flag(variance_cfg):
-    return bool(variance_cfg.get("flat_fielded_poisson", False))
-
-
 def _handle_empirical_fit(
     variance_cfg, sky_map, flat_map, sci_data, obj_mask, gain, read_noise_e, epsilon, bkg_rms_map=None
 ):
@@ -355,7 +312,7 @@ def _handle_empirical_fit(
             "Empirical fit method requires science data and object mask.",
             RuntimeWarning,
         )
-        return None, gain
+        return None
 
     patch_size = variance_cfg.get("empirical_patch_size", 128)
     clip_sigma = variance_cfg.get("empirical_clip_sigma", 3.0)
@@ -364,27 +321,17 @@ def _handle_empirical_fit(
 
     if emp_gain is None or emp_rn_e is None:
         print("  WARNING: Empirical fit failed. Falling back to theoretical method with default/header values.")
-        inv_var = _calculate_inverse_variance_theoretical(
-            sky_map,
-            flat_map,
-            gain,
-            read_noise_e,
-            epsilon,
-            variance_cfg.get("flat_rel_noise", 0.0),
-            flat_fielded_poisson=_poisson_flag(variance_cfg),
-        )
     else:
-        inv_var = _calculate_inverse_variance_theoretical(
-            sky_map,
-            flat_map,
-            emp_gain,
-            emp_rn_e,
-            epsilon,
-            variance_cfg.get("flat_rel_noise", 0.0),
-            flat_fielded_poisson=_poisson_flag(variance_cfg),
-        )
-        gain = emp_gain  # For unbiasing below
-    return _mask_unmeasured_rms(inv_var, bkg_rms_map), gain
+        gain, read_noise_e = emp_gain, emp_rn_e
+    inv_var = _calculate_inverse_variance_theoretical(
+        sky_map,
+        flat_map,
+        gain,
+        read_noise_e,
+        epsilon,
+        variance_cfg.get("flat_rel_noise", 0.0),
+    )
+    return _mask_unmeasured_rms(inv_var, bkg_rms_map)
 
 
 def _handle_theoretical(variance_cfg, sky_map, flat_map, gain, read_noise_e, epsilon, bkg_rms_map=None):
@@ -392,31 +339,8 @@ def _handle_theoretical(variance_cfg, sky_map, flat_map, gain, read_noise_e, eps
         warnings.warn("Theoretical method requires flat and sky maps.", RuntimeWarning)
         return None
     rel = variance_cfg.get("flat_rel_noise", 0.0)
-    inv_var = _calculate_inverse_variance_theoretical(
-        sky_map,
-        flat_map,
-        gain,
-        read_noise_e,
-        epsilon,
-        rel,
-        flat_fielded_poisson=_poisson_flag(variance_cfg),
-    )
+    inv_var = _calculate_inverse_variance_theoretical(sky_map, flat_map, gain, read_noise_e, epsilon, rel)
     return _mask_unmeasured_rms(inv_var, bkg_rms_map)
-
-
-def _apply_variance_post_processing(inv_var, variance_cfg, sci_data, sky_map, obj_mask, gain, epsilon):
-    if inv_var is None:
-        return None
-
-    # 1. Option to rescale variance to match observed noise (SNR=1 check)
-    if variance_cfg.get("rescale_variance", False) and sci_data is not None and obj_mask is not None:
-        inv_var = _rescale_variance_robust(inv_var, sci_data, sky_map, obj_mask, epsilon)
-
-    # 2. Option to unbias variance (remove Poisson contribution of objects)
-    if variance_cfg.get("unbias_variance", False) and sci_data is not None:
-        inv_var = _unbias_variance(inv_var, sci_data, sky_map, gain, epsilon)
-
-    return inv_var
 
 
 def calculate_inverse_variance(variance_cfg, sky_map, flat_map, bkg_rms_map, sci_data=None, obj_mask=None):
@@ -434,6 +358,11 @@ def calculate_inverse_variance(variance_cfg, sky_map, flat_map, bkg_rms_map, sci
     Returns:
         ndarray or None: Inverse variance map, or None if method is invalid or prerequisites missing.
     """
+    obsolete = sorted(_OBSOLETE_VARIANCE_KEYS & variance_cfg.keys())
+    if obsolete:
+        raise ValueError(
+            "Unsupported variance keys: " + ", ".join(obsolete) + "; variance is flat-fielded and background-only"
+        )
     method = variance_cfg.get("method", "theoretical").lower()
     epsilon = variance_cfg.get("epsilon", 1e-9)
     print(f"  Calculating Inverse Variance using method: '{method}'")
@@ -444,7 +373,7 @@ def calculate_inverse_variance(variance_cfg, sky_map, flat_map, bkg_rms_map, sci
 
     inv_var = None
     if method == "empirical_fit":
-        inv_var, gain = _handle_empirical_fit(
+        inv_var = _handle_empirical_fit(
             variance_cfg,
             sky_map,
             flat_map,
@@ -465,4 +394,6 @@ def calculate_inverse_variance(variance_cfg, sky_map, flat_map, bkg_rms_map, sci
         warnings.warn(f"Invalid variance calculation method '{method}'.", RuntimeWarning)
         return None
 
-    return _apply_variance_post_processing(inv_var, variance_cfg, sci_data, sky_map, obj_mask, gain, epsilon)
+    if variance_cfg.get("rescale_variance", False):
+        inv_var = _rescale_variance_robust(inv_var, sci_data, sky_map, obj_mask, epsilon)
+    return inv_var

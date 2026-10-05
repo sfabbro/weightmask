@@ -13,7 +13,8 @@ Dataset layout:
 
 Usage:
   pixi run python benchmarks/perf_megacam.py --resolve-only
-  pixi run python benchmarks/perf_megacam.py --all-hdus --workers 1
+  pixi run python benchmarks/perf_megacam.py --workers 1
+  pixi run python benchmarks/perf_megacam.py --exposure-file /path/to/science.fits.fz --hdu-limit 2 --no-cprofile
 """
 
 from __future__ import annotations
@@ -24,7 +25,6 @@ import io
 import json
 import platform
 import pstats
-import shutil
 import sys
 import threading
 import time
@@ -40,9 +40,7 @@ PERF_JSON = OUT_DIR / "megacam_perf.json"
 PERF_MD = OUT_DIR / "megacam_perf.md"
 CPROFILE_TXT = OUT_DIR / "cprofile_hdu.txt"
 CONFIG_PATH = ROOT / "weightmask.yml"
-FLAT_PID = "ivo://cadc.nrc.ca/CFHT?08Bm01.flat.r.36.02/08Bm01.flat.r.36.02"
 FLAT_FILE = PERF_DATA_DIR / "flat_08Bm01_r.fits.fz"
-FLATS_JSON = OUT_DIR / "flats.json"
 
 BASE_WHERE = (
     "Observation.collection = 'CFHT' AND Observation.instrument_name = 'MegaPrime' AND Observation.type = 'OBJECT'"
@@ -68,9 +66,6 @@ STAGE_KEYS = [
     "sky_mesh",
     "hdu_total",
 ]
-# RUSAGE_SELF counters are process-cumulative; successive _process_one_exposure
-# calls in one process must report deltas, not running totals.
-_LAST_CPU_S: float | None = None
 
 
 def _safe_id(publisher_id: str) -> str:
@@ -84,71 +79,23 @@ def _safe_id(publisher_id: str) -> str:
 
 
 def _quarantine_invalid(path: Path) -> None:
-    invalid = Path(str(path) + ".invalid")
-    try:
-        if invalid.exists():
-            invalid.unlink()
-        shutil.move(str(path), str(invalid))
-        print(f"  Moved invalid file to {invalid}")
-    except Exception as e:  # pragma: no cover - filesystem race
-        print(f"  Warning: failed to quarantine invalid file {path}: {e}")
+    from tests.benchmarks.download_data import _quarantine_invalid_file
+
+    _quarantine_invalid_file(path)
 
 
 def _download_http(url: str, out_path: Path) -> bool:
-    if out_path.exists():
-        print(f"  Already exists: {out_path}")
-        return True
-    print(f"  Downloading from {url} ...")
-    try:
-        import ssl
-        from urllib.request import urlopen
+    from tests.benchmarks.download_data import download_http
 
-        out_path.parent.mkdir(parents=True, exist_ok=True)
-        ctx = ssl._create_unverified_context()
-        with urlopen(url, context=ctx) as resp, open(out_path, "wb") as fh:
-            shutil.copyfileobj(resp, fh, length=1024 * 1024)
-        print(f"  Saved to {out_path}")
-        return True
-    except Exception as e:
-        print(f"  HTTP download failed: {e}")
-        try:
-            if out_path.exists():
-                out_path.unlink()
-        except OSError:
-            pass
-        return False
+    out_path.parent.mkdir(parents=True, exist_ok=True)
+    return download_http(url, out_path)
 
 
 def _validate_megacam(path: Path) -> tuple[bool, str | None]:
     """Reuse the manifest INSTRUME/DETECTOR check via validate_case_file."""
-    try:
-        from tests.benchmarks.download_data import validate_case_file
+    from tests.benchmarks.download_data import validate_case_file
 
-        case = {"expected_instrument": "MegaPrime", "expected_detector": "MegaCam"}
-        return validate_case_file(case, str(path))
-    except ImportError:
-        pass
-    except Exception as e:
-        return False, str(e)
-    try:
-        import fitsio
-
-        found_inst = found_det = False
-        with fitsio.FITS(str(path)) as hdul:
-            for hdu in hdul:
-                try:
-                    hdr = hdu.read_header()
-                except Exception:
-                    continue
-                if "INSTRUME" in hdr and "megaprime" in str(hdr["INSTRUME"]).lower():
-                    found_inst = True
-                if "DETECTOR" in hdr and "megacam" in str(hdr["DETECTOR"]).lower():
-                    found_det = True
-        if found_inst and found_det:
-            return True, None
-        return False, f"inline check failed inst={found_inst} det={found_det}"
-    except Exception as e:
-        return False, str(e)
+    return validate_case_file({"expected_instrument": "MegaPrime", "expected_detector": "MegaCam"}, str(path))
 
 
 def _exptime_of_file(path: Path) -> float | None:
@@ -551,6 +498,13 @@ def _process_one_exposure(
 
     hdul_flat = fitsio.FITS(str(flat), "r") if flat else None
     records, orig, proc_mod, mef_mod = _install_timing_collector()
+    try:
+        import resource as _resource
+
+        cpu_start = _resource.getrusage(_resource.RUSAGE_SELF)
+        cpu_start_s = float(cpu_start.ru_utime + cpu_start.ru_stime)
+    except Exception:
+        cpu_start_s = None
     t0 = time.perf_counter()
     try:
         n_ok = mef.process_all_hdus(
@@ -573,9 +527,7 @@ def _process_one_exposure(
             # Linux ru_maxrss is KiB; macOS reports bytes.
             _rss_kb = float(_ru.ru_maxrss) / 1024.0 if sys.platform == "darwin" else float(_ru.ru_maxrss)
             _cpu_now = float(_ru.ru_utime + _ru.ru_stime)
-            global _LAST_CPU_S
-            _cpu_s = _cpu_now - _LAST_CPU_S if _LAST_CPU_S is not None else _cpu_now
-            _LAST_CPU_S = _cpu_now
+            _cpu_s = _cpu_now - cpu_start_s if cpu_start_s is not None else 0.0
         except Exception:
             _rss_kb, _cpu_s = 0.0, 0.0
         _uninstall_timing_collector(orig, proc_mod, mef_mod)
@@ -618,6 +570,7 @@ def _process_one_exposure(
         "mpix": float(mpix),
         "stage_totals": stage_totals,
         "peak_rss_kb": float(_rss_kb),
+        "rss_basis": "process-lifetime-high-water",
         "cpu_s": float(_cpu_s),
     }
 
@@ -653,7 +606,8 @@ def _aggregate_report(per_exp: list[dict], total_wall: float, *, extra_header: d
     if n_resumed:
         warnings.append(
             f"{n_resumed}/{len(per_exp)} exposures were resumed from checkpoint: "
-            f"total_wall_s covers only this process, so throughput is not reported"
+            f"total_wall_s covers only this process, so throughput is not reported; "
+            f"checkpoint source/config/input identity is unverified, so resumed stage rows are historical evidence"
         )
     if not n_resumed and total_wall > 0 and hdu_wall > 1.5 * total_wall:
         warnings.append(
@@ -667,7 +621,7 @@ def _aggregate_report(per_exp: list[dict], total_wall: float, *, extra_header: d
         "arch": platform.machine(),
         "platform": platform.platform(),
         "cpu_count": _os.cpu_count(),
-        "config": "weightmask.yml (unmodified)",
+        "config": "weightmask.yml",
         "n_exposures": len(per_exp),
         "n_hdus": n_hdus,
     }
@@ -683,7 +637,7 @@ def _aggregate_report(per_exp: list[dict], total_wall: float, *, extra_header: d
         "warnings": warnings,
         "stages": stages,
         "per_exposure": per_exp,
-        "cpu_basis": "delta-v2",
+        "cpu_basis": "delta-v3-timed-region",
     }
 
 
@@ -758,7 +712,7 @@ def _run_cprofile_first_hdu(
         mid = hdus[len(hdus) // 2]
         import numpy as np
 
-        sci = np.ascontiguousarray(hdul[mid].read().astype(np.float32))
+        sci = np.ascontiguousarray(hdul[mid].read())
         hdr = hdul[mid].read_header()
         flat_data = np.ascontiguousarray(hdul_flat[mid].read().astype(np.float32)) if hdul_flat is not None else None
     finally:
@@ -790,9 +744,8 @@ def _compare_products(
     compared because the FITS headers embed provenance cards that are stable
     but not byte-order stable.
     """
-    import numpy as np
-
     import fitsio
+    import numpy as np
 
     report: dict = {"file_count": 0, "identical": 0, "different": 0, "missing": [], "details": []}
     for path in sorted(Path(this_dir).glob("*")):
@@ -852,7 +805,6 @@ def _compare_products(
 def main(argv=None) -> int:
     ap = argparse.ArgumentParser(description="MegaCam 10-exposure perf harness.")
     ap.add_argument("--resolve-only", action="store_true")
-    ap.add_argument("--all-hdus", action="store_true")
     ap.add_argument("--workers", type=int, default=None)
     ap.add_argument("--force-resolve", action="store_true")
     ap.add_argument(
@@ -899,6 +851,12 @@ def main(argv=None) -> int:
         help="Comma-separated safe_id allowlist applied after resolve; empty means all resolved.",
     )
     ap.add_argument(
+        "--exposure-file",
+        action="append",
+        default=[],
+        help="Profile this local MegaCam FITS file; repeatable, bypasses resolved exposure cache.",
+    )
+    ap.add_argument(
         "--config-set",
         action="append",
         default=[],
@@ -906,6 +864,10 @@ def main(argv=None) -> int:
         help="Repeatable config override (values YAML-parsed, deep-merged over weightmask.yml).",
     )
     args = ap.parse_args(argv)
+    if args.workers is not None and args.workers < 1:
+        ap.error("--workers must be positive")
+    if args.hdu_limit < 0:
+        ap.error("--hdu-limit must be nonnegative")
     global OUT_DIR
     if args.out_dir:
         OUT_DIR = Path(args.out_dir)
@@ -915,7 +877,32 @@ def main(argv=None) -> int:
     compare_dir = Path(args.compare_baseline) if args.compare_baseline else None
     if compare_dir is not None and not compare_dir.is_dir():
         raise SystemExit(f"--compare-baseline directory not found: {compare_dir}")
-    records = resolve_exposures(force=args.force_resolve)
+    if compare_dir is not None and compare_dir.resolve() == OUT_DIR.resolve():
+        raise SystemExit("--compare-baseline and --out-dir cannot be the same directory")
+    if args.exposure_file:
+        from weightmask.utils import paths_alias
+
+        if args.force_resolve:
+            ap.error("--exposure-file and --force-resolve cannot be combined")
+        records = []
+        for value in args.exposure_file:
+            path = Path(value).resolve()
+            if any(paths_alias(path, rec["file"]) for rec in records):
+                ap.error(f"duplicate --exposure-file: {path}")
+            valid, reason = _validate_megacam(path)
+            if not valid:
+                ap.error(f"--exposure-file validation failed for {path}: {reason}")
+            records.append(
+                {
+                    "publisherID": None,
+                    "safe_id": path.name.removesuffix(".fz").removesuffix(".fits"),
+                    "file": str(path),
+                    "exptime": _exptime_of_file(path),
+                    "size_bytes": path.stat().st_size,
+                }
+            )
+    else:
+        records = resolve_exposures(force=args.force_resolve)
     config_overrides = _parse_config_sets(args.config_set)
     if config_overrides:
         print(f"Config overrides: {json.dumps(config_overrides, sort_keys=True)}")
@@ -951,9 +938,9 @@ def main(argv=None) -> int:
         valid, reason = validate_case_file({"expected_instrument": "MegaPrime", "expected_detector": "MegaCam"}, flat)
         if not valid:
             raise SystemExit(f"--flat validation failed: {reason}")
-        FLATS_JSON.write_text(
-            json.dumps({"flat_publisherID": FLAT_PID, "file": str(Path(flat).relative_to(ROOT))}, indent=2) + "\n"
-        )
+        import os
+
+        (OUT_DIR / "flats.json").write_text(json.dumps({"file": os.path.relpath(flat, ROOT)}, indent=2) + "\n")
     # (a) sequential pass over all resolved exposures x all HDUs.
     variant = f"with-flats ({flat})" if flat else "no-flat"
     print(f"Running sequential {variant} pass (workers=1) over {len(records)} exposures x all HDUs...")
@@ -1017,6 +1004,7 @@ def main(argv=None) -> int:
                 first,
                 eff,
                 out_suffix=f".sweep{w}",
+                flat=flat,
                 config_overrides=config_overrides,
                 hdu_limit=args.hdu_limit,
                 all_products=args.all_products,
@@ -1033,13 +1021,16 @@ def main(argv=None) -> int:
             first, flat=flat, out_txt=cprofile_txt, config_overrides=config_overrides, hdu_limit=args.hdu_limit
         )
 
-    extra = {"variant": ("with-flats" if flat else "no-flat"), "tag": args.tag or "baseline"}
+    extra = {
+        "variant": ("with-flats" if flat else "no-flat"),
+        "tag": args.tag or "baseline",
+        "config_overrides": config_overrides,
+    }
     if flat:
-        extra["flat_publisherID"] = FLAT_PID
         extra["flat_file"] = str(Path(flat).relative_to(ROOT)) if str(flat).startswith(str(ROOT)) else str(flat)
     report = _aggregate_report(per_exp, total_wall, extra_header=extra)
     report["sweep_workers"] = {k: float(v) for k, v in sweep.items()}
-    exit_code = 0
+    exit_code = int(any(e["nhdus_processed"] != e["nhdus_expected"] for e in per_exp))
     if compare_dir is not None:
         print(f"--- comparing products against baseline {compare_dir} ---")
         comparison = _compare_products(
@@ -1050,11 +1041,8 @@ def main(argv=None) -> int:
             print(f"  {detail['file']}: {'; '.join(detail['problems'][:3])}")
         if comparison["missing"]:
             print(f"  missing in baseline: {comparison['missing'][:5]}")
-        if comparison["different"] or comparison["missing"]:
-            print(
-                f"BASELINE MISMATCH: {comparison['different']} differing / "
-                f"{comparison['file_count']} product files"
-            )
+        if not comparison["file_count"] or comparison["different"] or comparison["missing"]:
+            print(f"BASELINE MISMATCH: {comparison['different']} differing / {comparison['file_count']} product files")
             exit_code = 1
         else:
             print(f"Baseline OK: {comparison['identical']}/{comparison['file_count']} product files identical.")
@@ -1084,6 +1072,8 @@ def main(argv=None) -> int:
                 )
             )
         wwall = time.perf_counter() - t1
+        if any(e["nhdus_processed"] != e["nhdus_expected"] for e in wpass):
+            exit_code = 1
         print(f"Extra pass wall: {wwall:.1f}s")
         wstages: dict[str, float] = {}
         for e in wpass:
@@ -1092,7 +1082,8 @@ def main(argv=None) -> int:
         wnhdus = sum(int(e.get("nhdus_processed", 0)) for e in wpass)
         sidecar = {
             "tag": args.tag or "baseline",
-            "cpu_basis": "delta-v2",
+            "cpu_basis": "delta-v3-timed-region",
+            "rss_basis": "process-lifetime-high-water",
             "extra_pass_wall_s": float(wwall),
             "mpix_total": float(sum(float(e.get("mpix", 0.0)) for e in wpass)),
             "nhdus": int(wnhdus),
@@ -1102,7 +1093,7 @@ def main(argv=None) -> int:
                 k: {
                     "total_s": float(v),
                     "mean_per_hdu_s": float(v / wnhdus) if wnhdus else 0.0,
-                    "share": float(v / max(sum(wstages.values()), 1e-9)),
+                    "share": float(v / max(wstages.get("hdu_total", sum(wstages.values())), 1e-9)),
                 }
                 for k, v in wstages.items()
             },

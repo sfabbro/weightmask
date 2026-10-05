@@ -8,12 +8,12 @@ import numpy as np
 
 from . import MASK_BITS, MASK_DTYPE
 from .background import estimate_background
-from .bad import compute_flat_bad_mask, detect_bad_pixels, detect_non_illuminated
+from .bad import compute_flat_bad_mask, detect_non_illuminated
 from .cosmics import detect_cosmic_rays
 from .objects import detect_objects
 from .satur import detect_saturated_pixels, grow_bleed_trails
-from .streaks import detect_streaks
-from .variance import amplifier_gain_map, calculate_inverse_variance
+from .streaks import _resolve_streak_mode, detect_streaks
+from .variance import _OBSOLETE_VARIANCE_KEYS, amplifier_gain_map, calculate_inverse_variance
 from .weight import generate_weight_and_confidence
 
 
@@ -29,6 +29,9 @@ def _timed(store: dict, key: str):
 
 def validate_config(config: dict) -> bool:
     """Validate configuration parameters."""
+    if not isinstance(config, dict):
+        print("ERROR: Configuration must be a dictionary.")
+        return False
     # These sections all have defaults, so a config omitting them still validates;
     # they are flagged for visibility, not enforced.
     optional_sections = [
@@ -47,9 +50,9 @@ def validate_config(config: dict) -> bool:
         if section not in config:
             print(f"WARNING: Configuration section '{section}' missing; defaults will be used.")
 
-    extra_sections = sorted(set(config) - allowed_sections)
+    extra_sections = sorted(set(config) - allowed_sections, key=str)
     if extra_sections:
-        print(f"ERROR: Unsupported top-level configuration sections: {', '.join(extra_sections)}")
+        print(f"ERROR: Unsupported top-level configuration sections: {', '.join(map(str, extra_sections))}")
         return False
 
     dict_sections = [
@@ -69,11 +72,42 @@ def validate_config(config: dict) -> bool:
             print(f"ERROR: '{section}' section must be a dictionary.")
             return False
 
+    if "dark_masking" in config:
+        dark = config["dark_masking"]
+        unsupported = sorted(set(dark) - {"hot_sigma"}, key=str)
+        if unsupported:
+            print("ERROR: Unsupported dark_masking keys: " + ", ".join(map(str, unsupported)))
+            return False
+        try:
+            hot_sigma = float(dark.get("hot_sigma", 8.0))
+        except (TypeError, ValueError):
+            hot_sigma = np.nan
+        if isinstance(dark.get("hot_sigma"), bool) or not np.isfinite(hot_sigma) or hot_sigma <= 0:
+            print("ERROR: 'dark_masking.hot_sigma' must be finite and positive.")
+            return False
+
+    if "method" in config.get("saturation", {}):
+        print("ERROR: 'saturation.method' is unsupported; saturation uses the guarded histogram cascade.")
+        return False
+
     if "variance" in config:
         var_method = config["variance"].get("method", "theoretical")
         if var_method not in ["theoretical", "rms_map", "empirical_fit"]:
             print(f"ERROR: Invalid variance method '{var_method}'.")
             return False
+        obsolete = sorted(_OBSOLETE_VARIANCE_KEYS & config["variance"].keys())
+        if obsolete:
+            print("ERROR: Unsupported variance keys: " + ", ".join(obsolete))
+            return False
+        for key, default, positive in (("default_gain", 1.0, True), ("default_rdnoise", 0.0, False)):
+            value = config["variance"].get(key, default)
+            try:
+                number = float(value)
+            except (TypeError, ValueError):
+                number = np.nan
+            if isinstance(value, bool) or not np.isfinite(number) or (number <= 0 if positive else number < 0):
+                print(f"ERROR: 'variance.{key}' must be finite and {'positive' if positive else 'non-negative'}.")
+                return False
 
         misplaced_flat_keys = {
             "local_filter_size",
@@ -97,27 +131,13 @@ def validate_config(config: dict) -> bool:
             return False
 
     if "streak_masking" in config:
-        streak_method = config["streak_masking"].get("method")
-        streak_mode = config["streak_masking"].get("mode")
-        allowed_values = ["auto_ground"]
-        if streak_method is not None and streak_method not in allowed_values:
-            print(f"ERROR: Invalid streak masking method '{streak_method}'.")
-            return False
-        if streak_mode is not None and streak_mode not in allowed_values:
-            print(f"ERROR: Invalid streak masking mode '{streak_mode}'.")
-            return False
-        legacy_keys = {"enable_ransac_trails", "ransac_params", "frangi_params", "frangi_legacy_params"}
-        stale_keys = sorted(legacy_keys & set(config["streak_masking"]))
-        if stale_keys:
-            print(
-                "ERROR: Legacy streak keys are no longer supported. "
-                "Use 'enable_sparse_ransac' and 'sparse_ransac_params' "
-                "(Frangi comparison: benchmarks.frangi_legacy): " + ", ".join(stale_keys)
-            )
+        try:
+            _resolve_streak_mode(config["streak_masking"])
+        except ValueError as error:
+            print(f"ERROR: {error}")
             return False
     for _sec, _key in (
         ("variance", "gain_keyword"),
-        ("variance", "readnoise_keyword"),
         ("variance", "rdnoise_keyword"),
         ("saturation", "keyword"),
     ):
@@ -129,17 +149,37 @@ def validate_config(config: dict) -> bool:
                 print(f"ERROR: '{_sec}.{_key}' must be a header keyword string or list of strings.")
                 return False
     _op = config.get("output_params", {}) if isinstance(config.get("output_params", {}), dict) else {}
+    if _op.get("output_map_format", "weight") not in ("weight", "confidence"):
+        print("ERROR: 'output_params.output_map_format' must be 'weight' or 'confidence'.")
+        return False
+    if "mask_detected_in_weight" in _op and not isinstance(_op["mask_detected_in_weight"], bool):
+        print("ERROR: 'output_params.mask_detected_in_weight' must be a boolean.")
+        return False
     if "mask_bitpix" in _op and _op["mask_bitpix"] not in (8, 16, 32, 64):
         print("ERROR: 'output_params.mask_bitpix' must be one of 8/16/32/64.")
         return False
-    if "ivar_bitpix" in _op and _op["ivar_bitpix"] not in (16, 32, 64, -32, -64):
-        print("ERROR: 'output_params.ivar_bitpix' must be one of 16/32/64/-32/-64.")
+    if "ivar_bitpix" in _op and _op["ivar_bitpix"] not in (32, 64, -32, -64):
+        print("ERROR: 'output_params.ivar_bitpix' must be one of 32/64/-32/-64 (FITS has no float16 image type).")
         return False
     if "compress" in _op and not isinstance(_op["compress"], bool):
         print("ERROR: 'output_params.compress' must be a boolean.")
         return False
     if "sky_format" in _op and str(_op["sky_format"]).lower() not in ("full", "mesh"):
         print("ERROR: 'output_params.sky_format' must be 'full' or 'mesh'.")
+        return False
+    conf = config.get("confidence_params", {})
+    if conf.get("normalize_scope", "per_hdu") not in ("per_hdu", "per_exposure"):
+        print("ERROR: 'confidence_params.normalize_scope' must be 'per_hdu' or 'per_exposure'.")
+        return False
+    percentile = conf.get("normalize_percentile", 99.0)
+    if not isinstance(percentile, (int, float)) or isinstance(percentile, bool) or not 0 < percentile <= 100:
+        print("ERROR: 'confidence_params.normalize_percentile' must be in (0, 100].")
+        return False
+    if "scale_to_100" in conf and not isinstance(conf["scale_to_100"], bool):
+        print("ERROR: 'confidence_params.scale_to_100' must be a boolean.")
+        return False
+    if conf.get("dtype", "float32") not in ("float16", "float32", "float64"):
+        print("ERROR: 'confidence_params.dtype' must be 'float16', 'float32', or 'float64'.")
         return False
     return True
 
@@ -201,7 +241,7 @@ def _effective_tile_size(tile_size, shape) -> int:
         min_dim = int(min(shape))
     except Exception:
         return max(16, t)
-    return min(max(16, max(1, min_dim // 2)), min_dim)
+    return min(max(16, t), max(16, min_dim // 2), min_dim)
 
 
 def process_image(
@@ -223,6 +263,17 @@ def process_image(
 ]:
     """Processes a single Science image to generate all mask and map products."""
     hdu_start_time = _time.time()
+    variance_cfg = dict(config.get("variance", {}))
+    obsolete = sorted(_OBSOLETE_VARIANCE_KEYS & variance_cfg.keys())
+    if obsolete:
+        raise ValueError("Unsupported variance keys: " + ", ".join(obsolete))
+    streak_cfg = dict(config.get("streak_masking", {}))
+    _resolve_streak_mode(streak_cfg)
+    sci_data_full = np.asarray(sci_data_full)
+    if sci_data_full.ndim != 2 or sci_data_full.size == 0:
+        raise ValueError("science data must be a nonempty 2-D image")
+    saturation_data = sci_data_full
+    sci_data_full = np.ascontiguousarray(sci_data_full, dtype=np.float32)
     sci_shape = sci_data_full.shape
     using_unit_flat = True
     eff_tile = _effective_tile_size(tile_size, sci_shape)
@@ -231,9 +282,19 @@ def process_image(
         if flat_data_full.shape != sci_shape:
             print("Skipping processing: Flat data shape mismatch.")
             return None, None, None, None, None, None
+        flat_data_full = np.ascontiguousarray(flat_data_full, dtype=np.float32)
     else:
         print("  INFO: No flat field provided, assuming flat = 1.0.")
         flat_data_full = np.ones_like(sci_data_full, dtype=np.float32)
+
+    if bad_mask is not None:
+        bad_mask = np.asarray(bad_mask, dtype=bool)
+        if bad_mask.shape != sci_shape:
+            raise ValueError("bad mask shape must match science data")
+    if badpix_mask is not None:
+        badpix_mask = np.asarray(badpix_mask, dtype=bool)
+        if badpix_mask.shape != sci_shape:
+            raise ValueError("badpix mask shape must match science data")
 
     # --- 0. Initial Setup ---
     final_mask_int = np.zeros(sci_shape, dtype=MASK_DTYPE)
@@ -258,31 +319,21 @@ def process_image(
                 flat_bad_mask = compute_flat_bad_mask(flat_data_full, config.get("flat_masking", {}), eff_tile)
                 bad_mask |= flat_bad_mask
             else:
-                # No flat provided: unit-flat fallback (generic instruments without
-                # flat calibration still produce valid weights).
-                for y in range(0, sci_shape[0], eff_tile):
-                    for x in range(0, sci_shape[1], eff_tile):
-                        tile_slice = (slice(y, y + eff_tile), slice(x, x + eff_tile))
-                        sci_data_tile = sci_data_full[tile_slice]
-                        if not np.isfinite(sci_data_tile).any():
-                            continue
-                        flat_mask_bool_tile = detect_bad_pixels(
-                            flat_data_full[tile_slice], config.get("flat_masking", {}), using_unit_flat
-                        )
-                        bad_mask[tile_slice] |= flat_mask_bool_tile
+                print("  Skipping flat bad-pixel detection (using unit flat).")
         if badpix_mask is not None:
             bad_mask = bad_mask | badpix_mask
-        nodata_mask = detect_non_illuminated(sci_shape, sci_hdr)
+        nodata_mask = ~np.isfinite(sci_data_full) | detect_non_illuminated(sci_shape, sci_hdr)
         n_nodata = int(np.count_nonzero(nodata_mask))
         if n_nodata:
-            print(f"    Masking {n_nodata} non-illuminated (DATASEC-exterior) pixels NO_DATA.")
+            print(f"    Masking {n_nodata} non-finite or non-illuminated pixels NO_DATA.")
     final_mask_int[bad_mask] |= MASK_BITS["BAD"]
     final_mask_int[nodata_mask] |= MASK_BITS["NO_DATA"]
 
     print("  (1.1/7) Detecting saturation on the full image...")
     sat_cfg = dict(config.get("saturation", {}))
     with _timed(timings, "saturation"):
-        saturation_level, sat_method_used, sat_mask = detect_saturated_pixels(sci_data_full, sci_hdr, sat_cfg)
+        saturation_level, sat_method_used, sat_mask = detect_saturated_pixels(saturation_data, sci_hdr, sat_cfg)
+    del saturation_data
     final_mask_int[sat_mask] |= MASK_BITS["SAT"]
     header_info["SAT_LVL"], header_info["SAT_METH"] = saturation_level, sat_method_used
 
@@ -308,20 +359,23 @@ def process_image(
     # --- 2. First-Pass Cosmic Ray Detection ---
     print("  (2/7) Running first-pass Cosmic Ray detection...")
     cosmic_cfg = dict(config.get("cosmic_ray", {}))
-    variance_cfg = dict(config.get("variance", {}))
     gain_raw = _header_lookup(sci_hdr, variance_cfg.get("gain_keyword", "GAIN"), variance_cfg.get("default_gain", 1.0))
     rdnoise_raw = _header_lookup(
         sci_hdr,
-        variance_cfg.get("rdnoise_keyword", variance_cfg.get("readnoise_keyword", "RDNOISE")),
+        variance_cfg.get("rdnoise_keyword", "RDNOISE"),
         variance_cfg.get("default_rdnoise", 0.0),
     )
     try:
         gain = float(gain_raw)
+        if not np.isfinite(gain) or gain <= 0:
+            raise ValueError("gain must be finite and positive")
     except (ValueError, TypeError):
         gain = float(variance_cfg.get("default_gain", 1.0))
         print(f"  WARNING: GAIN header value {gain_raw!r} is invalid; using default {gain}.")
     try:
         read_noise_e = float(rdnoise_raw)
+        if not np.isfinite(read_noise_e) or read_noise_e < 0:
+            raise ValueError("read noise must be finite and non-negative")
     except (ValueError, TypeError):
         read_noise_e = float(variance_cfg.get("default_rdnoise", 0.0))
         print(f"  WARNING: RDNOISE header value {rdnoise_raw!r} is invalid; using default {read_noise_e}.")
@@ -419,7 +473,6 @@ def process_image(
         return None, None, None, None, None, None
     # --- 6. Streak Detection ---
     print("  (6/7) Detecting streaks...")
-    streak_cfg = dict(config.get("streak_masking", {}))
     with _timed(timings, "streaks"):
         if streak_cfg.get("enable", False):
             data_sub = sci_data_full - sky_map

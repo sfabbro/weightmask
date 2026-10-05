@@ -1,38 +1,41 @@
-# API (0.1)
+# API
 
 Supported public surface: package `__all__`, `weightmask.contract`,
-`weightmask.reconstruct_sky`, and the two console scripts. Other modules are
-callable internals, not a stability promise. Science methods are in
-[algorithms.md](algorithms.md). Config keys are in
+`weightmask.process`, `weightmask.reconstruct_sky`, and the two console scripts.
+Other modules are callable internals, not a stability promise. Science methods
+are in [algorithms.md](algorithms.md). Config keys are in
 [`weightmask.yml`](../weightmask.yml).
 
-## `weightmask.WeightMapGenerator`
+## `weightmask.process`
 
 ```python
-from weightmask import WeightMapGenerator
+from weightmask.process import process_image, validate_config
 
-gen = WeightMapGenerator(config)  # raises ValueError if config is invalid
-out = gen.process(data, header=None, flat_data=None, tile_size=1024)
+if not validate_config(config):
+    raise ValueError("Invalid weightmask configuration")
+mask, ivar, weight, confidence, sky, header_info = process_image(
+    data, hdr, flat_data, config, tile_size=1024
+)
 ```
 
 Single-array entry: no dark, keep-map, or MEF dead-CCD veto. Pass a real flat
-or flat-based `BAD` is skipped (`F = 1`). Use the CLI for those extra `BAD`
-sources.
+or flat-based `BAD` is skipped (`F = 1`). Use the CLI (`weightmask.cli.run_pipeline`)
+for those extra `BAD` sources and MEF orchestration.
 
-`process()` returns a dict:
+`process_image()` returns `(mask, ivar, weight, confidence, sky, header_info)`
+(or a 6-tuple of `None` on failure), where `header_info` includes:
 
 | Key | Contents |
 |---|---|
-| `weight_map` | Masked inverse variance |
-| `flag_map` | Integer quality mask |
-| `inv_variance_map` | Inverse-variance plane |
-| `confidence_map` | Percentile-normalized weight in `[0, 1]` (×100 if `scale_to_100`) |
-| `sky_map` | Background map |
-| `individual_masks` | Component boolean maps (`bad`, `sat`, `cr`, `obj`, `streak`) |
-| `contract_product` | `WeightMaskProduct` (when the contract path ran) |
-| `artifact_metadata` | Metadata from that product |
+| `individual_masks` | Component boolean maps (`bad`, `sat`, `cr`, `obj`, `streak`, `nodata`) |
+| `contract_product` | `WeightMaskProduct` |
+| `sky_cards` | `SKYMESH` header cards when `output_params.sky_format: mesh` |
+| `timings` | Per-stage wall-clock seconds |
 
-Empty dict if processing failed.
+Science input must be a nonempty 2-D array; supplied bad masks must match its
+shape and are interpreted as boolean pixel masks. Invalid shapes raise
+`ValueError`. Non-finite science pixels receive `NO_DATA` and zero weight.
+`tile_size` caps flat-mask tiles, with smaller tiles on small images.
 
 ## Bits and polarity
 
@@ -50,14 +53,16 @@ from weightmask import MASK_BITS, QUALITY_BITS, MASK_DTYPE
 | `DETECTED` | 8 |
 | `STREAK` | 16 |
 | `INVALID_VARIANCE` | 32 |
+| `NO_DATA` | 64 |
 
 Polarity is `set_means_flagged` (`weightmask.contract.MASK_POLARITY`).
 `DETECTED` does not zero weight unless `output_params.mask_detected_in_weight`
 is true. `MASK_DTYPE` is `"uint32"` in memory; FITS masks are written as
-uint16 (`output_params.mask_bitpix: 16`) because values 0–63 fit.
+uint16 (`output_params.mask_bitpix: 16`) because values 0–127 fit.
 
-`weightmask.__version__` is the installed package version. It is declared once, in
-`weightmask/_version.py`; nothing else should hold a literal.
+`weightmask.__version__` imports the runtime version from `weightmask/_version.py`.
+Packaging also declares it in `pyproject.toml`; `tests/test_version_single_source.py`
+checks that the two values agree.
 
 ## `weightmask.contract`
 
@@ -75,9 +80,12 @@ from weightmask.contract import (
 returns a `WeightMaskProduct` with quality flags, non-negative inverse variance
 and weight. Confidence from this function is always in `[0, 1]`; the CLI
 product may then multiply by 100 if `confidence_params.scale_to_100` is true.
-Non-finite or non-positive inverse variance is marked `INVALID_VARIANCE` and
-zeroed. Inverse-variance semantics are an F² sensitivity weight
-(`INVERSE_VARIANCE_SEMANTICS`).
+Non-finite or non-positive inverse variance, including overflow or underflow
+when converted to float32, is marked `INVALID_VARIANCE` and zeroed.
+`INVERSE_VARIANCE_SEMANTICS` is `"inverse_variance_adu^-2"`; the estimator and
+flat convention are selected in `variance` (see [algorithms.md](algorithms.md)).
+Missing provenance is allowed; malformed or truncated provenance warns and
+reports an unknown producer.
 `CONTRACT_VERSION` (`"1.0"`) is the array-schema version; the package version
 is `weightmask.__version__` (`0.2.1`).
 
@@ -95,8 +103,8 @@ from weightmask.background import reconstruct_sky_mesh, reconstruct_sky_from_hea
 ```
 
 `reconstruct_sky_fits(input_path, output_path, hdu=None)` rebuilds a FITS file
-and returns an exit code. Node layout: `n = (size - 1) // box + 1` at clipped
-`(k + 0.5) * box`; reconstruction is a natural cubic spline. See
+and returns an exit code. Input/output aliases are rejected. Node layout: `n = (size - 1) // box + 1` at
+`clip(rint((k + 0.5) * box), 0, size - 1)`; reconstruction is a natural cubic spline. See
 [algorithms.md](algorithms.md).
 
 ## Console scripts
@@ -105,6 +113,3 @@ and returns an exit code. Node layout: `n = (size - 1) // box + 1` at clipped
 |---|---|
 | `weightmask` | `weightmask.cli:run_pipeline` |
 | `weightmask-reconstruct-sky` | `weightmask.reconstruct_sky:main` |
-
-`weightmask reconstruct-sky ...` is a thin compatibility dispatch to the
-second program. It is not a `weightmask` flag.

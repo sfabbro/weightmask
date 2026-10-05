@@ -13,8 +13,8 @@ except Exception:  # pragma: no cover
     fitsio = None
 
 from tests.benchmarks.download_data import process_suite, validate_case_file
-from tests.simulate_and_test import _f1, run_masking_test
-from weightmask.bad import detect_bad_pixels
+from tests.simulate_and_test import GENERATOR_REVISION, METRIC_REVISION, _f1, run_masking_test
+from weightmask.bad import detect_bad_pixels, detect_dark_hot_pixels
 from weightmask.contract import (
     INVERSE_VARIANCE_SEMANTICS,
     MASK_POLARITY,
@@ -45,14 +45,15 @@ def load_manifest(suite_name):
 
 
 def _mask_stats(pred_mask, gt_mask, eval_gt_mask=None):
+    """Halo-tolerant precision and original-truth recall (metric revision v2)."""
     if eval_gt_mask is None:
         eval_gt_mask = gt_mask
     tp = int(np.sum(pred_mask & eval_gt_mask))
     fp = int(np.sum(pred_mask & (~eval_gt_mask)))
     fn = int(np.sum((~pred_mask) & gt_mask))
     precision = tp / (tp + fp + 1e-9)
-    recall = tp / (tp + fn + 1e-9)
-    recall = min(recall, 1.0)
+    core_hits = int(np.sum(pred_mask & gt_mask))
+    recall = core_hits / (core_hits + fn + 1e-9)
     return {
         "precision": float(precision),
         "recall": float(recall),
@@ -64,7 +65,7 @@ def _mask_stats(pred_mask, gt_mask, eval_gt_mask=None):
     }
 
 
-def _simple_hough_baseline(data_sub, bkg_rms, thresh_sig=5.0, min_length=90.0, half_width=3):
+def _simple_hough_baseline(data_sub, bkg_rms, thresh_sig=5.0, half_width=3):
     """A plain Hough-transform streak detector, independent of weightmask.
 
     A comparator is only worth its name if it is a *different* algorithm reached
@@ -75,7 +76,7 @@ def _simple_hough_baseline(data_sub, bkg_rms, thresh_sig=5.0, min_length=90.0, h
     was meant to be compared to. Both are gone.
 
     What remains is the honest minimal version of the name: threshold, Hough
-    transform, keep the strongest line, paint its corridor. No candidate scoring,
+    transform, keep up to four strongest lines, paint their corridors. No candidate scoring,
     no strip refinement, no vetoes -- the point is to be simple.
     """
     from skimage.transform import hough_line, hough_line_peaks
@@ -289,7 +290,14 @@ def run_synthetic_v2(with_baselines=False, selected_cases=None):
             streak_pred=products["masks"]["streaks"].astype(np.uint8),
             streak_truth=products["ground_truth"]["streak"].astype(np.uint8),
         )
-    failures = []
+    failures = [] if results else ["No benchmark cases were evaluated"]
+    for name, result in results.items():
+        scores = {
+            "streak F1": result["streak_stats"]["f1"],
+            "object recall": result["weightmask"]["Objects"][1],
+            "bad-pixel F1": result["bad_pixel_stats"]["f1"],
+        }
+        failures.extend(f"{name}: {metric} is nonfinite" for metric, value in scores.items() if not np.isfinite(value))
     if not selected_cases and results:
         streak_f1 = [result["streak_stats"]["f1"] for result in results.values()]
         object_recall = [result["weightmask"]["Objects"][1] for result in results.values()]
@@ -300,7 +308,13 @@ def run_synthetic_v2(with_baselines=False, selected_cases=None):
             failures.append(f"Synthetic-v2 average object recall {float(np.mean(object_recall)):.3f} < 0.900")
         if float(np.mean(bad_pixel_f1)) < 0.50:
             failures.append(f"Synthetic-v2 average bad-pixel F1 {float(np.mean(bad_pixel_f1)):.3f} < 0.500")
-    return {"suite": "synthetic_v2", "results": results, "gate_failures": failures}
+    return {
+        "suite": "synthetic_v2",
+        "generator_revision": GENERATOR_REVISION,
+        "metric_revision": METRIC_REVISION,
+        "results": results,
+        "gate_failures": failures,
+    }
 
 
 def _run_manifest_suite(manifest, with_baselines=False, selected_cases=None):
@@ -402,7 +416,9 @@ def _run_manifest_suite(manifest, with_baselines=False, selected_cases=None):
         if quality_metrics is not None:
             failures.extend(_quality_gate_failures(case["case_id"], quality_metrics, manifest.get("quality_gates", {})))
         suite_results[case["case_id"]] = result
-    return {"suite": manifest["suite"], "results": suite_results, "gate_failures": failures}
+    if not suite_results:
+        failures.append("No benchmark cases were evaluated")
+    return {"suite": manifest["suite"], "metric_revision": METRIC_REVISION, "results": suite_results, "gate_failures": failures}
 
 
 def _load_case_image(case_path):
@@ -494,8 +510,6 @@ def _crop_reference(array, crop):
     expected_shape = (int(crop["height"]), int(crop["width"]))
     if array.ndim != 2:
         raise ValueError(f"reference plane must be 2-D, got shape {array.shape}")
-    if array.shape == expected_shape:
-        return array
     y0 = int(crop["y0"])
     x0 = int(crop["x0"])
     y1 = y0 + expected_shape[0]
@@ -770,8 +784,8 @@ def _quality_gate_failures(case_id, metrics, gates):
     for metric_name, gate_name, failed, relation in limits:
         value = metrics.get(metric_name)
         limit = gates.get(gate_name)
-        if value is None:
-            failures.append(f"{case_id}: {metric_name} is unavailable")
+        if value is None or not np.isfinite(value):
+            failures.append(f"{case_id}: {metric_name} is unavailable or nonfinite")
         elif limit is not None and failed(value, limit):
             failures.append(f"{case_id}: {metric_name} {value:.6f} {relation} {limit:.6f}")
     return failures
@@ -848,18 +862,7 @@ def _evaluate_dark_injection(case, data, hdr, with_baselines):
     else:
         truth = dark > np.percentile(finite_dark, 99.5)
 
-    pred_bad = detect_bad_pixels(
-        np.where(np.isfinite(dark), 1.0 + dark / max(np.nanmax(np.abs(dark)), 1.0), 1.0).astype(np.float32),
-        {
-            "local_filter_size": 9,
-            "local_low_thresh": 0.5,
-            "local_high_thresh": 1.8,
-            "col_enable": True,
-            "col_deriv_sigma": 5.0,
-            "col_dead_thresh": 0.1,
-        },
-        using_unit_flat=False,
-    )
+    pred_bad = detect_dark_hot_pixels(dark, _load_repo_config().get("dark_masking", {}))
     existing = np.zeros_like(injected, dtype=bool)
     pred_cr = detect_cosmic_rays(
         injected,
@@ -877,10 +880,8 @@ def _evaluate_dark_injection(case, data, hdr, with_baselines):
         }
     }
     baselines = {}
-    if with_baselines:
-        dark_thresh = truth
-        baselines["dark_threshold_baseline"] = _mask_stats(dark_thresh, truth)
-        baselines["astroscrappy_only"] = _mask_stats(pred_cr, truth)
+    # ponytail: no independent dark comparator is installed. Truth scored
+    # against itself and the postfiltered CR result are not valid baselines.
     return metrics, {"pred_bad": pred_bad, "pred_cr": pred_cr, "truth": truth}, baselines
 
 
@@ -1025,6 +1026,17 @@ def _write_suite_outputs(summary):
 
 
 def run_suite(suite, with_baselines=False, selected_cases=None, download=False):
+    if selected_cases:
+        suites = ("synthetic_v2", "megacam_real", "acs_compare") if suite == "all" else (suite,)
+        known = {
+            name: {case["name"] for case in _synthetic_v2_cases()}
+            if name == "synthetic_v2"
+            else {case["case_id"] for case in load_manifest(name)["cases"]}
+            for name in suites
+        }
+        unknown = selected_cases - set().union(*known.values())
+        if unknown:
+            return {"suite": suite, "results": {}, "gate_failures": [f"Unknown benchmark case(s): {', '.join(sorted(unknown))}"]}
     if suite == "synthetic_v2":
         return run_synthetic_v2(with_baselines=with_baselines, selected_cases=selected_cases)
     if suite in {"megacam_real", "acs_compare"}:
@@ -1036,6 +1048,8 @@ def run_suite(suite, with_baselines=False, selected_cases=None, download=False):
         combined = {}
         failures = []
         for item in ("synthetic_v2", "megacam_real", "acs_compare"):
+            if selected_cases and not selected_cases.intersection(known[item]):
+                continue
             summary = run_suite(item, with_baselines=with_baselines, selected_cases=selected_cases, download=download)
             combined[item] = summary["results"]
             failures.extend(summary.get("gate_failures", []))

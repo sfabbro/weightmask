@@ -63,42 +63,36 @@ def _bin_array(data_sub, bin_factor):
     return data_sub[: bh * bin_factor, : bw * bin_factor].reshape(bh, bin_factor, bw, bin_factor).mean(axis=(1, 3))
 
 
+_OBSOLETE_STREAK_KEYS = frozenset(
+    {
+        "method",
+        "dilation_radius",
+        "enable_ransac_trails",
+        "ransac_params",
+        "frangi_params",
+        "frangi_legacy_params",
+        "mrt_rescue_params",
+        "satdet_params",
+        "retry_without_existing_mask",
+        "retry_if_area_fraction_exceeds",
+        "retry_if_support_width_exceeds",
+        "sparse_on_primary_weak_only",
+    }
+)
+
+
 def _resolve_streak_mode(config):
-    """Production accepts only ``auto_ground`` (``method`` is a legacy alias for ``mode``)."""
-    requested = (config.get("mode") or config.get("method") or "auto_ground").lower()
+    """Production accepts only ``mode: auto_ground``."""
+    obsolete = sorted(_OBSOLETE_STREAK_KEYS & config.keys())
+    if obsolete:
+        raise ValueError(f"Unsupported streak parameters: {', '.join(obsolete)}")
+    requested = config.get("mode", "auto_ground")
     if requested != "auto_ground":
-        raise ValueError(
-            f"Unknown streak detection mode {requested!r}. "
-            "Valid mode: ('auto_ground',). Benchmark Frangi lives in benchmarks.frangi_legacy."
-        )
+        raise ValueError(f"Unknown streak detection mode {requested!r}. Valid mode: 'auto_ground'.")
     return "auto_ground"
 
 
-# ``regionprops(...).perimeter`` is ``skimage.measure.perimeter`` run on each
-# region's own bounding-box crop: a 4-connected border image is convolved with
-# [[10, 2, 10], [2, 1, 2], [10, 2, 10]] and the histogram of the resulting
-# values is dotted with the weights below. Reproducing that for every region at
-# components of a real CCD edge mask with shifted-array comparisons, yielding
-# perimeters identical to skimage's.
 _EDGE_BUFFER_DEFAULT = 32
-
-_PERIMETER_DIAGONAL_OFFSETS = ((-1, -1), (-1, 1), (1, -1), (1, 1))
-_PERIMETER_ORTHOGONAL_OFFSETS = ((-1, 0), (1, 0), (0, -1), (0, 1))
-_PERIMETER_WEIGHTS = np.zeros(50, dtype=np.float64)
-_PERIMETER_WEIGHTS[[5, 7, 15, 17, 25, 27]] = 1.0
-_PERIMETER_WEIGHTS[[21, 33]] = np.sqrt(2.0)
-_PERIMETER_WEIGHTS[[13, 23]] = (1.0 + np.sqrt(2.0)) / 2.0
-# Only those ten pattern values carry weight (every other 3x3 sum is even),
-# so each label needs a slot per weighted pattern plus one "no weight" slot.
-_PERIMETER_NONZERO = np.nonzero(_PERIMETER_WEIGHTS)[0]
-_PERIMETER_SLOTS = int(_PERIMETER_NONZERO.size) + 1
-_PERIMETER_SLOT_OF_PATTERN = np.full(50, _PERIMETER_NONZERO.size, dtype=np.int8)
-_PERIMETER_SLOT_OF_PATTERN[_PERIMETER_NONZERO] = np.arange(_PERIMETER_NONZERO.size, dtype=np.int8)
-_PERIMETER_SLOT_WEIGHTS = np.concatenate([_PERIMETER_WEIGHTS[_PERIMETER_NONZERO], [0.0]])
-# How far a different (but equally valid) float summation order can move a
-# perimeter. Regions within this of the cut are re-measured with skimage's own
-# routine below, so the keep/drop decision matches ``regionprops`` exactly.
-_PERIMETER_ORDER_EPS = 1e-6
 
 
 def _clip_line_to_image(anchor, direction, shape):
@@ -161,7 +155,7 @@ def _adjust_confidence_for_mask(confidence_threshold, existing_mask):
     """Raise the accept threshold in proportion to the excluded-pixel fraction.
 
     A heavily masked image has fewer independent pixels to confirm a trail, so
-    the confidence bar is relaxed (capped) to avoid rejecting real streaks.
+    the confidence bar is raised by a capped amount.
     """
     if existing_mask is not None:
         return confidence_threshold + min(0.25, 20.0 * float(np.mean(existing_mask)))
@@ -229,7 +223,7 @@ def _largest_near_center(mask_1d):
     return labels == best_label
 
 
-def _largest_contiguous_run(mask_1d, max_gap=0, min_run_length=1):
+def _largest_contiguous_run(mask_1d, max_gap=0, min_run_length=1, valid=None):
     """Return the longest coherent group of runs in a 1D mask.
 
     ``max_gap`` is the largest number of false samples allowed between two
@@ -240,14 +234,20 @@ def _largest_contiguous_run(mask_1d, max_gap=0, min_run_length=1):
     preventing a faint-but-real dashed trail from being truncated to its
     longest bright fragment. With ``max_gap=0`` and the default minimum run
     length, this retains the historical longest-contiguous-run behavior.
+    Optional valid samples exclude occluded locations from run selection,
+    without filling or detecting anything in those locations.
     """
     mask_1d = np.asarray(mask_1d, dtype=bool)
+    if valid is not None:
+        keep = np.zeros_like(mask_1d)
+        keep[valid] = _largest_contiguous_run(mask_1d[valid], max_gap, min_run_length)
+        return keep
     if not np.any(mask_1d):
         return mask_1d
 
     labels, n = ndi.label(mask_1d.astype(np.uint8))
     if n <= 1:
-        return mask_1d
+        return mask_1d if np.count_nonzero(mask_1d) >= max(1, int(min_run_length)) else np.zeros_like(mask_1d)
 
     runs = []
     for label_idx in range(1, n + 1):
@@ -394,6 +394,14 @@ def _refine_trail_mask(data_sub, bkg_rms_map, candidate, mask_cfg, existing_mask
         sup = _largest_near_center(sup)
         if np.any(sup) and padding > 0:
             sup = ndi.binary_dilation(sup, structure=np.ones(2 * padding + 1, dtype=bool))
+        # A narrower refit is useful only if it still supports a coherent trail.
+        # Otherwise a short noise fragment can replace and erase a valid line.
+        hits = np.any(hot & sup[np.newaxis, :], axis=1)
+        hits = ndi.binary_closing(hits, structure=np.ones(2 * padding + 1, dtype=bool))
+        observed = np.any(np.isfinite(centered[:, sup]), axis=1) if candidate.get("source") == "houghpeaks" else None
+        hits = _largest_contiguous_run(hits, max_gap=max_row_gap, min_run_length=min_row_run, valid=observed)
+        if np.count_nonzero(hits) < min_row_hits or np.mean(hits) < min_row_hit_fraction:
+            return 0
         return int(np.count_nonzero(sup))
 
     def _better(w_new, w_cur):
@@ -473,7 +481,9 @@ def _refine_trail_mask(data_sub, bkg_rms_map, candidate, mask_cfg, existing_mask
             # ~10px wide. Rotate the original endpoints around their midpoint
             # and keep the narrowest support. Bounded to near-misses only.
             fan_slack = float(mask_cfg.get("angle_fan_slack", 13.0))
-            if max_support_width < best_w <= max_support_width + fan_slack:
+            if (best_w == 0 and candidate.get("source") == "houghpeaks") or (
+                max_support_width < best_w <= max_support_width + fan_slack
+            ):
                 (fx0, fy0), (fx1, fy1) = candidate["clipped_endpoints"]
                 fmx, fmy = 0.5 * (fx0 + fx1), 0.5 * (fy0 + fy1)
                 flen = max(np.hypot(fx1 - fx0, fy1 - fy0), 1.0)
@@ -547,7 +557,10 @@ def _refine_trail_mask(data_sub, bkg_rms_map, candidate, mask_cfg, existing_mask
     hot_pixels = hot_pixels & support_cols[np.newaxis, :]
     row_hits = np.any(hot_pixels, axis=1)
     row_hits = ndi.binary_closing(row_hits, structure=np.ones(2 * padding + 1, dtype=bool))
-    row_hits = _largest_contiguous_run(row_hits, max_gap=max_row_gap, min_run_length=min_row_run)
+    observed = (
+        np.any(np.isfinite(centered[:, support_cols]), axis=1) if candidate.get("source") == "houghpeaks" else None
+    )
+    row_hits = _largest_contiguous_run(row_hits, max_gap=max_row_gap, min_run_length=min_row_run, valid=observed)
     if np.count_nonzero(row_hits) < min_row_hits:
         return np.zeros(data_sub.shape, dtype=bool), {
             "support_width": int(np.count_nonzero(support_cols)),
@@ -563,6 +576,22 @@ def _refine_trail_mask(data_sub, bkg_rms_map, candidate, mask_cfg, existing_mask
             "mask_pixels": 0,
             "reject_reason": "low_row_hit_fraction",
         }
+
+    occluded_geometry = None
+    if observed is not None and existing_mask is not None and np.any(row_hits):
+        # Save interior source crossings for prediction after every evidence
+        # gate; occluded pixels never contribute detection support.
+        yy = np.clip(np.rint(strip["y_coords"][:, support_cols]).astype(int), 0, data_sub.shape[0] - 1)
+        xx = np.clip(np.rint(strip["x_coords"][:, support_cols]).astype(int), 0, data_sub.shape[1] - 1)
+        known = np.isfinite(data_sub[yy, xx]) & strip["inside"][:, support_cols]
+        if bkg_rms_map is not None:
+            known &= valid_rms[yy, xx]
+        occluded = np.all(existing_mask[yy, xx] & known, axis=1)
+        ends = np.flatnonzero(row_hits)
+        occluded[: ends[0]] = False
+        occluded[ends[-1] + 1 :] = False
+        if np.any(occluded):
+            occluded_geometry = yy, xx, occluded
 
     refined_strip = np.zeros_like(hot_pixels, dtype=bool)
     refined_strip[row_hits, :] = support_cols[np.newaxis, :]
@@ -588,6 +617,7 @@ def _refine_trail_mask(data_sub, bkg_rms_map, candidate, mask_cfg, existing_mask
         "support_width": int(np.count_nonzero(support_cols)),
         "row_hit_fraction": row_hit_fraction,
         "mask_pixels": int(np.count_nonzero(mask)),
+        "occluded_geometry": occluded_geometry,
     }
 
 
@@ -671,7 +701,7 @@ def _refine_hough_peak(H, thetas, rhos, ti, ri):
     return float(np.degrees(thetas[ti])) + off_t * d_theta, float(rhos[ri]) + off_r * d_rho
 
 
-def _detect_streaks_houghpeaks(data_sub, bkg_rms_map, existing_mask, config):
+def _detect_streaks_houghpeaks(data_sub, bkg_rms_map, existing_mask, config, predictions=None):
     """Find full-span trails as accumulator peaks of a binned standard Hough.
 
     Probabilistic Hough segments drown in star clutter (130k segments on a
@@ -751,6 +781,10 @@ def _detect_streaks_houghpeaks(data_sub, bkg_rms_map, existing_mask, config):
                 streak_mask |= refined
                 accepted.append({"theta_deg": theta_deg, "rho": rho, "confidence": conf})
                 used.append((rho, theta_deg))
+                if predictions is not None and refine_info.get("occluded_geometry") is not None:
+                    # ponytail: one boolean image per occluded candidate; use
+                    # cropped masks if crowded-field memory becomes limiting.
+                    predictions.append((refine_info["occluded_geometry"], refined))
     print(f"    Hough peaks accepted {len(accepted)} trail(s).")
     return streak_mask, accepted, {"peaks": n_peaks_total, "accepted_count": len(accepted)}
 
@@ -877,9 +911,6 @@ def _detect_trails_sparse_ransac(data_sub, bkg_rms_map, existing_mask, config):
     max_trails = int(cfg.get("max_trails", 3))
 
     if bkg_rms_map is not None:
-        median_rms = robust_rms(bkg_rms_map, default=1.0)
-        if median_rms > 15.0:
-            detect_thresh_sig *= 1.0 + 0.5 * np.log10(median_rms / 15.0)
         # Detection threshold: no measurable RMS means no detectable excess, so
         # unknown pixels get an infinite threshold (never detect).
         thresh = detect_thresh_sig * rms_or_robust(bkg_rms_map, fallback=np.inf)
@@ -891,7 +922,10 @@ def _detect_trails_sparse_ransac(data_sub, bkg_rms_map, existing_mask, config):
         residual_mask &= ~existing_mask
 
     trail_mask = np.zeros(data_sub.shape, dtype=bool)
-    for trail_idx in range(max_trails):
+    trail_idx = 0
+    # ponytail: each rejected model consumes at least min_inliers pixels;
+    # heavily crowded fields need a candidate cap before the RANSAC search.
+    while trail_idx < max_trails:
         coords = np.argwhere(residual_mask)
         if len(coords) < min_inliers:
             break
@@ -908,7 +942,7 @@ def _detect_trails_sparse_ransac(data_sub, bkg_rms_map, existing_mask, config):
             )
         except Exception as e:
             print(f"    Sparse RANSAC failed: {e}")
-            continue
+            break
 
         if inliers is None or np.count_nonzero(inliers) < min_inliers:
             break
@@ -921,44 +955,47 @@ def _detect_trails_sparse_ransac(data_sub, bkg_rms_map, existing_mask, config):
         length = np.hypot(*(p1 - p0))
         density = np.count_nonzero(inliers) / max(length, 1.0)
         if length < min_length or density < min_line_density:
-            break
+            residual_mask[inlier_coords[:, 0], inlier_coords[:, 1]] = False
+            continue
 
         rr, cc = line(int(p0[0]), int(p0[1]), int(p1[0]), int(p1[1]))
         current = np.zeros_like(trail_mask)
         current[rr, cc] = True
-        dilation_r = int(cfg.get("dilation_radius", config.get("dilation_radius", 1)))
+        dilation_r = int(cfg.get("dilation_radius", 1))
         current = dilation(current, footprint=disk(dilation_r)) if dilation_r > 0 else current
         trail_mask |= current
+        residual_mask[inlier_coords[:, 0], inlier_coords[:, 1]] = False
         residual_mask &= ~current
+        trail_idx += 1
         print(
-            f"    Sparse RANSAC found trail {trail_idx + 1}: length={length:.1f} px, "
+            f"    Sparse RANSAC found trail {trail_idx}: length={length:.1f} px, "
             f"inliers={np.count_nonzero(inliers)}, density={density:.3f}"
         )
 
     return trail_mask
 
 
-def _drop_bright_components(mask, data_sub, bkg_rms_map, max_sigma, min_pixels=24):
+def _drop_bright_components(mask, data_sub, bkg_rms_map, max_sigma, min_pixels=24, existing_mask=None):
     """Drop streak components too bright to be a trail.
 
     Measured on real MegaCam amps, as a multiple of the local background RMS:
 
     | feature | p90 of the component |
     |---|---|
-    | satellite trail (996195p HDU 35/36) | ~2 sigma |
-    | saturated-star bleed | 54-66 sigma |
-    | near-saturated column group (1013719p HDU 5) | ~2000 sigma |
+    | satellite trail (996195p HDU 35/36) | 3.0 / 3.2 sigma |
+    | bright star arm (1013721p HDU 33) | 155 sigma |
+    | near-saturated column group (1013719p/1013720p HDU 5) | 1138 / 1345 sigma |
 
     The last case is a group of columns at 97-99.5% of the ``SATURATE`` level. The
     saturation stage tests against the keyword itself, so it misses them by a
     hair, and ``bad.py`` works from the flat, where those columns are ordinary.
-    Nothing upstream owns them, and a feature 2000 sigma above the sky is not a
-    trail.
+    Nothing upstream owns them, and a feature over 1000 sigma above the sky is not
+    a trail.
 
     This is a stopgap for a threshold that arguably belongs in the saturation
     stage; it lives here because it cannot mask a real trail, and because a
-    satellite trail in a 560 s exposure has no headroom to spare. 10x margin
-    below the trails measured so far, 3x above the bleed.
+    satellite trail in a 560 s exposure has no headroom to spare. 6x margin
+    above the two trails measured so far, 7x below the brightest false positive.
     """
     if max_sigma is None or bkg_rms_map is None or not np.any(mask):
         return mask
@@ -976,6 +1013,8 @@ def _drop_bright_components(mask, data_sub, bkg_rms_map, max_sigma, min_pixels=2
         values = data_sub[sel].astype(np.float64)
         noise = bkg_rms_map[sel].astype(np.float64)
         good = np.isfinite(values) & np.isfinite(noise) & (noise > 0)
+        if existing_mask is not None:
+            good &= ~existing_mask[sel]
         if not np.any(good):
             keep[index] = True
             continue
@@ -1067,18 +1106,18 @@ def detect_streaks(data_sub, bkg_rms_map, existing_mask, config):
     Detect linear streaks via the production ``auto_ground`` path plus optional sparse RANSAC.
 
     Raises ValueError on unknown modes (fail fast on config typos).
-    Mode ``auto_ground`` (also via legacy ``method`` alias): binned-Hough peaks and
-    contour morphology, then conditional RANSAC.
+    Mode ``auto_ground``: binned-Hough peaks and
+    contour morphology, then residual RANSAC.
 
     Benchmark-only Frangi lives in ``benchmarks.frangi_legacy``.
     """
+    mode = _resolve_streak_mode(config)
     if not config.get("enable", False):
         print("Streak masking disabled in main config.")
         return np.zeros(data_sub.shape, dtype=bool)
 
-    mode = _resolve_streak_mode(config)
     streak_mask_bool = np.zeros(data_sub.shape, dtype=bool)
-    debug_info = {"mode": mode, "houghpeaks": {}, "contours": {}, "mrt": {}, "sparse_ransac": None}
+    debug_info = {"mode": mode, "houghpeaks": {}, "contours": {}, "sparse_ransac": None}
     min_streak_px = int(config.get("mask_params", {}).get("min_mask_pixels", 64))
     # A component the upstream stages already flagged is not a new finding, and a
     # component orders of magnitude above the sky is not a trail.
@@ -1086,12 +1125,15 @@ def detect_streaks(data_sub, bkg_rms_map, existing_mask, config):
     max_sigma = config.get("mask_params", {}).get("max_component_sigma", 20.0)
 
     def _veto(mask):
-        mask = _drop_bright_components(mask, data_sub, bkg_rms_map, max_sigma, min_streak_px)
+        mask = _drop_bright_components(mask, data_sub, bkg_rms_map, max_sigma, min_streak_px, existing_mask)
         return _drop_premasked_components(mask, existing_mask, max_premasked, min_streak_px)
 
     print(f"  Detecting streaks (mode: {mode})...")
     streak_t0 = time.time()
-    hp_mask, hp_accepted, hp_debug = _detect_streaks_houghpeaks(data_sub, bkg_rms_map, existing_mask, config)
+    predictions = []
+    hp_mask, hp_accepted, hp_debug = _detect_streaks_houghpeaks(
+        data_sub, bkg_rms_map, existing_mask, config, predictions
+    )
     hp_mask = _veto(hp_mask)
     streak_mask_bool |= hp_mask
     debug_info["houghpeaks"] = {"accepted": hp_accepted, **hp_debug}
@@ -1113,13 +1155,7 @@ def detect_streaks(data_sub, bkg_rms_map, existing_mask, config):
     # and benchmarks/streak_stage_sweep.py; both must be re-run, not assumed, if
     # anyone proposes restoring a faint-trail stage.
 
-    run_sparse_ransac = bool(config.get("enable_sparse_ransac", True))
-    if config.get("sparse_on_primary_weak_only", True):
-        run_sparse_ransac = run_sparse_ransac and (
-            np.count_nonzero(streak_mask_bool) < min_streak_px or n_prescreen_accepted == 0
-        )
-
-    if run_sparse_ransac:
+    if config.get("enable_sparse_ransac", True):
         residual_existing = streak_mask_bool.copy()
         if existing_mask is not None:
             residual_existing |= existing_mask
@@ -1137,10 +1173,44 @@ def detect_streaks(data_sub, bkg_rms_map, existing_mask, config):
         min_pixels = int(mask_cfg.get("min_mask_pixels", 64))
         streak_mask_bool = _gate_mask_by_profile(streak_mask_bool, max_half_width=half_width, min_pixels=min_pixels)
 
+    if predictions:
+        # Predictions are added after every evidence gate. They cannot reject
+        # a confirmed component or supply support for another prediction.
+        inferred_mask = np.zeros_like(streak_mask_bool)
+        for (yy, xx, occluded), candidate_mask in predictions:
+            # Unrelated crossing trails cannot revive a vetoed candidate.
+            confirmed = _veto(candidate_mask)
+            if config.get("profile_accept", True):
+                confirmed = _gate_mask_by_profile(confirmed, max_half_width=half_width, min_pixels=min_pixels)
+            confirmed &= streak_mask_bool
+            mask_cfg = config.get("mask_params", {})
+            max_gap = int(mask_cfg.get("max_row_gap", 0))
+            row_hits = _largest_contiguous_run(
+                np.any(confirmed[yy, xx], axis=1),
+                max_gap=max_gap,
+                min_run_length=int(mask_cfg.get("min_row_run", 0)) if max_gap > 0 else 0,
+                valid=~occluded,
+            )
+            if np.count_nonzero(row_hits) < int(mask_cfg.get("min_row_hits", 8)) or np.mean(row_hits) < float(
+                mask_cfg.get("min_row_hit_fraction", 0.5)
+            ):
+                continue
+            rows = np.flatnonzero(row_hits)
+            if not rows.size:
+                continue
+            selected = occluded.copy()
+            selected[: rows[0]] = False
+            selected[rows[-1] + 1 :] = False
+            inferred_mask[yy[selected], xx[selected]] = True
+        streak_mask_bool |= inferred_mask
+
     if existing_mask is not None:
         num_new_pixels = int(np.count_nonzero(streak_mask_bool & (~existing_mask)))
     else:
         num_new_pixels = int(np.count_nonzero(streak_mask_bool))
+
+    if config.get("debug", False):
+        config["_last_run"] = debug_info
 
     streak_elapsed = time.time() - streak_t0
     if num_new_pixels > 0:

@@ -174,7 +174,7 @@ def test_producer_and_artifact_metadata_round_trip_with_ml_fields_reserved():
     assert restored.mask_polarity == MASK_POLARITY
     assert "WMQDCNT" in artifact.to_header()
     assert CONFIDENCE_SEMANTICS == "normalized_weight_0_to_1"
-    assert INVERSE_VARIANCE_SEMANTICS == "flat_fielded_poisson_weight"
+    assert INVERSE_VARIANCE_SEMANTICS == "inverse_variance_adu^-2"
     from weightmask._version import __version__ as _declared
 
     assert weightmask.__version__ == _declared

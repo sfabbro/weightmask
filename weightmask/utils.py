@@ -1,6 +1,17 @@
+import os
 import re
 
 import numpy as np
+
+
+def paths_alias(first, second):
+    """Whether filenames refer to the same destination, including links."""
+    if os.path.realpath(first) == os.path.realpath(second):
+        return True
+    try:
+        return os.path.samefile(first, second)
+    except OSError:
+        return False
 
 
 def rms_valid_mask(rms):
@@ -122,7 +133,8 @@ def _parse_config_value(val):
     if not isinstance(val, str):
         return val
 
-    lowered = val.lower()
+    stripped = val.strip()
+    lowered = stripped.lower()
     if lowered in ("true", "yes", "on"):
         return True
     elif lowered in ("false", "no", "off"):
@@ -131,9 +143,8 @@ def _parse_config_value(val):
     # Strict integer: at most one sign then digits. lstrip("+-") alone would
     # accept "--5"/"++5"/"-+5" and then raise out of int(), aborting config
     # loading with a traceback instead of passing the value through as a string.
-    stripped = val.strip()
     digits = stripped[1:] if stripped[:1] in ("+", "-") else stripped
-    if stripped and digits.isdigit():
+    if stripped and digits.isdecimal():
         return int(stripped)
 
     # Strict float: only convert if it has a decimal point or exponent

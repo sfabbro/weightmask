@@ -20,7 +20,7 @@ from weightmask.bad import compute_flat_bad_mask
 def load_map(path):
     out = {}
     with open(path) as f:
-        header = f.readline()
+        f.readline()
         for line in f:
             parts = line.rstrip("\n").split("\t")
             if len(parts) >= 3:

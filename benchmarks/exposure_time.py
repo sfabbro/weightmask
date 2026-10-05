@@ -3,9 +3,9 @@
 
 Every per-stage number so far has been the *streak stage* alone, which is the
 wrong unit for anyone deciding whether to run it: a survey pays per exposure, and
-an exposure is 36 chips. This measures the exposure.
+an exposure is usually 36 chips. This measures the exposure.
 
-Runs the production CLI over all 36 science extensions of one MEF, once with
+Runs the production CLI over all 2-D science HDUs of one MEF, once with
 ``streak_masking.enable: true`` and once with ``enable: false``, and reports wall
 time for each plus the difference. Both arms write their own outputs, so neither
 short-circuits a stage.
@@ -23,8 +23,8 @@ handled here:
   ``select.poll``. Nothing is profiled here: the pipeline already prints a
   per-stage timing line per chip (``--- Image processed in N seconds ---
   top=cosmics:Xs streaks:Ys``), and that is parsed.
-* **Two copies of the same run.** If neither arm reported a streak pixel the
-  comparison would be meaningless, so the total is checked and called out.
+* **Zero detections.** A streak search can cost time without finding a trail.
+  Zero detections measure that search cost, but do not establish recall.
 
 Wall time is wall time. The default comparison runs ``--nproc 1`` so the number is
 one core's cost and the stage attribution stays readable; ``--scaling`` sweeps
@@ -47,6 +47,8 @@ import subprocess
 import sys
 import tempfile
 import time
+
+import fitsio
 
 REPO = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 FLAT = os.path.join(REPO, "benchmark_data", "megacam", "perf", "flat_08Bm01_r.fits.fz")
@@ -93,8 +95,8 @@ def run_once(exposure, enable_streaks, outdir, nproc=1):
         str(nproc),
     ]
     # --hdu takes a single index and repeated uses overwrite rather than accumulate,
-    # so a multi-chip subset is not expressible as flags. Build the chip list
-    # ourselves from the file and pass nothing: the default is every 2-D extension.
+    # so a multi-chip subset is not expressible as flags. Pass nothing: the
+    # default is every 2-D science HDU.
     # An earlier version appended one --hdu per chip and silently measured a
     # single-chip run while reporting it as eight.
     started = time.perf_counter()
@@ -153,20 +155,30 @@ def main(argv=None):
     parser.add_argument("--keep", action="store_true")
     args = parser.parse_args(argv)
 
-    chips = 36
+    if args.repeats < 1:
+        parser.error("--repeats must be positive")
+    if args.scaling is not None and (not args.scaling or args.scaling[0] != 1 or min(args.scaling) < 1):
+        parser.error("--scaling must start with 1 and contain only positive worker counts")
+    if args.hdus:
+        parser.error(
+            "--hdus is not supported. --hdu takes a single index and repeated uses overwrite, "
+            "and a renumbered subset MEF pairs chip 0 with a flat that has no HDU 0 -- the "
+            "pipeline then fails that chip. Time the whole exposure instead."
+        )
+    with fitsio.FITS(args.exposure) as hdus:
+        infos = [hdu.get_info() for hdu in hdus]
+    shapes = [info["dims"] for info in infos if info.get("hdutype") == 0 and info.get("ndims") == 2]
+    chips = len(shapes)
+    if not chips:
+        parser.error("exposure contains no 2-D science HDUs")
+    pixels = sum(height * width for height, width in shapes)
     outdir = tempfile.mkdtemp(prefix="wm_exposure_time_")
     try:
         print(f"exposure: {os.path.relpath(args.exposure, REPO)}")
-        print(f"chips:    {chips} x 9.8 Mpix = {chips * 9.8:.0f} Mpix")
+        print(f"chips:    {chips} ({pixels / 1e6:.1f} Mpix total)")
         print(f"flat:     {os.path.relpath(FLAT, REPO)}")
         print(f"cores:    {os.cpu_count()} logical\n", flush=True)
 
-        if args.hdus:
-            raise SystemExit(
-                "--hdus is not supported. --hdu takes a single index and repeated uses overwrite, "
-                "and a renumbered subset MEF pairs chip 0 with a flat that has no HDU 0 -- the "
-                "pipeline then fails that chip. Time the whole exposure instead."
-            )
         exposure = args.exposure
 
         if args.scaling:
@@ -183,10 +195,14 @@ def scaling(args, exposure, outdir, chips):
 
     Efficiency is wall_1 / (wall_n * n), not wall_1 / wall_n: the first is how much
     of the machine the run actually used, the second only says it got faster. A
-    number that scales sub-linearly is either a serial prologue or work that is not
-    thread-safe, and the two call for different fixes, so both are printed.
+    number that scales sub-linearly can reflect serial work or resource
+    contention; this table does not distinguish the causes.
     """
     values = args.scaling
+    if not values or values[0] != 1 or min(values) < 1:
+        raise ValueError("scaling must start with 1 and contain only positive worker counts")
+    if args.repeats < 1:
+        raise ValueError("repeats must be positive")
     print("warmup (discarded)...", flush=True)
     run_once(exposure, True, outdir, nproc=values[0])
     print(flush=True)
@@ -202,7 +218,7 @@ def scaling(args, exposure, outdir, chips):
 
     base = rows[0][1]
     print("\n=== scaling, streaks ON ===")
-    print(f"  {'nproc':>6} {'wall':>9} {'speedup':>9} {'efficiency':>11} {'us/chip':>9}")
+    print(f"  {'nproc':>6} {'wall':>9} {'speedup':>9} {'efficiency':>11} {'s/chip':>9}")
     for nproc, wall in rows:
         speedup = base / wall
         efficiency = base / (wall * nproc)
@@ -211,7 +227,7 @@ def scaling(args, exposure, outdir, chips):
     print(f"\n  fastest: nproc={best_nproc} at {best_wall:.1f}s ({base / best_wall:.2f}x over nproc={rows[0][0]})")
     if len(rows) > 1:
         marginal = (rows[-2][1] - rows[-1][1]) / (rows[-1][1] or 1) * 100
-        print(f"  last step bought {marginal:.0f}% -- near-zero means the run has gone serial-bound")
+        print(f"  last step bought {marginal:.0f}% -- near-zero means more workers did not help")
     return 0
 
 
@@ -256,8 +272,8 @@ def comparison(args, exposure, outdir, chips):
     print(f"  streak stage's share of the full run: {100 * delta / on_t:.0f}%")
 
     if off_px == 0.0 and on_px == 0.0:
-        print("\n  WARNING: both arms reported zero streak pixels, so the difference above")
-        print("  is two copies of the same run rather than a measurement of the stage.")
+        print("\n  NOTE: both arms reported zero streak pixels. The difference measures")
+        print("  the search cost on this exposure, without evidence of trail recovery.")
     elif off_px:
         print(f"\n  NOTE: the streaks-OFF arm still reported {off_px:,.0f} px, so the stage")
         print("  was not fully off. Check the config rewrite.")

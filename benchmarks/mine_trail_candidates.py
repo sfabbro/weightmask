@@ -17,8 +17,9 @@ import numpy as np
 
 
 def main():
-    import fitsio
     import glob
+
+    import fitsio
     import yaml
 
     from weightmask.background import estimate_background

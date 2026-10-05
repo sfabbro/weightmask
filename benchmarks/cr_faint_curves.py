@@ -3,7 +3,7 @@
 
 Injects single-pixel CRs and multi-pixel worms at known positions into a real
 image, runs ``detect_cosmic_rays`` under several configs, and reports completeness
-per morphology plus false-positive pixels and runtime. Each (variant, seed) is one
+per morphology plus novel off-truth pixels and runtime. Each (variant, seed) is one
 TSV row, so two runs can be diffed instead of eyeballed.
 
 The interesting variant is ``single-pass``: the production two-pass arrangement
@@ -32,30 +32,40 @@ def inject(sci, sky, rms, rng, n_single=150, n_worm=60):
     truth_worm = np.zeros(sci.shape, dtype=bool)
     h, w = sci.shape
     out = sci.copy()
+    valid = np.isfinite(sci) & np.isfinite(sky) & np.isfinite(rms) & (rms > 0)
+    interior = valid.copy()
+    interior[:10] = interior[-10:] = False
+    interior[:, :10] = interior[:, -10:] = False
+    locations = np.flatnonzero(interior)
+    if not locations.size:
+        raise ValueError("no finite positive-RMS interior pixels for CR injection")
     for _ in range(n_single):
-        y, x = rng.integers(10, h - 10), rng.integers(10, w - 10)
-        out[y, x] = sky[y, x] + rng.uniform(4, 8) * rms[y, x]
+        y, x = np.unravel_index(rng.choice(locations), sci.shape)
+        out[y, x] += rng.uniform(4, 8) * rms[y, x]
         truth_single[y, x] = True
     for _ in range(n_worm):
-        y, x = rng.integers(10, h - 10), rng.integers(10, w - 10)
+        y, x = np.unravel_index(rng.choice(locations), sci.shape)
         angle = rng.uniform(0, np.pi)
         length = int(rng.integers(3, 9))
         amp = rng.uniform(4, 8)
+        used = set()
         for t in range(length):
             yy, xx = int(y + t * np.sin(angle)), int(x + t * np.cos(angle))
-            if 0 <= yy < h and 0 <= xx < w:
-                out[yy, xx] = sky[yy, xx] + amp * rms[yy, xx]
+            if 0 <= yy < h and 0 <= xx < w and valid[yy, xx] and (yy, xx) not in used:
+                out[yy, xx] += amp * rms[yy, xx]
                 truth_worm[yy, xx] = True
+                used.add((yy, xx))
     return out, truth_single, truth_worm
 
 
-def score(flag, truth_single, truth_worm):
+def score(flag, truth_single, truth_worm, baseline=None):
     from scipy.ndimage import binary_dilation
 
     near_any = binary_dilation(truth_single | truth_worm, iterations=1)
     tp_single = np.count_nonzero(flag & truth_single)
     tp_worm = np.count_nonzero(flag & truth_worm)
-    fp = np.count_nonzero(flag & ~near_any)
+    novel = flag if baseline is None else flag & ~baseline
+    fp = np.count_nonzero(novel & ~near_any)
     return (
         tp_single / max(1, np.count_nonzero(truth_single)),
         tp_worm / max(1, np.count_nonzero(truth_worm)),
@@ -84,7 +94,7 @@ def variants(cosmic_base):
     }
 
 
-TSV_COLUMNS = ["exposure", "hdu", "seed", "variant", "single_recall", "worm_recall", "fp_px", "total_px", "dt_s"]
+TSV_COLUMNS = ["exposure", "hdu", "seed", "variant", "single_recall", "worm_recall", "novel_fp_px", "total_px", "dt_s", "metric_revision"]
 
 
 def format_tsv(rows):
@@ -103,6 +113,8 @@ def main(argv=None):
     parser.add_argument("--out", default=None)
     parser.add_argument("--summary-only", action="store_true")
     args = parser.parse_args(argv)
+    if args.seeds < 1:
+        parser.error("--seeds must be positive")
 
     import fitsio
     import yaml
@@ -122,6 +134,7 @@ def main(argv=None):
     assert sky is not None and rms is not None
 
     rows = []
+    baselines = {}
     for seed in range(args.seed, args.seed + args.seeds):
         rng = np.random.default_rng(seed)
         injected, truth_single, truth_worm = inject(sci, sky, rms, rng)
@@ -130,6 +143,9 @@ def main(argv=None):
             cfg = {**cosmic_base, **override}
             if isinstance(override.get("faint_cr"), dict):
                 cfg["faint_cr"] = {**cosmic_base["faint_cr"], **override["faint_cr"]}
+            if name not in baselines:
+                baselines[name] = detect_cosmic_rays(sci, empty, saturation, gain, read_noise, cfg,
+                                                    bkg_rms_map=rms, sky_map=sky, header=header)
             t0 = time.time()
             flag = detect_cosmic_rays(
                 injected,
@@ -143,8 +159,8 @@ def main(argv=None):
                 header=header,
             )
             dt = time.time() - t0
-            single, worm, fp, total = score(flag, truth_single, truth_worm)
-            print(f"  {name:18s} single={single:.3f} worm={worm:.3f} fp_px={fp:6d} total={total:6d} {dt:5.1f}s")
+            single, worm, fp, total = score(flag, truth_single, truth_worm, baselines[name])
+            print(f"  {name:18s} single={single:.3f} worm={worm:.3f} novel_fp_px={fp:6d} total={total:6d} {dt:5.1f}s")
             rows.append(
                 {
                     "exposure": exposure_id,
@@ -153,10 +169,11 @@ def main(argv=None):
                     "variant": name,
                     "single_recall": round(single, 3),
                     "worm_recall": round(worm, 3),
-                    "fp_px": fp,
+                    "novel_fp_px": fp,
                     "total_px": total,
                     "dt_s": round(dt, 1),
                     "_description": description,
+                    "metric_revision": "additive-finite-injection-v2",
                 }
             )
 
@@ -168,7 +185,7 @@ def main(argv=None):
             print(
                 f"{name:18s} single={np.mean([r['single_recall'] for r in subset]):.3f} "
                 f"worm={np.mean([r['worm_recall'] for r in subset]):.3f} "
-                f"fp_px={np.mean([r['fp_px'] for r in subset]):.0f} "
+                f"novel_fp_px={np.mean([r['novel_fp_px'] for r in subset]):.0f} "
                 f"dt={np.mean([r['dt_s'] for r in subset]):.1f}s  # {description}"
             )
     if args.out:

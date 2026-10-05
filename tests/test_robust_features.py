@@ -7,7 +7,7 @@ from weightmask.background import estimate_background
 from weightmask.cosmics import detect_cosmic_rays
 from weightmask.satur import grow_bleed_trails
 from weightmask.streaks import detect_streaks
-from weightmask.variance import _rescale_variance_robust, _unbias_variance
+from weightmask.variance import _rescale_variance_robust
 
 
 class TestRobustFeatures(unittest.TestCase):
@@ -74,19 +74,6 @@ class TestRobustFeatures(unittest.TestCase):
         # 0.04 * 0.25 = 0.01
         self.assertAlmostEqual(np.median(scaled_inv_var), 0.01, delta=0.005)
 
-    def test_variance_unbiasing(self):
-        """Test removal of signal-dependent Poisson noise."""
-        sky = np.full(self.shape, 0.0, dtype=np.float32)
-        gain = 1.0
-        # Variance = BG_var + Signal/Gain
-        # If Signal=100 and BG_var=25, Total_var=125, inv_var=0.008
-        # Unbiasing should return inv_var=1/25 = 0.04
-        data = np.full(self.shape, 100.0, dtype=np.float32)
-        inv_var = np.full(self.shape, 1.0 / 125.0, dtype=np.float32)
-
-        unbiased = _unbias_variance(inv_var, data, sky, gain, 1e-9)
-        self.assertAlmostEqual(np.median(unbiased), 0.04, delta=0.001)
-
     def test_psf_cr_protection(self):
         """Test that star cores are protected from CR detection."""
         # Create a star with FWHM ~ 3.5 (sigma = 1.5)
@@ -136,10 +123,10 @@ class TestRobustFeatures(unittest.TestCase):
                 "min_inliers": 5,
                 "min_length": 50,
                 "detect_thresh_sig": 5.0,
+                "dilation_radius": 1,
                 # Sparse dotted trails: inlier count / endpoint span is ~0.04 for this fixture
                 "min_line_density": 0.03,
             },
-            "dilation_radius": 1,
         }
 
         # Need background RMS for thresholding

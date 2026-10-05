@@ -26,7 +26,6 @@ from __future__ import annotations
 
 import argparse
 import os
-import re
 import shutil
 import subprocess
 import sys
@@ -51,7 +50,7 @@ def export_checkout(destination):
     os.remove(os.path.join(destination, "tree.tar"))
 
 
-def carry_uncommitted(paths):
+def carry_uncommitted(destination):
     """Copy work that is staged or modified but not yet committed.
 
     A new workflow fix cannot be validated from HEAD alone, since by definition
@@ -60,21 +59,30 @@ def carry_uncommitted(paths):
     deliberately left behind.
     """
     listed = subprocess.run(
-        ["git", "status", "--porcelain"], cwd=REPO, check=True, stdout=subprocess.PIPE, text=True
+        ["git", "status", "--porcelain", "-z", "-uall"], cwd=REPO, check=True, stdout=subprocess.PIPE, text=True
     ).stdout
     carried = []
-    for line in listed.splitlines():
-        if not line.strip():
+    records = iter(listed.split("\0"))
+    for line in records:
+        if not line:
             continue
-        path = line[3:].strip()
-        if " -> " in path:  # a rename
-            path = path.split(" -> ", 1)[1]
+        path = line[3:]
+        if "R" in line[:2] or "C" in line[:2]:
+            old_path = next(records)  # -z lists destination first, then source.
+            old_target = os.path.join(destination, old_path)
+            if "R" in line[:2] and os.path.lexists(old_target):
+                os.remove(old_target)
         source = os.path.join(REPO, path)
-        if not os.path.isfile(source):
+        target = os.path.join(destination, path)
+        if not os.path.isfile(source) and not os.path.islink(source):
+            if os.path.lexists(target):
+                os.remove(target)
+                carried.append(f"-{path}")
             continue
-        target = os.path.join(DEST, path)
         os.makedirs(os.path.dirname(target), exist_ok=True)
-        shutil.copy2(source, target)
+        if os.path.lexists(target):
+            os.remove(target)
+        shutil.copy2(source, target, follow_symlinks=False)
         carried.append(path)
     return carried
 
@@ -82,7 +90,7 @@ def carry_uncommitted(paths):
 DEST = ""
 
 
-def run(step, args, label):
+def run(args, label):
     print(f"\n{'=' * 70}\n  {label}\n{'=' * 70}", flush=True)
     completed = subprocess.run(args, cwd=DEST, text=True, capture_output=True)
     sys.stdout.write(completed.stdout)
@@ -122,7 +130,7 @@ def main(argv=None):
 
         steps = {
             "lint": (["pixi", "run", "lint"], "setup-pixi -> pixi run lint"),
-            "test": (["pixi", "run", "test"], "pixi run test"),
+            "test": (["pixi", "run", "test", "--", "-rs"], "pixi run test (including skip reasons)"),
             "smoke": (
                 [
                     "pixi",
@@ -136,35 +144,15 @@ def main(argv=None):
                 "entry-point smoke",
             ),
         }
-        selected = [s for s in ("lint", "test", "smoke") if args.step in ("all", s)]
+        selected = [
+            s for s in ("lint", "test", "smoke") if args.step in ("all", s) or (args.step == "skips" and s == "test")
+        ]
 
         failures = []
         for name in selected:
             command, label = steps[name]
-            if run(name, command, label) != 0:
+            if run(command, label) != 0:
                 failures.append(name)
-
-        if args.step in ("all", "skips"):
-            print(f"\n{'=' * 70}\n  what CI would actually verify\n{'=' * 70}")
-            completed = subprocess.run(
-                ["pixi", "run", "python", "-m", "pytest", "-q", "-rs"],
-                cwd=DEST,
-                text=True,
-                capture_output=True,
-            )
-            summary = completed.stdout.strip().splitlines()[-1] if completed.stdout.strip() else "?"
-            print(f"  {summary}")
-            skips = re.findall(r"^SKIPPED \[(\d+)\] (?:.*?:)?\s*(.+)$", completed.stdout, re.M)
-            if skips:
-                total = sum(int(count) for count, _ in skips)
-                print(f"\n  {total} skipped test(s), {len(skips)} distinct reason(s):")
-                for count, reason in skips:
-                    print(f"    {count:>3}x  {reason.strip()}")
-                print("\n  A skip is not a pass. Anything listed above is unverified on")
-                print("  the runner -- for the real-data assertions, make the data")
-                print("  available in CI rather than shipping a green run that skips.")
-            else:
-                print("  nothing skipped")
 
         print()
         if failures:

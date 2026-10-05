@@ -26,6 +26,7 @@ BOOTSTRAP="$(cd "$(dirname "$0")/../.." && pwd)"
 MANIFEST_SHA="${MANIFEST_SHA:?set MANIFEST_SHA to the manifest pinned_sha}"
 CHECKOUT_REF="${CHECKOUT_REF:-$MANIFEST_SHA}"
 REPO_URL="${REPO_URL:-https://github.com/astroai/weightmask.git}"
+PROJECT_MOUNT="${PROJECT_MOUNT:-/arc/projects/mlao/cfhtcast}"
 WORK_ROOT="$PROJECT_MOUNT/weightmask-perf"
 PIXI_CACHE_DIR="${PIXI_CACHE_DIR:-$WORK_ROOT/pixi-cache}"
 KEEP_ALL="${KEEP_ALL:-0}"
@@ -44,8 +45,7 @@ mkdir -p "$JOB_DIR" "$RESULTS_DIR"
 export PIXI_CACHE_DIR="$JOB_DIR/pixi-cache"
 mkdir -p "$PIXI_CACHE_DIR"
 export PYTHONUNBUFFERED=1
-# Thread env is unset by default so runs see full OpenBLAS/MKL threading.
-# The E5 pinned twin re-exports OMP/MKL=1 via its job env.
+# Ignore image defaults; explicit manifest settings are restored below.
 unset OMP_NUM_THREADS MKL_NUM_THREADS
 MANIFEST="$BOOTSTRAP/benchmarks/canfar_experiments/manifest.json"
 GROUP_JSON="$JOB_DIR/group.json"
@@ -68,9 +68,24 @@ manifest_path, exp_id, job_tag, out = sys.argv[1:5]
 m = json.load(open(manifest_path))
 g = next(x for x in m["groups"] if x["exp_id"] == exp_id)
 job = next(j for j in g["jobs"] if j["tag"] == job_tag)
+if not g["safe_ids"] or "TBD" in g["safe_ids"]:
+    raise ValueError("experiment exposure IDs are not resolved; fill winner inputs before submitting")
+if len(g.get("flat_safe_ids", [])) > 1:
+    raise ValueError("multiple flats require an explicit per-exposure mapping; this wrapper accepts one flat")
 json.dump({"group": g, "job": job, "image": m["defaults"]["image"]}, open(out, "w"), indent=2)
 print("group:", exp_id, "exposures:", g["safe_ids"], "workers:", job["workers"])
 EOF
+
+while IFS= read -r kv; do export "$kv"; done < <(python3 - "$GROUP_JSON" <<'EOF'
+import json, sys
+record = json.load(open(sys.argv[1]))
+env = dict(record["group"].get("env", {}))
+env.update(record["job"].get("env", {}))
+for key in ("OMP_NUM_THREADS", "MKL_NUM_THREADS"):
+    if key in env:
+        print(key + "=" + str(env[key]))
+EOF
+)
 
 git clone "$REPO_URL" "$REPO_DIR"
 git -C "$REPO_DIR" checkout "$CHECKOUT_REF"
@@ -99,7 +114,13 @@ def fetch(url, out):
         print("exists:", out)
         return
     print("fetch:", url)
-    urllib.request.urlretrieve(url, out)
+    partial = out + ".part"
+    try:
+        urllib.request.urlretrieve(url, partial)
+        os.replace(partial, out)
+    finally:
+        if os.path.exists(partial):
+            os.remove(partial)
 
 PUB = "https://www.cadc-ccda.hia-iha.nrc-cnrc.gc.ca/data/pub/CFHT"
 recs = []
@@ -122,8 +143,8 @@ for fsafe in grp.get("flat_safe_ids", []):
             break
         except Exception as e:
             print("flat variant miss:", variant, str(e)[:120])
-    if not got and os.path.exists(dest):
-        flats[fsafe] = dest
+    if not got:
+        raise RuntimeError("no usable flat downloaded for " + fsafe)
 json.dump({"records": recs, "flats": flats}, open(os.path.join(job_dir, "staged.json"), "w"), indent=2)
 EOF
 
@@ -238,61 +259,69 @@ cpu_percent = (cpu_s / wall * 100.0) if wall else None
 masks = sorted(glob.glob(os.path.join(repo, "test_outputs", "perf", "*.mask.fits")))
 ctrl_dir = os.path.join(os.path.dirname(res_dir), "E0-w8")
 diff = {"mode": None}
+checksums = {}
 try:
+    import hashlib
     import numpy as np
     from astropy.io import fits as _fits
 
-    def frac(path):
+    def read_mask(path):
         with _fits.open(path) as h:
-            d = None
-            for hdu in h:
-                if getattr(hdu, "data", None) is not None and hdu.data.size > 1:
-                    d = np.asarray(hdu.data)
-                    break
-        return (None if d is None else float(np.count_nonzero(d)) / d.size,
-                None if d is None else d)
+            arrays = [(i, np.array(hdu.data)) for i, hdu in enumerate(h)
+                      if getattr(hdu, "data", None) is not None and hdu.data.ndim == 2]
+        if not arrays:
+            raise ValueError(f"no mask image HDUs in {path}")
+        return arrays
 
-    same = [p for p in masks if os.path.basename(p).startswith(tuple(
-        json.load(open(os.path.join(job_dir, "group.json")))["group"]["safe_ids"]))]
+    safe_ids = json.load(open(os.path.join(job_dir, "group.json")))["group"]["safe_ids"]
+    same = {os.path.basename(p).split(".")[0]: p for p in masks
+            if os.path.basename(p).split(".")[0] in safe_ids and f".w{workers}." in os.path.basename(p)}
     ctrl = sorted(glob.glob(os.path.join(ctrl_dir, "*.mask.fits")))
-    ctrl_same = [p for p in ctrl if os.path.basename(p).split(".")[0] in
-                 json.load(open(os.path.join(job_dir, "group.json")))["group"]["safe_ids"]]
-    if same and ctrl_same and os.path.abspath(same[0]) != os.path.abspath(ctrl_same[0]):
-        f1, d1 = frac(same[0])
-        f0, d0 = frac(ctrl_same[0])
-        if d1 is not None and d0 is not None and d1.shape == d0.shape:
-            b1, b0 = d1.astype(bool), d0.astype(bool)
-            union = int(np.count_nonzero(b1 | b0))
-            diff = {"mode": "pixel", "control": os.path.basename(ctrl_same[0]),
-                    "kept": int(np.count_nonzero(b1 & b0)), "lost": int(np.count_nonzero(b0 & ~b1)),
-                    "gained": int(np.count_nonzero(b1 & ~b0)), "union": union,
-                    "identical": bool(np.array_equal(b1, b0))}
-        else:
-            diff = {"mode": "fraction", "control_frac": f0, "exp_frac": f1}
+    ctrl_same = {os.path.basename(p).split(".")[0]: p for p in ctrl if ".w8." in os.path.basename(p)}
+    fractions, comparisons = {}, {}
+    for exposure, path in same.items():
+        arrays = read_mask(path)
+        fractions[exposure] = sum(np.count_nonzero(a) for _, a in arrays) / sum(a.size for _, a in arrays)
+        digest = hashlib.sha256()
+        for index, array in arrays:
+            digest.update(str((index, array.shape, array.dtype.str)).encode())
+            digest.update(np.ascontiguousarray(array).tobytes())
+        checksums[exposure] = digest.hexdigest()
+        if exposure not in ctrl_same:
+            continue
+        control = read_mask(ctrl_same[exposure])
+        if [(i, a.shape) for i, a in arrays] != [(i, a.shape) for i, a in control]:
+            raise ValueError(f"mask HDU layout mismatch for {exposure}")
+        counts = dict(kept=0, lost=0, gained=0, union=0, identical=True)
+        for (_, a1), (_, a0) in zip(arrays, control):
+            b1, b0 = a1.astype(bool), a0.astype(bool)
+            for key, pixels in (("kept", b1 & b0), ("lost", b0 & ~b1),
+                                ("gained", b1 & ~b0), ("union", b1 | b0)):
+                counts[key] += int(np.count_nonzero(pixels))
+            counts["identical"] &= bool(np.array_equal(a1, a0))
+        comparisons[exposure] = counts
+    if comparisons:
+        diff = {"mode": "pixel", "per_exposure": comparisons,
+                **{key: sum(c[key] for c in comparisons.values()) for key in ("kept", "lost", "gained", "union")},
+                "unmatched": sorted(set(same) - set(comparisons)),
+                "identical": len(comparisons) == len(same) and all(c["identical"] for c in comparisons.values())}
     else:
-        diff = {"mode": "fraction-self", "exp_fracs": {os.path.basename(p): frac(p)[0] for p in same}}
+        diff = {"mode": "fraction-self", "exp_fracs": fractions}
 except Exception as e:
     diff = {"mode": "error", "note": str(e)[:200]}
-
-import hashlib
-checksums = {}
-for p in masks:
-    try:
-        h = hashlib.sha1()
-        with _fits.open(p) as fh:
-            for hdu in fh:
-                if getattr(hdu, "data", None) is not None and hdu.data.size > 1:
-                    h.update(np.ascontiguousarray(hdu.data).tobytes())
-                    break
-        checksums[os.path.basename(p)] = h.hexdigest()[:16]
-    except Exception as e:
-        checksums[os.path.basename(p)] = "error:" + str(e)[:60]
+    checksums = {}
 
 metrics = {"exp_id": exp_id, "job_tag": job_tag, "wall_s": wall,
            "max_rss_kb": max_rss, "cpu_percent": cpu_percent,
-           "parallel_efficiency": (cpu_percent / 800.0) if cpu_percent else None,
+           "workers": int(workers),
+           "parallel_efficiency": (cpu_percent / (100.0 * int(workers))) if cpu_percent is not None else None,
            "mpix": mpix, "mpix_s": (mpix / wall) if wall else None,
-           "mask_checksums": checksums, "source": source, "cpu_basis": cpu_basis,
+           "nhdus": nhdus, "per_stage": per_stage, "mask_diff": diff,
+           "mask_checksums": checksums, "mask_checksum_scope": "all-image-hdus-v1",
+           "source": source, "cpu_basis": cpu_basis,
+           "input_key": {"safe_ids": sorted(json.load(open(os.path.join(job_dir, "group.json")))["group"]["safe_ids"]),
+                         "flat_safe_ids": sorted(json.load(open(os.path.join(job_dir, "group.json")))["group"].get("flat_safe_ids", [])),
+                         "workers": int(workers), "nhdus": nhdus},
            "harness_report": f"megacam_perf_{tag}.json"}
 json.dump(metrics, open(os.path.join(res_dir, "metrics.json"), "w"), indent=2)
 

@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Faithful emulation of poloka-core MakeSatellite (SFabbro/poloka-core).
 
-Pipeline: zero weight-bad + saturated pixels -> connected components above
+Pipeline: exclude weight-bad + saturated pixels -> connected components above
 sky + 1*sigma (recursive flood fill; restarts at +0.1 sigma on enormous
 clusters) -> keep components with size >= diag/10, elongation >= 2,
 major axis >= diag/50 -> mask kept pixels, NBRSATEL count.
@@ -21,16 +21,17 @@ def poloka_satellite_mask(data, sky_map, sigma, existing_mask=None, sat_mask=Non
     """Return (bool mask, n_tracks, details). Mirrors ClusterList/Cut/Mask."""
     from scipy.ndimage import label
 
-    img = np.where(np.isfinite(data), data, 0.0).astype(np.float64)
-    if existing_mask is not None:
-        img = np.where(existing_mask, 0.0, img)
-    if sat_mask is not None:
-        img = np.where(sat_mask, 0.0, img)
+    img = np.asarray(data, dtype=np.float64)
     sky = np.nanmedian(sky_map) if np.ndim(sky_map) else float(sky_map)
     thresh = sky + nsigma * sigma
     h, w = img.shape
     diag = float(np.hypot(h, w))
-    lab, n = label(img > thresh)
+    candidates = np.isfinite(img) & (img > thresh)
+    if existing_mask is not None:
+        candidates &= ~np.asarray(existing_mask, dtype=bool)
+    if sat_mask is not None:
+        candidates &= ~np.asarray(sat_mask, dtype=bool)
+    lab, n = label(candidates)
     kept = np.zeros(img.shape, dtype=bool)
     details = []
     # C++ pushes only npixels > 20; skip noise specks vectorized (else the

@@ -3,9 +3,8 @@
 ``max_component_sigma`` can be set to any number or to ``null``, which disables
 the veto. The two facts worth pinning are separate and both have been true here:
 
-* the veto suppresses real artefact classes -- a hot column group and a bright
-  star arm, 10734 and 4385 px, which the pre-masked veto cannot catch because
-  both sit below its 0.25 threshold;
+* the known hot column group remains suppressed even with the veto off now
+  that bright seed objects receive their upstream masks;
 * it does not touch the two real satellite trails, at any setting including
   ``null``, because they measure 3.0 and 3.2 sigma against a threshold of 20.
 
@@ -13,7 +12,7 @@ The second is the one that matters for correctness. A deletion of the Hough
 stage passed the whole suite while dropping one of those trails to zero, because
 nothing asserted that the pipeline still finds them. These tests do.
 
-The veto is also uncalibrated at the high end: 20 is a 6x margin below a sample
+The veto is also uncalibrated at the high end: 20 is a 6x margin above a sample
 of two trails. That is recorded in weightmask.yml and is a deliberate
 provisional setting, not a measured constant.
 
@@ -41,7 +40,9 @@ FLAT = MEGACAM / "perf" / "flat_08Bm01_r.fits.fz"
 
 #: The two exposures carrying a confirmed satellite trail, and the pixel counts the
 #: detector produces on them. These are the regression this file exists for.
-REAL_TRAILS = [("long/996195p.fits.fz", 35, 12001), ("long/996195p.fits.fz", 36, 11034)]
+# Requalified after 0.2.1 confirms the band through known source masks. Cached
+# comparisons preserve every prior pixel; additions are inside existing masks.
+REAL_TRAILS = [("long/996195p.fits.fz", 35, 17321), ("long/996195p.fits.fz", 36, 10041)]
 
 
 def _shipped():
@@ -123,6 +124,7 @@ class TestRealTrailsSurviveEveryVetoSetting(unittest.TestCase):
         }
         for relative, hdu, expected in REAL_TRAILS:
             data_sub, rms, existing, scfg = _production_inputs(relative, hdu)
+            reference = None
             for label, override in settings.items():
                 mask = _detect(data_sub, rms, existing, scfg, **override)
                 pixels = int(mask.sum())
@@ -132,16 +134,18 @@ class TestRealTrailsSurviveEveryVetoSetting(unittest.TestCase):
                     f"{relative}:{hdu} with {label} produced {pixels} px, expected {expected}. "
                     "A real satellite trail must survive every veto setting.",
                 )
+                if reference is None:
+                    reference = mask
+                else:
+                    np.testing.assert_array_equal(mask, reference)
 
-    def test_the_veto_really_is_load_bearing(self):
-        """Guard the opposite direction: if the veto stopped mattering, this file's
-        other assertions would pass for the wrong reason."""
+    def test_upstream_masks_suppress_the_known_column_group_without_the_veto(self):
         path, hdu, _expected = ("perf/1013719p.fits.fz", 5, 0)
         data_sub, rms, existing, scfg = _production_inputs(path, hdu)
         with_veto = int(_detect(data_sub, rms, existing, scfg).sum())
         without = int(_detect(data_sub, rms, existing, scfg, max_component_sigma=None).sum())
         self.assertEqual(with_veto, 0, "the hot column group should be suppressed by default")
-        self.assertGreater(without, 1000, "disabling the veto should let the column group back in")
+        self.assertEqual(without, 0, "upstream masking should suppress the column group even without the veto")
 
 
 if __name__ == "__main__":

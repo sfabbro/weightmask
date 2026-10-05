@@ -9,27 +9,34 @@ objects, inverse variance, streaks, then weight and confidence. Config keys
 live in [`weightmask.yml`](../weightmask.yml).
 
 Quality bits use `set_means_flagged` polarity. `DETECTED` is informational by
-default and does not zero weight. `BAD`, `SAT`, `CR`, `STREAK`, and
-`INVALID_VARIANCE` do.
+default and does not zero weight. `BAD`, `SAT`, `CR`, `STREAK`,
+`INVALID_VARIANCE`, and `NO_DATA` do.
 
-## Bad pixels (`BAD`)
+## Bad pixels (`BAD`) and missing data (`NO_DATA`)
 
-**What.** Dead or hot pixels, dead columns, and blanked CCDs. They have no
-usable response and receive zero weight.
+**What.** Dead or hot pixels, dead columns, blanked CCDs (`BAD`), and
+non-finite science pixels and prescan/overscan regions outside `DATASEC` (`NO_DATA`). They have no usable
+sky response and receive zero weight.
 
 **Method.** On a real flat, a local median filter estimates the illumination.
 Pixels whose ratio to that surface is outside `[local_low_thresh,
 local_high_thresh]` are flagged. Optional column detection marks low-response
 columns from the derivative of the column median. With no flat, the pipeline
-uses `F = 1` and skips this flat-based `BAD` step.
+uses `F = 1` and skips this flat-based `BAD` step. Pixels outside the header's
+`DATASEC` bounding box (when smaller than the HDU array) are flagged as
+`NO_DATA` (`detect_non_illuminated`), as are non-finite science values. Non-finite
+flat pixels remain `BAD`, including entire invalid tiles.
 
-These extra `BAD` sources run in the CLI/MEF path only, not in
-`WeightMapGenerator.process`:
+These extra `BAD` sources run in the CLI/MEF path (`process_all_hdus`), not in
+single-array `process_image`:
 
 - `dead_ccd_*`: a CCD whose flat median is a MAD outlier versus its siblings
   is flagged entirely.
-- `--dark_image`: same local/column logic on a dark, OR'd into `BAD` if
-  `dark_masking` is in the config (canonical YAML includes it).
+- `--dark_image`: dark values above the HDU median plus `hot_sigma` times
+  the robust scatter (`1.4826 × MAD`), and non-finite dark values, become `BAD`
+  using `dark_masking.hot_sigma` (default 8). A zero dark is valid. This criterion assumes
+  a mostly healthy HDU with a uniform pedestal; structured darks need a
+  calibrated per-amplifier or local baseline.
 - `--badpix_mask`: keep-map (`0` = bad, `1` = good).
 
 **Config.** `flat_masking`, `dark_masking`.
@@ -42,8 +49,7 @@ column.
 **Method.** A guarded histogram clump on the high-ADU tail, then a plateau-tail
 percentile if that clump fails the guard, then the first present header
 keyword in `saturation.keyword` as an advisory fallback, then
-`effective_full_scale` / `fallback_level`. `saturation.method` accepts
-`histogram` or `header` but does not skip the histogram path. Saturated cores
+`effective_full_scale` / `fallback_level`. Saturated cores
 are grown up and down the CCD column until the data fall back toward sky, then
 dilated horizontally (`bleed_grow_horizontal`).
 
@@ -57,7 +63,8 @@ archive storage.
 
 **Method.** Default is SEP's SExtractor-style mesh background
 (`sep.Background`) with iterative object masking (`sep_background.iterations`).
-Fallbacks when SEP cannot run: crowded frames (`mask_threshold` is a masked
+The explicit median-filter method fills excluded pixels from their nearest
+valid neighbors before filtering. Fallbacks when SEP cannot run: crowded frames (`mask_threshold` is a masked
 *fraction*, not an object cut) switch to global SEP; failed mesh retries go
 to `robust_median_fallback`, then optional `smooth_surface`. `median_filter`
 is an explicit method, not a fallback rung. Negative interpolation overshoots
@@ -77,7 +84,7 @@ matches SEP's node phase, not SEP's C bicubic interpolant.
 
 **Method.** [L.A.Cosmic](#references) Laplacian detection via astroscrappy,
 with a PSF-peakiness gate so stellar cores are not taken as CRs, a size and
-contrast cut on connected components, and an optional fainter second pass
+contrast cut on connected components measured above the sky, and an optional fainter second pass
 that keeps only elongated multi-pixel “worms”.
 
 **Config.** `cosmic_ray`.
@@ -109,13 +116,28 @@ trail-aligned strip is refined on the full-resolution image:
 - Strip profile growth and geometric gates (`mask_params`).
 - Optional sparse RANSAC on residual bright pixels for dashed trails.
 
+Refits must retain the required along-trail support before a narrower strip can
+replace the current fit. The supplied config groups Hough support across gaps
+of at most 24 observed pixels and discards runs shorter than 8 pixels. Masked
+strip samples are omitted from Hough run selection. After confirmation, the
+fitted band crosses an interior source mask when the same candidate's surviving
+support still passes the coherence and occupancy gates and brackets the mask,
+and the science and RMS are finite there. Those pixels do not supply detection
+evidence. Unknown-noise regions and unmasked gaps are not filled.
+Contour candidates cannot bridge gaps; broad dashed-trail recovery remains a
+known limitation.
+
+Residual RANSAC searches continue after rejected clutter models. Only accepted
+trails count toward `sparse_ransac_params.max_trails`, and consumed inliers are
+removed before the next search.
+
 Two further extractors were removed after measurement, not preference. A
 multi-scale Canny/Hough stage accepted nothing on 56 of 56 real amps. An
 angle-binned Radon rescue accepted on 3 of 83, all false positives, and changed
 `recall_line` by +0.000 across 8 of 8 injected-trail cells spanning 4-12 sigma,
-two lengths and two seeds, while costing 121.7 s/amp of a 125.7 s/amp stage. The
-remains of the two -- houghpeaks explains every real detection on the corpus.
-Re-derive with `pixi run streak-sweep` and `pixi run streak-recall-floor`.
+two lengths and two seeds, while costing 121.7 s/amp of a 125.7 s/amp stage.
+Those measurements predate the 0.2.1 object-mask fixes. Re-derive with
+`pixi run streak-sweep` and `pixi run streak-recall-floor`.
 
 Frangi-ridge comparison code is not in the package; it lives in
 `benchmarks/frangi_legacy.py`.
@@ -138,20 +160,22 @@ ivar = g² F² / (S g F + r²)
 The sky term is `S g F` because a star sitting on a spatially varying flat
 (`tests/test_photometry_bias.py`) shifts the weighted aperture by more than
 that fixture's read-noise floor. At `F = 1` the two denominators agree.
-Omitting `variance.flat_fielded_poisson` keeps the older `S g` denominator.
 That expression is the core plane. Canonical `weightmask.yml` then adds
 `flat_rel_noise` (`(S g · rel)²` in the electron denominator, with `rel`
 increased where the flat is below its median) and `rescale_variance` (scale
 so background SNR has robust standard deviation 1). Omit those keys and the
-in-code fallbacks leave both off.
+in-code fallbacks leave both off. All three variance methods estimate
+background-only variance.
 
 Weight is masked inverse variance. Confidence is that weight divided by its
 configured percentile (default 99th), clipped to `[0, 1]` unless
 `confidence_params.scale_to_100` is true. `normalize_scope: per_exposure` is
-applied by the MEF CLI only when the primary map is confidence
+applied once to unclipped weights by the MEF CLI only when the primary map is confidence
 (`output_map_format: confidence`); the canonical YAML writes weight, so that
-rescale is a no-op. `WeightMapGenerator` does not apply it. The in-code
-fallback is `per_hdu`.
+rescale is a no-op. Single-array `process_image` does not apply it. The in-code
+fallback is `per_hdu`. Exposure normalization samples at most 20,000 positive
+weights per HDU; it approximates the exposure percentile and gives similar
+influence to differently sized HDUs.
 
 Gain and read noise are one scalar per HDU (first present header keyword,
 recorded as `GAIN_SRC`) unless both `GAINA` and `GAINB` exist and a section
@@ -159,13 +183,11 @@ keyword splits the HDU. Then the variance plane uses that gain map.
 
 **Config.** `variance`, `confidence_params`, `output_params`.
 
-## Out of scope in 0.1
+## Out of scope
 
 Not modelled: persistence, CTI trails, IPC, amplifier crosstalk, ghosts,
 scattered light as a separate class, fringing, correlated read-noise
-templates, or a learned detector. Future work on calibration-conditioned and
-probabilistic products is sketched in
-[`research/nextgen_weightmask.md`](research/nextgen_weightmask.md).
+templates, or a learned detector.
 
 ## References
 
@@ -175,10 +197,9 @@ probabilistic products is sketched in
 - van Dokkum, P. G. 2001, PASP, 113, 1420 (L.A.Cosmic).
 - McCully, C., et al., [astroscrappy](https://github.com/astropy/astroscrappy)
   (ASCL:1609.012).
-- Canny, J. 1986, IEEE Trans. Pattern Anal. Mach. Intell., 8, 679.
 - Duda, R. O., & Hart, P. E. 1972, Commun. ACM, 15, 11 (Hough transform).
-- Galambos, C., Kittler, J., & Matas, J. 1999, CAIP (probabilistic Hough;
-  scikit-image `probabilistic_hough_line`).
+- Lorensen, W. E., & Cline, H. E. 1987, SIGGRAPH, 21, 163 (marching contours;
+  scikit-image `find_contours`).
 - Fischler, M. A., & Bolles, R. C. 1981, Commun. ACM, 24, 381 (RANSAC).
 - STScI `acstools.satdet` (HST/ACS satellite-trail tools; weightmask's Hough
   path is inspired by this style of detector, not a verbatim port).

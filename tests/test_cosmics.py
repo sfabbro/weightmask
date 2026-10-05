@@ -1,7 +1,6 @@
 import unittest
-
-# Try to find astroscrappy
 from importlib.util import find_spec
+from unittest.mock import patch
 
 import numpy as np
 
@@ -110,11 +109,16 @@ class TestCosmics(unittest.TestCase):
 
         config = {"sigclip": 4.5, "objlim": 5.0}
 
-        # Test behavior when astroscrappy is not available
-        if not ASTROSCRAPPY_AVAILABLE:
+        with (
+            patch("weightmask.cosmics.detect_cosmics", side_effect=OSError("injected failure")) as detector,
+            patch("builtins.print") as log,
+        ):
             mask = detect_cosmic_rays(sci_data, existing_mask, saturation_level, gain, read_noise, config)
-            # Should return empty mask when astroscrappy is not available
-            self.assertEqual(np.sum(mask), 0)
+        detector.assert_called_once()
+        self.assertEqual(mask.dtype, bool)
+        self.assertEqual(mask.shape, sci_data.shape)
+        self.assertEqual(np.sum(mask), 0)
+        log.assert_any_call("  ERROR: astroscrappy failed on primary CR pass: injected failure")
 
 
 if __name__ == "__main__":

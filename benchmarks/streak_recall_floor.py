@@ -7,9 +7,10 @@ amps: 3 acceptances, all false positives; injected trails at 4/6/8/12 sigma:
 +0.000 ``recall_line`` in 8 of 8 cells; 121.7 s/amp of a 125.7 s/amp stage).
 
 What is worth keeping is the other half: the recall curve itself. The shipped
-detector finds both real trails in 996195p in 0.3 s and masks nothing at all on
-81 of the other 82 amps, so there is no local measurement of where it *stops*
-working. This supplies one, and it is the number any future sensitive stage has
+detector's earlier snapshot found both real trails in 996195p in 0.3 s and
+masked nothing on 81 of the other 82 amps. Those are historical measurements,
+not current timings or a measurement of where it stops working. This supplies
+that curve, and it is the number any future sensitive stage has
 to beat before it earns its cost back.
 
 Trails are injected into ``data_sub`` after the production background, so the
@@ -175,7 +176,7 @@ def main(argv=None):
     with open(args.out, "w") as handle:
         json.dump(results, handle, indent=1)
     print("wrote", args.out)
-    return 0
+    return int(any(record.get("error") for record in results))
 
 
 if __name__ == "__main__":

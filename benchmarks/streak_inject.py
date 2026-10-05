@@ -19,17 +19,20 @@ Usage:
 Detector inputs are captured from the ``process_image`` streak stage, so the
 background iteration and the exclusion mask match production. One background pass
 over an unmasked frame leaves chip-fixed columns in ``data_sub``, which
-manufactures false positives *and* could flip the prescreen gate away from the
-the Radon rescue and RANSAC never run.
+manufactures false positives.
 """
 
 import argparse
 import hashlib
+import json
 import os
 import sys
 import time
+from pathlib import Path
 
 import numpy as np
+
+SOURCE_DIR = Path(__file__).resolve().parents[1] / "weightmask"
 
 # (length_px, peak_sigma, dashed): the compact grid used by ``--quick``.
 QUICK_SPECS = [
@@ -147,7 +150,7 @@ def trail_recall(mask, body, dilation=5, line_half_width=2.0):
     ``exact``
         Fraction of the truth band the mask covers directly.
     ``tolerant``
-        As ``exact`` but counting the mask anywhere within ``dilation`` px.
+        Fraction of truth pixels within ``dilation`` pixels of the mask.
     ``line``
         Fraction of the truth band lying within ``line_half_width`` px of *any*
         mask pixel.
@@ -164,13 +167,14 @@ def trail_recall(mask, body, dilation=5, line_half_width=2.0):
     from scipy.ndimage import binary_dilation, distance_transform_edt
 
     n_px = int(np.count_nonzero(body))
-    if n_px == 0:
+    if n_px == 0 or not np.any(mask):
         return 0.0, 0.0, 0.0
     exact = float(np.count_nonzero(mask & body)) / n_px
-    hits = int(np.count_nonzero(mask & binary_dilation(body, iterations=dilation)))
+    near_mask = binary_dilation(mask, iterations=dilation) if dilation > 0 else mask
+    hits = int(np.count_nonzero(body & near_mask))
     distance = distance_transform_edt(~mask)
     line = float(np.count_nonzero(distance[body] <= line_half_width)) / n_px
-    return exact, min(1.0, hits / n_px), line
+    return exact, hits / n_px, line
 
 
 def score_mask(mask, baseline, truth, dilation=5):
@@ -201,10 +205,20 @@ def apply_overrides(config, pairs):
     return config
 
 
-def config_key(config):
-    """Stable short hash of a config, used to cache the injected-blank baseline."""
-    payload = repr(sorted((k, repr(v)) for k, v in config.items() if k != "debug"))
-    return hashlib.md5(payload.encode()).hexdigest()[:8]
+def baseline_key(data_sub, rms, existing, config):
+    """Invalidate cached masks when production inputs, settings, or code change."""
+    digest = hashlib.sha256(json.dumps(config, sort_keys=True).encode())
+    for value in (data_sub, rms, existing):
+        if value is None:
+            digest.update(b"None")
+            continue
+        array = np.ascontiguousarray(value)
+        digest.update(str((array.shape, array.dtype.str)).encode())
+        digest.update(memoryview(array))
+    for path in sorted(SOURCE_DIR.glob("*.py")):
+        digest.update(path.name.encode())
+        digest.update(path.read_bytes())
+    return digest.hexdigest()[:24]
 
 
 TSV_COLUMNS = [
@@ -228,6 +242,7 @@ TSV_COLUMNS = [
     "dt_s",
     "mode",
     "note",
+    "metric_revision",
 ]
 
 
@@ -279,7 +294,7 @@ def main(argv=None):
         default=None,
         help="flat-field FITS for the same HDU. Strongly recommended: the flat is what lets the "
         "upstream bad-column and bleed stages mask chip-fixed structure, and without it the cheap "
-        "prescreen accepts that structure as a 'trail' and suppresses satdet and sensitive stages.",
+        "prescreen can accept that structure as a 'trail'.",
     )
     parser.add_argument("--mode", default=None)
     parser.add_argument("--set", action="append", default=[], metavar="KEY=VALUE")
@@ -289,11 +304,13 @@ def main(argv=None):
     parser.add_argument("--min-separation", type=float, default=500.0)
     parser.add_argument("--summary-only", action="store_true", help="print the aggregate instead of the TSV")
     args = parser.parse_args(argv)
+    if args.seeds < 1:
+        parser.error("--seeds must be positive")
 
     import fitsio
     from astropy.stats import mad_std
-
     from production_inputs import capture_detector_inputs
+
     from weightmask.streaks import detect_streaks
 
     base_cfg, streak_cfg = load_config(args)
@@ -311,8 +328,7 @@ def main(argv=None):
 
     # Detector inputs must come from the production pipeline. A single background
     # pass over an unmasked frame leaves the chip-fixed columns and rows in
-    # ``data_sub``: that manufactures false streak positives, and it also flips
-    # ``prescreen_confirmed`` so satdet, the Radon rescue and RANSAC are skipped.
+    # ``data_sub``: that manufactures false streak positives.
     # The recorded ``bin`` recall curve was non-monotonic for exactly that reason
     # -- it measured whether the sensitive stages ran, not resolution.
     base_cfg["streak_masking"] = dict(streak_cfg)
@@ -324,6 +340,7 @@ def main(argv=None):
 
     finite = data_sub[np.isfinite(data_sub)]
     noise = float(mad_std(finite[:: max(1, finite.size // 200000)]))
+    cache_key = baseline_key(data_sub, rms, existing, base_cfg)
 
     rows = []
     for seed in range(args.seed, args.seed + args.seeds):
@@ -335,10 +352,12 @@ def main(argv=None):
         # came from the production stage were computed from a different image and
         # must not be reused against these.
         cache_path = os.path.join(
-            args.cache_dir, f"{exposure_id}_{args.hdu}_{seed}_{config_key(streak_cfg)}_prod.npy"
+            args.cache_dir, f"{exposure_id}_{args.hdu}_{cache_key}_prod.npy"
         )
         if not args.no_cache and os.path.exists(cache_path):
-            baseline = np.load(cache_path).astype(bool)
+            baseline = np.load(cache_path, allow_pickle=False).astype(bool)
+            if baseline.shape != sci.shape:
+                raise ValueError("cached baseline shape differs from the science frame")
             print(f"seed {seed}: baseline cached ({int(baseline.sum())} px)")
         else:
             t0 = time.time()
@@ -374,6 +393,7 @@ def main(argv=None):
                     "dt_s": round(dt, 1),
                     "mode": streak_cfg.get("mode", "auto_ground"),
                     "note": note,
+                    "metric_revision": "truth-pixel-recall-v2",
                 }
             )
             rows.append(row)

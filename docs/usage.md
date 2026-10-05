@@ -8,16 +8,15 @@ surface is in [api.md](api.md).
 
 ## Config is required
 
-Pass `--config path.yml`, or put a file in the current directory. Search order
-if `--config` is omitted: `weightmask.yml`, `config.yml`, `.weightmask.yml`.
+Pass `--config path.yml`, or put `weightmask.yml` in the current directory.
 The wheel does not bundle a config.
 
 The only key list is the repo-root [`weightmask.yml`](../weightmask.yml). Extra
-top-level keys fail validation. Those YAML values are the 0.1 product
+top-level keys fail validation. Those YAML values are the product
 defaults. Missing keys warn and fall back to in-code defaults, which are not
 the same file: in particular `streak_masking.enable` is false, `rescale_variance`
 is false, `default_gain` is 1.0 e⁻/ADU, and `default_rdnoise` is 0 e⁻. Copy
-the YAML. `WeightMapGenerator` raises `ValueError` on invalid config.
+the YAML. `validate_config(config)` returns `False` on invalid config.
 
 Each HDU uses one gain and one read-noise value (first present header keyword
 in the configured lists) unless both `GAINA` and `GAINB` exist and a section
@@ -31,8 +30,7 @@ weightmask science.fits --config weightmask.yml --flat_image flat.fits \
 ```
 
 Run `weightmask --help` for Inputs / Outputs / Run groups. Rebuild a compact
-sky mesh with the separate program `weightmask-reconstruct-sky` (also
-`weightmask reconstruct-sky ...`).
+sky mesh with the separate program `weightmask-reconstruct-sky`.
 
 ## Cookbook
 
@@ -41,7 +39,7 @@ sky mesh with the separate program `weightmask-reconstruct-sky` (also
 Omit `--hdu` to process every 2-D image extension. Pin one extension with
 `--hdu 1` or a CFITSIO-style name `science.fits[1]` (the spec must be trailing;
 `--hdu` wins if both are given, and says so). Parallel HDU workers:
-`--nproc` / `--max-workers` (default `min(8, ncpu)`; `0` or `1` is sequential).
+`--nproc` (default `min(8, ncpu)`; `0` or `1` is sequential).
 
 The flat, dark and keep-map are matched to each science HDU **by index**, so
 `--flat_image`, `--dark_image` and `--badpix_mask` reject an `[N]` spec rather
@@ -54,7 +52,7 @@ recomputed every time.
 
 ### Persistence priors
 
-`--exposures` builds a per-CCD column/row prior from other exposures of the
+`--persistence` builds a per-CCD column/row prior from other exposures of the
 same detector. It is a **prior on the streak detector only**: those pixels are
 withheld from streak detection so detector-fixed structure is not reported as a
 sky trail. They are *not* bad pixels -- they keep their normal weight and carry
@@ -71,11 +69,15 @@ weightmask science.fits --config weightmask.yml \
 ```
 
 `--badpix_mask` is a keep-map: `0` = bad, `1` = good. Those zeros are
-OR'd into `BAD`. `--dark_image` ORs hot pixels into `BAD` only if the config
-has a `dark_masking` section (the canonical YAML does). Both, and the MEF
-`dead_ccd_*` veto, are CLI/MEF orchestration: `WeightMapGenerator.process`
+OR'd into `BAD`. `--dark_image` ORs hot pixels into `BAD`, using
+`dark_masking.hot_sigma` (default 8). Both, and the MEF
+`dead_ccd_*` veto, are CLI/MEF orchestration: single-array `process_image`
 does not take a dark or keep-map. Without a flat, `F = 1` and flat-based `BAD`
 detection is skipped.
+
+`dark_masking.hot_sigma` selects positive dark outliers above the HDU median
+in robust-sigma units (default 8). Zero and negative dark values are valid;
+non-finite values are bad.
 
 ### Outputs
 
@@ -93,16 +95,20 @@ weightmask science.fits --config weightmask.yml \
 - `--output_invvar`: sanitized inverse-variance plane.
 - `--output_sky`: sky map (`output_params.sky_format: full`) or compact mesh
   (`sky_format: mesh`).
-
-On a complete run, data extension *k* is the product for science HDU *k*, and
-`EXTNAME` records the CCD identifier (falling back to the HDU index). If any HDU
-fails, the run **exits non-zero** and says how many were written: the products
-then hold fewer data extensions than there are science HDUs, so extension
-position no longer lines up. Use `EXTNAME` to identify a product's source HDU
-rather than its position.
 - `--output_weight_raw`: unnormalized masked inverse variance if it should
   differ from the primary map.
-- `--individual_masks`: one FITS file per component (bad, sat, cr, obj, streak).
+- `--individual_masks`: one FITS file per component (bad, sat, cr, obj, streak, nodata).
+
+Products follow processed science images in HDU order. `EXTNAME` records the
+CCD identifier (falling back to the source HDU index). Extension positions can
+differ when the science has non-image extensions or a primary image is
+compressed. If an HDU or a write fails, the run **exits non-zero**; products may
+be incomplete and have different extension counts. Use `EXTNAME` to identify
+a product's source HDU.
+
+Outputs must differ from every input and from each other, including through
+symbolic or hard links. FITS floating products support 32 or 64 bits;
+`ivar_bitpix: 16` is rejected because FITS has no float16 image type.
 
 Default primary path is `<input_base>.weight.fits` if `-o` is omitted, or
 `.weight.fits.fz` when `output_params.compress` is true.
@@ -135,8 +141,8 @@ unwritable cache entry simply falls back to the normal computation, and
 
 ### Streak detection cost
 
-The streak stage dominates a CCD's time. What is left is two binned prescreens
-and a conditional RANSAC pass:
+The streak detector combines two fast prescreens
+(binned `houghpeaks` and full-resolution `contours`) and a residual RANSAC pass:
 
 ```yaml
 streak_masking:
@@ -160,8 +166,9 @@ star's bleed measures 0.45 and a genuine satellite trail 0.02.
 ### The brightness veto is optional, and uncalibrated
 
 `max_component_sigma` drops a component whose 90th percentile exceeds the given
-number of background RMS. **Set it to `null` to disable it.** Measured p90 on
-MegaCam, in sigma:
+number of background RMS, using pixels outside the existing mask. A known star
+crossed by a confirmed fitted trail does not supply that brightness statistic.
+**Set it to `null` to disable it.** Historical measured p90 on MegaCam, in sigma:
 
 | feature | p90 |
 |---|---|
@@ -170,12 +177,13 @@ MegaCam, in sigma:
 | bright star arm | 155 |
 | hot column group | ~2000 |
 
-The threshold is a **6x margin below a sample of two trails**. That is a
+The threshold is a **6x margin above a sample of two trails**. That is a
 deliberate provisional setting, not a measured constant: a bright satellite
 constellation would be deleted by this rule and nothing in the local corpus
 would ever reveal it. Raise it, or null it, if that trade is the wrong way round.
 
-What disabling it costs, measured (veto on -> off, pixels masked):
+The following measurements are historical 0.2.0 results, before the 0.2.1
+object-mask fixes (veto on -> off, pixels masked):
 
 | feature | veto on | veto off |
 |---|---|---|
@@ -191,10 +199,12 @@ The column can instead be caught without reference to brightness, because it is
 a static defect: it persists at **0.90** across epochs of the same field against
 **0.02** for a real trail. The CLI's `--persistence` uses exactly that. The star
 arm persists at only 0.41 and is not reliably caught that way, so on a
-single-exposure run the veto is currently the only thing suppressing it.
+single-exposure run the old pipeline needed the veto to suppress it. That star
+arm has not been requalified after the 0.2.1 object-mask changes.
 
-`tests/test_brightness_veto.py` pins that both real trails survive at every
-setting including `null`, and that the veto still suppresses both artefacts.
+`tests/test_brightness_veto.py` now pins the two real trails at 17,231 and 9,751
+pixels with identical masks at every setting including `null`. Correct upstream
+object masks suppress the known column group even with the veto off.
 
 There used to be a third stage, an angle-binned Radon rescue
 (`mrt_rescue_params`), intended as the sensitive one -- the thing that finds
@@ -203,7 +213,8 @@ accepted on three, all three false positives, while `houghpeaks` explained all
 23,035 px of real detections; on injected trails at 4, 6, 8 and 12 sigma, two
 lengths and two seeds, it moved `recall_line` by +0.000 in eight of eight cells.
 It cost 121.7 s/amp of a 125.7 s/amp stage, and removing it took the stage to
-4.0 s/amp with both real trails byte-identical. `pixi run streak-sweep` and
+4.0 s/amp with both real trails byte-identical at that revision. These stage
+counts and timings predate the 0.2.1 fixes. `pixi run streak-sweep` and
 `pixi run streak-recall-floor` re-derive those numbers; anyone proposing a replacement
 sensitive stage has to re-run them rather than argue from this file.
 
@@ -211,13 +222,13 @@ sensitive stage has to re-run them rather than argue from this file.
 trails, across {solid, dashed} trails at 4-12 sigma, two lengths and two seeds,
 on the production input path. `--disable {contours,houghpeaks,ransac}` repeats the
 same grid with one stage switched off, which is how a stage's cost is weighed
-against what only it finds. Both remaining prescreens are dormant on the local
-corpus -- contours and RANSAC accept on 0 of 224 real amps each -- yet each is the
+against what only it finds. In the historical corpus measurement, contours and
+RANSAC accepted on 0 of 224 real amps each, yet each was the
 sole finder in the cells it helps and costs recall in none, which is why neither
 was removed.
 
 `pixi run exposure-time` answers the question at the unit a survey pays in --
-the whole exposure, not one chip. On a 36-chip MegaPrime MEF (996195p, 353 Mpix,
+the whole exposure, not one chip. Before the 0.2.1 changes, on a 36-chip MegaPrime MEF (996195p, 353 Mpix,
 one core, `--nproc 1`):
 
 | | wall | per chip |
@@ -267,13 +278,25 @@ not a property of streak detection. And the reported streak pixel count is
 checked per arm, so a run where the toggle silently failed to take cannot be
 mistaken for a measurement.
 
-The synthetic benchmark suite has a known, pre-existing gate failure
-(`Synthetic-v2 average streak F1 0.159 < 0.200`) that is unchanged by any of
-the above -- the per-case F1 values are identical with and without the rescue.
+The historical synthetic benchmark reported a gate failure
+(`Synthetic-v2 average streak F1 0.159 < 0.200`) with identical per-case scores
+with and without the rescue. Those scores used the earlier generator and
+recall metric. Version 0.2.1 corrects generator settings and measures recall on
+the original truth pixels; its full synthetic gates remain unqualified until
+an explicit rerun. The acceptance thresholds are unchanged.
 
-If a field is diagnosed as slow, `streak_masking.debug: true` puts the per-stage
-evidence (candidates, accepted lines with angle/rho/confidence, which passes
-ran) into `config['_last_run']`.
+The streak and blank-control cases in `tests.benchmarks` are stage diagnostics:
+they use a global median sky, global RMS, and an empty initial mask. They do
+not reproduce the calibrated sky and upstream exclusions used by
+`process_image`. Production-input evidence comes from the capture helper in
+`benchmarks/production_inputs.py`; these two forms of evidence are distinct.
+
+For a direct `weightmask.streaks.detect_streaks` call, setting `debug: true` in
+the detector config puts the per-stage evidence (candidates, accepted lines with
+angle/rho/confidence, which passes ran) into that config's `['_last_run']`.
+`process_image` copies the `streak_masking` config, so it does not expose those
+diagnostics to the caller. Its returned `header_info['timings']` reports stage
+durations.
 
 ### Quality bits
 
@@ -285,6 +308,7 @@ ran) into `config['_last_run']`.
 | 8 | `DETECTED` | no (set `output_params.mask_detected_in_weight` to zero it) |
 | 16 | `STREAK` | yes |
 | 32 | `INVALID_VARIANCE` | yes |
+| 64 | `NO_DATA` | yes |
 
 Polarity is `set_means_flagged`. See [algorithms.md](algorithms.md).
 
@@ -299,11 +323,6 @@ weightmask-reconstruct-sky sky_mesh.fits -o sky_full.fits
 weightmask-reconstruct-sky sky_mesh.fits -o sky_full.fits --hdu 1
 ```
 
-Also spelled `weightmask reconstruct-sky sky_mesh.fits -o sky_full.fits`, which
-dispatches to the same program. That was the original interface; the
-`weightmask-reconstruct-sky` console script was added later, and is the one to
-use.
-
 ### Weight plane
 
 Default `variance.method: theoretical`. The core plane is
@@ -313,9 +332,6 @@ ivar = g² F² / (S g F + RN²)
 ```
 
 Flat-fielded Poisson weight. Exact Poisson plus read noise at `F = 1`.
-Canonical `weightmask.yml` sets `variance.flat_fielded_poisson: true` because
-a spatially varying flat moved a weighted aperture by more than the fixture
-read-noise floor. Omitting the key keeps the older `S g` denominator.
 Canonical `weightmask.yml` then adds
 `flat_rel_noise: 0.003` and `rescale_variance: true`. Omit those
 keys and you get the bare formula.
@@ -324,18 +340,22 @@ keys and you get the bare formula.
 
 ```python
 from astropy.io import fits
-from weightmask import WeightMapGenerator
 import yaml
 
+from weightmask.process import process_image, validate_config
+from weightmask.utils import clean_config_dict
+
 with open("weightmask.yml") as f:
-    config = yaml.safe_load(f)
+    config = clean_config_dict(yaml.safe_load(f))
+assert validate_config(config)
 
 sci = fits.getdata("science.fits", ext=1)
 hdr = dict(fits.getheader("science.fits", ext=1))
 flat = fits.getdata("flat.fits", ext=1)
 
-out = WeightMapGenerator(config).process(sci, header=hdr, flat_data=flat)
-weight, mask = out["weight_map"], out["flag_map"]
+mask, ivar, weight, confidence, sky, header_info = process_image(
+    sci, hdr, flat, config
+)
 ```
 
 That call is one array. Dark frames, keep-maps, and dead-CCD veto live on the

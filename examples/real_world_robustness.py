@@ -3,16 +3,17 @@ import sys
 
 # Run as `python examples/real_world_robustness.py`: put the repo root on the
 # path so `tests` is importable (same shim as examples/test_real_mef.py).
-sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))  # noqa: E402
+REPO_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+sys.path.insert(0, REPO_ROOT)  # noqa: E402
 from tests.simulate_and_test import run_masking_test  # noqa: E402
 
 
 def demonstrate_robustness():
     """
-    Demonstrates the library's robustness against extreme gradients and crowded fields.
+    Runs staged detector diagnostics on a synthetic crowded field with gradients.
     """
     print("==================================================")
-    print("  WEIGHTMASK REAL-WORLD ROBUSTNESS EXAMPLE")
+    print("  WEIGHTMASK CROWDED-FIELD SIMULATION EXAMPLE")
     print("==================================================")
 
     # Configuration: Extremely crowded field with background gradients
@@ -24,7 +25,7 @@ def demonstrate_robustness():
         mask_pct = 0.0
         regime_type = "complex"
 
-    config_path = "weightmask.yml"
+    config_path = os.path.join(REPO_ROOT, "weightmask.yml")
     print(f"Goal: Detect artifacts in a field with {Args.stars} stars and Poisson noise.")
 
     # Run masking test
@@ -36,11 +37,7 @@ def demonstrate_robustness():
             print(f"  {name:12} | {val}")
             continue
         p, r = val
-        status = "PASSED" if r > 0.4 else "DIAGNOSTIC"
-        if name == "Saturation" or name == "Cosmics":
-            status = "PASSED" if r > 0.9 else "WARNING"
-
-        print(f"  {name:12} | Recall: {r:.3f} | Status: {status}")
+        print(f"  {name:12} | Precision: {p:.3f} | Recall: {r:.3f}")
 
     print("\nVisual artifacts produced in 'test_outputs/':")
     print("  - mask_streak.fits: Shows the high-SNR satellite trail detection.")

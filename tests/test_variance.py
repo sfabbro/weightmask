@@ -7,7 +7,6 @@ import numpy as np
 from weightmask.variance import (
     _calculate_inverse_variance_theoretical,
     _rescale_variance_robust,
-    _unbias_variance,
     amplifier_gain_map,
     calculate_inverse_variance,
 )
@@ -70,14 +69,14 @@ class TestVariance(unittest.TestCase):
 
         # Calculate expected values manually
         # Top-left: sky=100, flat=1. inv_var = 2^2 * 1^2 / (100*2 + 4^2) = 4 / 216 = 1/54
-        # Top-right: sky=100, flat=0.5. inv_var = 2^2 * 0.5^2 / (100*2 + 4^2) = 1.0 / 216
+        # Top-right: sky=100, flat=0.5. inv_var = 2^2 * 0.5^2 / (100*2*0.5 + 4^2) = 1.0 / 116
         # Bottom-left/right: same as Top-left
-        expected_inv_var = np.array([[4.0 / 216.0, 1.0 / 216.0], [4.0 / 216.0, 4.0 / 216.0]], dtype=np.float32)
+        expected_inv_var = np.array([[4.0 / 216.0, 1.0 / 116.0], [4.0 / 216.0, 4.0 / 216.0]], dtype=np.float32)
 
         np.testing.assert_allclose(inv_var, expected_inv_var, rtol=1e-5)
 
-    def test_theoretical_f_half_is_elixir_style_not_poisson_flat(self):
-        """Frozen contract: F=0.5 uses g²F²/(Sg+RN²), not g²F²/(SgF+RN²)."""
+    def test_theoretical_f_half_is_flat_fielded_poisson(self):
+        """Flat-fielded Poisson variance includes F in the sky term."""
         sky_map = np.array([[1000.0]], dtype=np.float32)
         flat_map = np.array([[0.5]], dtype=np.float32)
         gain = 1.5
@@ -89,10 +88,8 @@ class TestVariance(unittest.TestCase):
             read_noise_e=read_noise_e,
             epsilon=1e-9,
         )
-        elixir = (gain**2 * 0.5**2) / (1000.0 * gain + read_noise_e**2)
         poisson_flat = (gain**2 * 0.5**2) / (1000.0 * gain * 0.5 + read_noise_e**2)
-        np.testing.assert_allclose(inv_var[0, 0], elixir, rtol=1e-5)
-        self.assertGreater(abs(float(inv_var[0, 0]) - poisson_flat) / poisson_flat, 0.4)
+        np.testing.assert_allclose(inv_var[0, 0], poisson_flat, rtol=1e-5)
 
     def test_epsilon_is_not_added_to_denominator(self):
         sky = np.array([[0.0]], dtype=np.float32)
@@ -109,7 +106,7 @@ class TestVariance(unittest.TestCase):
         for i, flat_val in enumerate((1.0, 0.25)):
             rel = rel0 / np.sqrt(max(flat_val / med_flat, 0.1))
             sky_e = sky_adu * gain
-            denom = sky_e + read_noise_e**2 + (sky_e * rel) ** 2
+            denom = sky_e * flat_val + read_noise_e**2 + (sky_e * rel) ** 2
             want = (gain**2 * flat_val**2) / denom
             np.testing.assert_allclose(got[0, i], want, rtol=1e-5)
 
@@ -274,29 +271,6 @@ class TestVariance(unittest.TestCase):
 
         # Verify that the mock was called
         mock_emp_noise.assert_called_once_with(sci_data, obj_mask, 128, 3.0)
-
-    def test_unbias_variance_none_inv_variance(self):
-        """Test _unbias_variance with inv_variance=None."""
-        sci_data = np.ones((10, 10))
-        sky_map = np.ones((10, 10))
-        result = _unbias_variance(None, sci_data, sky_map, gain=1.0, epsilon=1e-9)
-        self.assertIsNone(result)
-
-    def test_unbias_variance_zero_gain(self):
-        """Test _unbias_variance with gain=0."""
-        inv_variance = np.ones((10, 10))
-        sci_data = np.ones((10, 10))
-        sky_map = np.ones((10, 10))
-        result = _unbias_variance(inv_variance, sci_data, sky_map, gain=0.0, epsilon=1e-9)
-        np.testing.assert_array_equal(result, inv_variance)
-
-    def test_unbias_variance_negative_gain(self):
-        """Test _unbias_variance with negative gain."""
-        inv_variance = np.ones((10, 10))
-        sci_data = np.ones((10, 10))
-        sky_map = np.ones((10, 10))
-        result = _unbias_variance(inv_variance, sci_data, sky_map, gain=-1.0, epsilon=1e-9)
-        np.testing.assert_array_equal(result, inv_variance)
 
     def test_rescale_variance_robust_ignores_invalid_inverse_variance(self):
         from weightmask.variance import _rescale_variance_robust
@@ -538,42 +512,12 @@ class TestVariance(unittest.TestCase):
         # Check it's not the same as input
         self.assertFalse(np.allclose(res, inv_variance))
 
-    def test_unbias_variance_success(self):
-        """Test removing Poisson signal variance from total variance."""
-        from weightmask.variance import _unbias_variance
-
-        shape = (10, 10)
-        # Total variance = 125, signal = 100, gain = 1.0 -> expected bg variance = 25 -> inv_var = 0.04
-        inv_var_total = np.full(shape, 1.0 / 125.0, dtype=np.float32)
-        sci_data = np.full(shape, 100.0, dtype=np.float32)
-        sky_map = np.zeros(shape, dtype=np.float32)
-
-        unbiased_ivar = _unbias_variance(inv_var_total, sci_data, sky_map, gain=1.0, epsilon=1e-9)
-        self.assertIsNotNone(unbiased_ivar)
-        self.assertAlmostEqual(unbiased_ivar[0, 0], 1.0 / 25.0, places=5)
-
-    def test_unbias_variance_already_background_variance(self):
-        """Test that unbiasing does not floor to 1e-6 and spike when input is already background-only."""
-        from weightmask.variance import _unbias_variance
-
-        shape = (10, 10)
-        # Background variance = 25, signal = 100, gain = 1.0. Total minus signal is negative.
-        inv_var_bg = np.full(shape, 1.0 / 25.0, dtype=np.float32)
-        sci_data = np.full(shape, 100.0, dtype=np.float32)
-        sky_map = np.zeros(shape, dtype=np.float32)
-
-        unbiased_ivar = _unbias_variance(inv_var_bg, sci_data, sky_map, gain=1.0, epsilon=1e-9)
-        self.assertIsNotNone(unbiased_ivar)
-        # Should retain background variance (0.04) rather than spiking to 1,000,000
-        self.assertAlmostEqual(unbiased_ivar[0, 0], 1.0 / 25.0, places=5)
-
-    def test_sky_dominated_flat_fielded_weight_ratio_is_f(self):
-        """At F=0.7 and zero read noise, frozen weight is 0.7 times the photon-noise weight."""
-        sky = np.array([[1000.0]], dtype=np.float32)
-        flat = np.array([[0.7]], dtype=np.float32)
-        frozen = _calculate_inverse_variance_theoretical(sky, flat, 1.5, 0.0, 1e-9, flat_fielded_poisson=False)
-        photon = _calculate_inverse_variance_theoretical(sky, flat, 1.5, 0.0, 1e-9, flat_fielded_poisson=True)
-        self.assertAlmostEqual(float(frozen[0, 0] / photon[0, 0]), 0.7, places=5)
+    def test_sky_dominated_flat_fielded_weight_scales_linearly_with_flat(self):
+        """At zero read noise, ivar = g*F/S."""
+        sky = np.array([[1000.0, 1000.0]], dtype=np.float32)
+        flat = np.array([[0.7, 1.0]], dtype=np.float32)
+        photon = _calculate_inverse_variance_theoretical(sky, flat, 1.5, 0.0, 1e-9)
+        self.assertAlmostEqual(float(photon[0, 0] / photon[0, 1]), 0.7, places=5)
 
     def test_theoretical_infinite_rms_has_zero_weight(self):
         sky = np.full((8, 8), 100.0, dtype=np.float32)
@@ -618,6 +562,55 @@ class TestVariance(unittest.TestCase):
         flat = np.ones((4, 8), dtype=np.float32)
         inv = _calculate_inverse_variance_theoretical(sky, flat, gain, 0.0, 1e-9)
         self.assertAlmostEqual(float(inv[0, 4] / inv[0, 0]), 2.0, places=4)
+
+    def test_amplifier_gain_map_tries_local_sections_after_detector_coordinates(self):
+        header = {
+            "GAINA": 1.0,
+            "GAINB": 2.0,
+            "DETSECA": "[101:104,1:4]",
+            "DETSECB": "[105:108,1:4]",
+            "DATASECA": "[1:4,1:4]",
+            "DATASECB": "[5:8,1:4]",
+        }
+        gain = amplifier_gain_map(header, (4, 8), fallback=1.0)
+        self.assertTrue(np.all(gain[:, :4] == 1.0))
+        self.assertTrue(np.all(gain[:, 4:] == 2.0))
+
+    def test_theoretical_per_pixel_gain_ignores_object_flux(self):
+        gain = np.array([[1.0, 2.0]], dtype=np.float32)
+        result = calculate_inverse_variance(
+            {"method": "theoretical", "gain": gain},
+            np.full((1, 2), 100.0, dtype=np.float32),
+            np.ones((1, 2), dtype=np.float32),
+            np.full((1, 2), 10.0, dtype=np.float32),
+            sci_data=np.full((1, 2), 199.0, dtype=np.float32),
+        )
+        np.testing.assert_allclose(result, [[0.01, 0.02]], rtol=1e-6)
+
+    def test_public_estimators_reject_retired_keys_before_estimation(self):
+        for method in ("theoretical", "rms_map", "empirical_fit"):
+            for key in ("unbias_variance", "flat_fielded_poisson", "readnoise_keyword"):
+                for value in (True, False, None):
+                    with self.subTest(method=method, key=key, value=value):
+                        with self.assertRaisesRegex(ValueError, key):
+                            calculate_inverse_variance({"method": method, key: value}, None, None, None)
+
+    def test_public_theoretical_default_is_flat_fielded_poisson(self):
+        sky = np.array([[100.0, 100.0]], dtype=np.float32)
+        flat = np.array([[0.5, 1.0]], dtype=np.float32)
+        result = calculate_inverse_variance({"gain": 2.0, "read_noise": 4.0}, sky, flat, None)
+        np.testing.assert_allclose(result, [[1.0 / 116.0, 4.0 / 216.0]], rtol=1e-6)
+
+    def test_background_only_variance_rejects_duplicate_poisson_subtraction(self):
+        sky = np.full((2, 2), 100.0, dtype=np.float32)
+        flat = np.ones_like(sky)
+        rms = np.full_like(sky, 10.0)
+        data = sky + 10.0
+        config = {"method": "theoretical", "gain": 1.0}
+        result = calculate_inverse_variance(config, sky, flat, rms, sci_data=data)
+        np.testing.assert_allclose(result, 0.01, rtol=1e-6)
+        with self.assertRaisesRegex(ValueError, "background-only"):
+            calculate_inverse_variance({**config, "unbias_variance": True}, sky, flat, rms, sci_data=data)
 
 
 if __name__ == "__main__":

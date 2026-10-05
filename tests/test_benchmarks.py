@@ -9,7 +9,6 @@ from astropy.io import fits
 
 from tests.benchmarks.download_data import validate_case_file
 from tests.benchmarks.run import (
-    ROOT,
     _load_case_label,
     _load_quality_reference,
     _quality_gate_failures,
@@ -34,19 +33,22 @@ class TestBenchmarks(unittest.TestCase):
         self.assertIn("bad_pixel_stats", summary["results"]["synthetic_sparse"])
 
     def test_validate_case_file_rejects_wrong_instrument(self):
-        manifest = load_manifest("megacam_real")
-        sparse_case = next(case for case in manifest["cases"] if case["case_id"] == "megacam_sparse_control")
-        local_path = ROOT / sparse_case["local_path"]
-        if local_path.exists():
-            bad_case = sparse_case.copy()
-            bad_case["expected_detector"] = "WrongDetector"
-            valid, reason = validate_case_file(bad_case, local_path)
+        with tempfile.TemporaryDirectory() as tmpdir:
+            local_path = Path(tmpdir) / "megacam.fits"
+            hdu = fits.PrimaryHDU(np.ones((4, 4), np.float32))
+            hdu.header["INSTRUME"] = "MegaPrime"
+            hdu.header["DETECTOR"] = "MegaCam"
+            hdu.writeto(local_path)
+            case = {"expected_instrument": "MegaPrime", "expected_detector": "MegaCam"}
+            self.assertEqual(validate_case_file(case, local_path), (True, None))
+            valid, reason = validate_case_file({**case, "expected_detector": "WrongDetector"}, local_path)
             self.assertFalse(valid)
             self.assertIn("WrongDetector", reason)
 
     def test_run_real_suite_reports_concrete_status(self):
         summary = run_suite("acs_compare", with_baselines=False)
         self.assertEqual(summary["suite"], "acs_compare")
+        self.assertEqual(set(summary["results"]), {case["case_id"] for case in load_manifest("acs_compare")["cases"]})
         self.assertTrue(
             all(
                 result["status"]

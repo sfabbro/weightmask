@@ -10,7 +10,8 @@ import fitsio
 
 from . import __version__
 from .background import parse_sky_mesh_header, reconstruct_sky_from_header
-from .utils import extract_hdu_spec
+from .mef import _strip_compression_keywords
+from .utils import extract_hdu_spec, paths_alias
 
 
 def parse_args(argv=None) -> argparse.Namespace:
@@ -21,7 +22,6 @@ def parse_args(argv=None) -> argparse.Namespace:
             "Examples:\n"
             "  weightmask-reconstruct-sky sky_mesh.fits -o sky_full.fits\n"
             "  weightmask-reconstruct-sky sky_mesh.fits -o sky_full.fits --hdu 1\n"
-            "  weightmask-reconstruct-sky sky_mesh.fits -o sky_full.fits\n"
             "\n"
             "See docs/usage.md and docs/algorithms.md. This is a separate program, "
             "not a weightmask flag."
@@ -83,6 +83,9 @@ def _image_hdus(hdul, hdu: int | None) -> list[int]:
 
 def reconstruct_sky_fits(input_path: str, output_path: str, hdu: int | None = None) -> int:
     """Rebuild full-res sky FITS from a SKYMESH mesh product. Returns exit code."""
+    if paths_alias(input_path, output_path):
+        print(f"ERROR: Output path '{output_path}' aliases input '{input_path}'.")
+        return 1
     if not os.path.exists(input_path):
         print(f"ERROR: Input file not found: {input_path}")
         print("  weightmask-reconstruct-sky <mesh.fits> -o <full.fits>")
@@ -107,17 +110,16 @@ def reconstruct_sky_fits(input_path: str, output_path: str, hdu: int | None = No
                     print(f"ERROR: HDU {i}: {e}")
                     return 1
                 continue
-            full = reconstruct_sky_from_header(hdul[i].read(), hdr)
             try:
                 name = hdul[i].get_extname() or f"SKY_{i}"
             except Exception:
                 name = f"SKY_{i}"
             out_hdr = {
                 k: v
-                for k, v in dict(hdr).items()
+                for k, v in _strip_compression_keywords(hdr).items()
                 if str(k).upper() not in {"SKYMESH", "MESHBW", "MESHBH", "SKYH", "SKYW"}
             }
-            jobs.append((full, out_hdr, name))
+            jobs.append((i, hdr, out_hdr, name))
         if not jobs:
             print("ERROR: No SKYMESH image HDUs found to rebuild.")
             print("  weightmask-reconstruct-sky <mesh.fits> -o <full.fits>")
@@ -125,16 +127,23 @@ def reconstruct_sky_fits(input_path: str, output_path: str, hdu: int | None = No
 
         os.makedirs(os.path.dirname(os.path.abspath(output_path)), exist_ok=True)
         if len(jobs) == 1:
-            fitsio.write(output_path, jobs[0][0], header=jobs[0][1], clobber=True)
+            i, hdr, out_hdr, name = jobs[0]
+            full = reconstruct_sky_from_header(hdul[i].read(), hdr)
+            fitsio.write(output_path, full, header=out_hdr, clobber=True)
+            print(f"  Rebuilt {name}: {full.shape[0]}x{full.shape[1]}")
         else:
             fitsio.write(output_path, None, header=None, clobber=True)
             with fitsio.FITS(output_path, "rw") as fout:
-                for data, hdr, name in jobs:
-                    fout.write(data, header=hdr, extname=name)
-        for data, _hdr, name in jobs:
-            print(f"  Rebuilt {name}: {data.shape[0]}x{data.shape[1]}")
+                for i, hdr, out_hdr, name in jobs:
+                    full = reconstruct_sky_from_header(hdul[i].read(), hdr)
+                    fout.write(full, header=out_hdr, extname=name)
+                    print(f"  Rebuilt {name}: {full.shape[0]}x{full.shape[1]}")
+                    del full
         print(f"Wrote full sky map: {output_path}")
         return 0
+    except (OSError, ValueError) as exc:
+        print(f"ERROR: Sky reconstruction failed: {exc}. Output files may be incomplete.")
+        return 1
     finally:
         try:
             hdul.close()

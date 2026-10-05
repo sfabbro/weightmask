@@ -69,8 +69,25 @@ class TestTailHistogram(unittest.TestCase):
 
 
 class TestSaturation(unittest.TestCase):
-    def test_detect_saturated_pixels_histogram_method(self):
-        """Test saturation detection using histogram method."""
+    def test_retired_method_selector_is_rejected(self):
+        data = np.ones((16, 16), dtype=np.float32)
+        for method in ("histogram", "header", "invalid", None):
+            with self.subTest(method=method), self.assertRaisesRegex(ValueError, "saturation.method"):
+                detect_saturated_pixels(data, {}, {"method": method})
+
+    def test_integer_full_scale_saturation_needs_no_header(self):
+        for dtype in (np.int16, np.uint8, np.uint16):
+            with self.subTest(dtype=dtype):
+                maximum = np.iinfo(dtype).max
+                data = np.full((32, 32), 10, dtype=dtype)
+                data[10:20, 10:20] = maximum
+                level, _, mask = detect_saturated_pixels(data, {}, {})
+                self.assertLessEqual(level, maximum)
+                self.assertTrue(mask[10:20, 10:20].all())
+                self.assertFalse(mask[:10].any())
+
+    def test_detect_saturated_pixels_histogram_cascade(self):
+        """Test saturation detection using the histogram cascade."""
         # Create test science data
         sci_data = np.random.poisson(100, (100, 100)).astype(np.float32)
 
@@ -81,7 +98,6 @@ class TestSaturation(unittest.TestCase):
         sci_hdr = {}
 
         config = {
-            "method": "histogram",
             "keyword": "SATURATE",
             "fallback_level": 65000.0,
         }
@@ -96,7 +112,7 @@ class TestSaturation(unittest.TestCase):
         # Check that saturated pixels are identified
         self.assertTrue(np.any(mask[10:20, 10:20]))
 
-    def test_detect_saturated_pixels_header_method(self):
+    def test_detect_saturated_pixels_advisory_header(self):
         """Test that header values are advisory, not the primary saturation source."""
         # Create test science data
         sci_data = np.random.poisson(100, (100, 100)).astype(np.float32)
@@ -107,7 +123,7 @@ class TestSaturation(unittest.TestCase):
         # Create a header with saturation keyword
         sci_hdr = {"SATURATE": 60000.0}
 
-        config = {"method": "header", "keyword": "SATURATE", "fallback_level": 65000.0}
+        config = {"keyword": "SATURATE", "fallback_level": 65000.0}
 
         saturation_level, sat_method_used, mask = detect_saturated_pixels(sci_data, sci_hdr, config)
 
@@ -130,7 +146,7 @@ class TestSaturation(unittest.TestCase):
         # Create a header without saturation keyword
         sci_hdr = {}
 
-        config = {"method": "header", "keyword": "SATURATE", "fallback_level": 65000.0}
+        config = {"keyword": "SATURATE", "fallback_level": 65000.0}
 
         saturation_level, sat_method_used, mask = detect_saturated_pixels(sci_data, sci_hdr, config)
 
@@ -155,7 +171,6 @@ class TestSaturation(unittest.TestCase):
         sci_hdr = {}
 
         config = {
-            "method": "header",  # Use header method to avoid histogram issues
             "keyword": "SATURATE",
             "fallback_level": 65000.0,
         }

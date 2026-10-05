@@ -11,15 +11,7 @@ This package includes modules for detecting various effects in astronomical imag
 - Variance calculation
 """
 
-try:
-    from ._version import __version__
-except ImportError:  # pragma: no cover - source tree without the module
-    try:
-        from importlib.metadata import version as _distribution_version
-
-        __version__ = _distribution_version("weightmask")
-    except Exception:
-        __version__ = "0.0.0.dev0"
+from ._version import __version__
 
 # Legacy public dictionary kept stable; the contract adds INVALID_VARIANCE.
 from .contract import QUALITY_BITS

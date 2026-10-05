@@ -84,6 +84,7 @@ import math
 import os
 import sys
 import time
+from collections import Counter
 from concurrent.futures import ProcessPoolExecutor
 
 import numpy as np
@@ -616,8 +617,8 @@ def group_candidates(candidates, tol_deg, tol_px, max_gap_px):
 
 
 def _same_ccd(left, right):
-    if left.get("ccdname") and left.get("ccdname") == right.get("ccdname"):
-        return True
+    if left.get("ccdname") and right.get("ccdname"):
+        return left["ccdname"] == right["ccdname"]
     return left.get("extver", -1) == right.get("extver", -1) and left.get("extver", -1) >= 0
 
 
@@ -891,7 +892,7 @@ def main(argv=None):
             "of a CCD axis are dominated by bad columns and register rows, and the Radon proposer's "
             "2 deg angle grid cannot resolve a near-axis trail from such a column -- measured, not "
             "assumed: candidates at exactly 2.00/4.00 deg were grid-quantised columns. Excluding the "
-            "first 5 deg costs at most 5/180 of possible orientations."
+            "5 deg around both axes excludes 20/180 of possible undirected orientations."
         ),
     )
     parser.add_argument(
@@ -1150,6 +1151,15 @@ def main(argv=None):
         "summary": summary,
         "entries": committed,
     }
+    review_fixture = {**fixture, "entries": entries}
+    if args.entries == "labelled":
+        fixture["summary"] = {
+            **summary, "n_entries": len(committed),
+            "by_label": {**summary["by_label"], "uncertain": 0},
+            "by_proposer": dict(Counter("+".join(entry["proposed_by"]) or "unknown" for entry in committed)),
+            "by_exposure": {name: {**counts, "uncertain": 0} for name, counts in summary["by_exposure"].items()
+                            if counts["trail"] + counts["artefact"]},
+        }
 
     os.makedirs(os.path.dirname(os.path.abspath(args.out)), exist_ok=True)
     write_fixture(fixture, args.out)
@@ -1158,7 +1168,7 @@ def main(argv=None):
     if args.review_sheet:
         os.makedirs(os.path.dirname(os.path.abspath(args.review_sheet)), exist_ok=True)
         with open(args.review_sheet, "w") as handle:
-            handle.write(review_sheet(fixture))
+            handle.write(review_sheet(review_fixture))
         print(f"Wrote {args.review_sheet}")
 
     if summary["by_label"]["trail"] == 0:
@@ -1185,10 +1195,7 @@ def write_fixture(fixture, path):
         prefix += ","
     with open(path, "w") as handle:
         handle.write(prefix + "\n")
-        if not prefix.endswith("{"):
-            handle.write('  "entries": [\n')
-        else:
-            handle.write('  "entries": [\n')
+        handle.write('  "entries": [\n')
         for index, entry in enumerate(fixture["entries"]):
             comma = "," if index + 1 < len(fixture["entries"]) else ""
             handle.write("    " + json.dumps(entry, separators=(",", ":")) + comma + "\n")

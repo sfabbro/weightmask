@@ -4,7 +4,7 @@ import numpy as np
 import sep
 from astropy.stats import mad_std
 from scipy import linalg
-from scipy.ndimage import gaussian_filter, median_filter
+from scipy.ndimage import distance_transform_edt, gaussian_filter, median_filter
 
 
 def _estimate_global_sep(sci_data, mask):
@@ -52,6 +52,8 @@ def _estimate_sep_tiered(sci_data, mask, box_size, filter_size, max_box_size, co
 
     Returns ``(bkg_map, bkg_rms_map, box_used)``; ``box_used`` is None on failure.
     """
+    sci_contig = np.require(sci_data, dtype=np.float32, requirements=["C", "A"])
+    mask_contig = np.require(mask, dtype=np.bool_, requirements=["C", "A"]) if mask is not None else None
     current_box = box_size
     attempt = 0
     while current_box <= max_box_size:
@@ -60,8 +62,8 @@ def _estimate_sep_tiered(sci_data, mask, box_size, filter_size, max_box_size, co
                 print(f"    Retrying SEP with larger box size: {current_box}")
 
             bkg = sep.Background(
-                sci_data,
-                mask=mask,
+                sci_contig,
+                mask=mask_contig,
                 bw=current_box,
                 bh=current_box,
                 fw=filter_size,
@@ -100,7 +102,14 @@ def _estimate_robust_median(sci_data, mask, method, config):
             print(f"    Using median filter with kernel size: {kernel_size}")
 
         if kernel_size > 0:
-            bkg_map = median_filter(sci_data, size=kernel_size)
+            valid = (~mask) & np.isfinite(sci_data)
+            if not np.any(valid):
+                return None, None
+            filter_data = sci_data
+            if not np.all(valid):
+                nearest = distance_transform_edt(~valid, return_distances=False, return_indices=True)
+                filter_data = sci_data[tuple(nearest)]
+            bkg_map = median_filter(filter_data, size=kernel_size)
         else:
             valid_data = sci_data[~mask] if np.any(~mask) else sci_data
             step = max(1, valid_data.size // 100000)
@@ -320,8 +329,7 @@ def _repair_negative_dips(bkg_map, sci_data, bkg_rms_map, mask, config, diagnost
 
         rms = np.asarray(bkg_rms_map, dtype=np.float64)
         finite_rms = np.isfinite(rms) & (rms > 0)
-        rms_ref = np.median(rms[finite_rms]) if np.any(finite_rms) else np.nan
-        thresh = np.where(finite_rms, sigma * rms, sigma * rms_ref)
+        thresh = np.where(finite_rms, sigma * rms, np.nan)
         skymap = np.asarray(bkg_map, dtype=np.float64)
         skymed = np.median(skymap[np.isfinite(skymap)]) if np.any(np.isfinite(skymap)) else np.nan
         invalid = candidate | ~guide

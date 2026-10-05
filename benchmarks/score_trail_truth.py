@@ -29,6 +29,7 @@ import contextlib
 import hashlib
 import io
 import json
+import math
 import os
 import sys
 import time
@@ -161,35 +162,48 @@ def _ccd_name(header):
     return None
 
 
+def _calibration_frame(header):
+    kinds = {"FLAT", "DARK", "BIAS", "ZERO", "DOMEFLAT", "SKYFLAT", "TWILIGHTFLAT"}
+    return any(
+        kinds.intersection(str(header.get(key, "")).upper().replace("_", " ").replace("-", " ").split())
+        for key in ("OBSTYPE", "IMAGETYP", "EXPTYPE")
+    )
+
+
 def _persistence_prior(path, header, shape):
-    """Columns and rows bright on at least two sibling exposures of this CCD."""
+    """Columns and rows bright on two distinct other science files of this CCD."""
     from weightmask.streaks import persistent_axis_mask
+    from weightmask.utils import paths_alias
 
     name = _ccd_name(header)
     if not name:
         return None
     directory = os.path.dirname(os.path.abspath(path))
     frames = []
+    distinct_paths = []
     for fname in sorted(os.listdir(directory)):
         lower = fname.lower()
-        if not (lower.endswith(".fits") or lower.endswith(".fz")):
+        if not lower.endswith((".fits", ".fz")) or lower.startswith(("flat_", "dark_", "bias_", "zero_")):
             continue
         other = os.path.join(directory, fname)
-        if os.path.abspath(other) == os.path.abspath(path):
+        if paths_alias(other, path) or any(paths_alias(other, previous) for previous in distinct_paths):
             continue
+        distinct_paths.append(other)
         try:
             with fitsio.FITS(other) as handle:
+                if _calibration_frame(handle[0].read_header()):
+                    continue
                 for ext in range(len(handle)):
                     try:
                         other_header = handle[ext].read_header()
                     except Exception:
                         continue
-                    if _ccd_name(other_header) != name:
+                    if _ccd_name(other_header) != name or _calibration_frame(other_header):
                         continue
                     data = np.ascontiguousarray(handle[ext].read(), dtype=np.float32)
                     if data.shape == shape:
                         frames.append(data)
-                    break
+                        break
         except Exception:
             continue
     if len(frames) < 2:
@@ -207,7 +221,6 @@ def _detected(row, min_coverage):
 
 def summarise(fixture, per_hdu, detectors, min_coverage, skip_px):
     """Aggregate per-HDU results into per-detector metrics."""
-    labels = {entry_key(entry): entry["label"] for entry in fixture["entries"]}
     totals = {
         detector: {
             "trail_entries": 0,
@@ -231,7 +244,7 @@ def summarise(fixture, per_hdu, detectors, min_coverage, skip_px):
             bucket["hdus_scored"] += 1
             bucket["seconds"] += result["seconds"]
             for row in result["rows"]:
-                label = labels.get(row["key"], row.get("label"))
+                label = row["label"]
                 if row.get("band_px", 0) < skip_px:
                     continue
                 if label == "trail":
@@ -284,6 +297,14 @@ def main(argv=None):
     parser.add_argument("--verbose", dest="quiet", action="store_false")
     args = parser.parse_args(argv)
 
+    if any(
+        not math.isfinite(value) or not 0 <= value <= 1
+        for value in (args.min_coverage, args.max_artefact_fp_rate, args.min_trail_recall)
+    ):
+        parser.error("coverage and recall/FP thresholds must be finite and between 0 and 1")
+    if not math.isfinite(args.corridor_px) or args.corridor_px <= 0 or args.skip_px < 1:
+        parser.error("--corridor-px and --skip-px must be positive")
+
     detectors = args.detector or ["streaks"]
     with open(args.fixture) as handle:
         fixture = json.load(handle)
@@ -316,6 +337,8 @@ def main(argv=None):
     for (exposure, hdu), entries in sorted(grouped.items()):
         info = fixture["data_requirements"]["exposures"].get(exposure)
         path = info["path"] if info else os.path.join(data_root, exposure + ".fits")
+        if args.data_root:
+            path = os.path.join(data_root, os.path.basename(path))
         if not os.path.exists(path):
             missing.add(exposure)
             continue
@@ -378,9 +401,12 @@ def main(argv=None):
             "Trail recall is `n/a`: the fixture carries no confirmed real trail. The line that can be scored is the",
             "false-positive rate on real clutter, which is what the audit's injected-trail suite cannot measure.",
         ]
-    failures = []
+    failures = [f"missing science exposure: {exposure}" for exposure in sorted(missing)]
+    failures.extend(f"unscored {record['exposure']}:{record['hdu']}: {record['reason']}" for record in skipped)
     for detector in detectors:
         bucket = totals[detector]
+        if bucket["hdus_scored"] != len(jobs) or not (bucket["trail_entries"] + bucket["artefact_entries"]):
+            failures.append(f"{detector}: incomplete labelled evidence ({bucket['hdus_scored']}/{len(jobs)} HDUs)")
         if bucket["artefact_fp_rate"] is not None and bucket["artefact_fp_rate"] > args.max_artefact_fp_rate:
             failures.append(
                 f"{detector}: artefact FP rate {bucket['artefact_fp_rate']:.3f} > {args.max_artefact_fp_rate:.3f}"
@@ -391,12 +417,13 @@ def main(argv=None):
         lines += ["", "## Gate failures", ""] + [f"- {item}" for item in failures]
 
     report = {
+        "metric_revision": "truth-band-recall-v2",
         "fixture": args.fixture,
         "detectors": detectors,
         "config": config_record,
         "thresholds": {"min_coverage": args.min_coverage, "corridor_px": args.corridor_px, "skip_px": args.skip_px},
         "totals": totals,
-        "skipped": skipped,
+        "skipped": skipped + [{"exposure": exposure, "reason": "missing science file"} for exposure in sorted(missing)],
         "gate_failures": failures,
         "per_hdu": per_hdu,
     }

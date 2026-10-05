@@ -15,7 +15,6 @@ class TestStreaks(unittest.TestCase):
         config = {
             "enable": True,
             "mode": "auto_ground",
-            "dilation_radius": 2,
             "houghpeak_params": {"enable": True, "bin": 2, "thresh_sig": 2.5, "min_votes": 40, "max_candidates": 6},
             "contour_params": {"enable": False},
             "mask_params": {
@@ -87,6 +86,7 @@ class TestStreaks(unittest.TestCase):
         config = self._config(
             enable_sparse_ransac=True,
             sparse_ransac_params={
+                "dilation_radius": 2,
                 "detect_thresh_sig": 3.0,
                 "residual_threshold": 2.0,
                 "min_inliers": 5,
@@ -256,8 +256,8 @@ class TestBrightnessVeto(unittest.TestCase):
 
         repo = Path(__file__).resolve().parents[1]
         sigma = yaml.safe_load(open(repo / "weightmask.yml"))["streak_masking"]["mask_params"]["max_component_sigma"]
-        self.assertGreater(sigma, 2.0, "must not touch real trails (measured ~2 sigma p90)")
-        self.assertLess(sigma, 54.0, "must catch saturated-star bleed (measured 54-66 sigma p90)")
+        self.assertGreater(sigma, 3.2, "must not touch real trails (measured 3.0/3.2 sigma p90)")
+        self.assertLess(sigma, 155.0, "must catch bright star arm (155 sigma) and bleed (1138/1345 sigma)")
 
 
 if __name__ == "__main__":

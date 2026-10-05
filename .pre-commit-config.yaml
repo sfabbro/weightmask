@@ -7,6 +7,11 @@ repos:
       - id: trailing-whitespace
       - id: end-of-file-fixer
       - id: check-yaml
+        exclude: ^\.dsh/cordis\.patch\.yml$
+      - id: check-yaml
+        name: Check Cordis YAML syntax
+        files: ^\.dsh/cordis\.patch\.yml$
+        args: [--unsafe]
       - id: check-added-large-files
       - id: check-ast
       - id: debug-statements

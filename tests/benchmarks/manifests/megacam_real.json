@@ -60,7 +60,7 @@
       "source_identifier": "CFHT Elixir-calibrated science exposure with held-out dark residual injection",
       "download_url": "https://www.cfht.hawaii.edu/Science/CFHTLS-DATA/dataprocessing.html",
       "download_source": "cadc_query",
-      "cadc_query": "SELECT TOP 1 Plane.publisherID FROM caom2.Plane AS Plane JOIN caom2.Observation AS Observation ON Plane.obsID = Observation.obsID WHERE Observation.collection = 'CFHT' AND Observation.instrument_name = 'MegaPrime' AND Observation.type = 'DARK' AND Plane.dataRelease < '2010-01-01'",
+      "cadc_query": "SELECT TOP 1 Plane.publisherID FROM caom2.Plane AS Plane JOIN caom2.Observation AS Observation ON Plane.obsID = Observation.obsID WHERE Observation.collection = 'CFHT' AND Observation.instrument_name = 'MegaPrime' AND Observation.type = 'OBJECT' AND Plane.dataRelease < '2010-01-01' ORDER BY Plane.publisherID",
       "local_path": "benchmark_data/megacam/megacam_dark_injection_science.fits",
       "dark_local_path": "benchmark_data/megacam/megacam_dark_residual.fits",
       "label_recipe": "dark_injection_v1",
@@ -69,10 +69,7 @@
         768,
         768
       ],
-      "comparators": [
-        "astroscrappy_only",
-        "dark_threshold_baseline"
-      ],
+      "comparators": [],
       "expected_instrument": "MegaPrime",
       "expected_detector": "MegaCam"
     }

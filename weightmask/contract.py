@@ -15,10 +15,12 @@ from typing import Any, Mapping, Protocol, runtime_checkable
 
 import numpy as np
 
+from ._version import __version__
+
 CONTRACT_VERSION = "1.0"
 MASK_POLARITY = "set_means_flagged"
-# Frozen 0.1 plane: g²F²/(Sg+RN²). Exact Poisson+RN at F=1; Elixir-style F² coadd weight otherwise.
-INVERSE_VARIANCE_SEMANTICS = "flat_fielded_poisson_weight"
+# The selected variance method and flat convention belong in provenance.
+INVERSE_VARIANCE_SEMANTICS = "inverse_variance_adu^-2"
 CONFIDENCE_SEMANTICS = "normalized_weight_0_to_1"
 # `confidence_params.scale_to_100` multiplies the map by 100 before it is
 # written, so the card must describe the range the file actually holds.
@@ -49,11 +51,6 @@ class QualityBit(IntFlag):
     STREAK = 1 << 4
     INVALID_VARIANCE = 1 << 5
     NO_DATA = 1 << 6
-
-    # Compact aliases retain the original WeightMask vocabulary.
-    BAD = BAD_PIXEL
-    SAT = SATURATED
-    CR = COSMIC_RAY
 
 
 QUALITY_BITS = {
@@ -105,28 +102,12 @@ class ArrayHeaderIO(Protocol):
         """Write an array and header mapping."""
 
 
-def _package_version() -> str:
-    """The installed distribution version, or the in-tree fallback.
-
-    Imported rather than re-declared: the version was previously hardcoded here
-    as well as in pyproject.toml and __init__.py, so a release had to update
-    three places and a missed one would have stamped stale provenance into every
-    output file.
-    """
-    try:
-        from ._version import __version__
-
-        return __version__
-    except Exception:  # pragma: no cover - only if the module is missing
-        return "0.2.0"
-
-
 @dataclass(frozen=True)
 class ProducerMetadata:
     """Versioned producer identity, with reserved fields for future ML models."""
 
     name: str = "weightmask"
-    version: str = field(default_factory=_package_version)
+    version: str = __version__
     kind: str = "classical"
     algorithm: str = "classical_mask_and_variance"
     model_id: str | None = None
@@ -259,15 +240,18 @@ def _json_header_cards(legacy_key: str, prefix: str, value: Mapping[str, Any]) -
     return {f"{prefix}CNT": str(len(chunks))} | {f"{prefix}{index:02d}": chunk for index, chunk in enumerate(chunks)}
 
 
-def _json_from_header_cards(header: Mapping[str, Any], legacy_key: str, prefix: str) -> str:
+def _json_from_header_cards(header: Mapping[str, Any], legacy_key: str, prefix: str) -> str | None:
     """Read JSON stored in single legacy or chunked FITS header cards."""
     count = header.get(f"{prefix}CNT")
     if count is None:
-        return str(header.get(legacy_key, "{}"))
+        return str(header[legacy_key]) if legacy_key in header else None
     try:
-        return "".join(str(header[f"{prefix}{index:02d}"]) for index in range(int(count)))
+        count = int(count)
+        if count <= 0:
+            return ""
+        return "".join(str(header[f"{prefix}{index:02d}"]) for index in range(count))
     except (KeyError, TypeError, ValueError):
-        return "{}"
+        return ""
 
 
 @dataclass(frozen=True)
@@ -296,6 +280,8 @@ class WeightMaskProduct:
                 raise ValueError(f"WeightMaskProduct {name} shape {np.shape(arr)} != quality_mask shape {shape}")
         if not np.issubdtype(self.quality_mask.dtype, np.integer):
             raise TypeError("WeightMaskProduct quality_mask must have an integer dtype")
+        if not np.issubdtype(self.inverse_variance.dtype, np.floating):
+            raise TypeError("WeightMaskProduct inverse_variance must have a float dtype")
         if not np.issubdtype(self.weight.dtype, np.floating):
             raise TypeError("WeightMaskProduct weight must have a float dtype")
         if not np.issubdtype(self.confidence.dtype, np.floating):
@@ -306,6 +292,10 @@ class WeightMaskProduct:
             raise ValueError("WeightMaskProduct weight must be finite")
         if not np.all(np.isfinite(self.confidence)):
             raise ValueError("WeightMaskProduct confidence must be finite")
+        if not np.all(np.isfinite(self.inverse_variance)):
+            raise ValueError("WeightMaskProduct inverse_variance must be finite")
+        if np.any(self.inverse_variance < 0):
+            raise ValueError("WeightMaskProduct inverse_variance must be non-negative")
         if np.any(self.weight < 0):
             raise ValueError("WeightMaskProduct weight must be non-negative")
         if np.any((self.confidence < 0) | (self.confidence > 1)):
@@ -389,6 +379,10 @@ def build_weight_product(
 
     raw_mask = np.zeros(inverse_variance.shape, dtype=np.uint32) if quality_mask is None else quality_mask
     mask = canonical_quality_mask(raw_mask, inverse_variance.shape)
+    # Validity applies to the array we return: a finite float64 can overflow
+    # or underflow when represented by the contract's float32 plane.
+    with np.errstate(over="ignore", under="ignore", invalid="ignore"):
+        inverse_variance = inverse_variance.astype(np.float32)
     valid = valid_inverse_variance(inverse_variance)
     mask[~valid] |= np.uint32(QualityBit.INVALID_VARIANCE)
 

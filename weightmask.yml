@@ -20,16 +20,10 @@ flat_masking:
   bad_mask_cache_dir: null       # null → <flat directory>/.weightmask_cache
 
 dark_masking:
-  # Required for --dark_image; without this section the dark is ignored.
-  local_filter_size: 15          # pixels; same local-median test as the flat, on --dark_image
-  local_low_thresh: 0.5          # low-ratio cut (rarely fires on a dark)
-  local_high_thresh: 2.0         # hot pixels: dark / local-median above this
-  col_enable: true               # dead/hot columns on the dark
-  col_deriv_sigma: 10.0          # MAD-sigma on the column-median derivative
-  col_dead_thresh: 0.1           # columns this faint vs the chip median
+  hot_sigma: 8.0                # hot if dark > median + hot_sigma * 1.4826*MAD; non-finites are BAD
+                                # assumes a mostly healthy HDU with uniform dark pedestal
 
 saturation:
-  method: "histogram"            # accepted values histogram/header; histogram path always runs
   keyword: ["SATURATE", "SATUR", "SATURAT"]  # header advisory (first present); used if the clump fails the guard
   effective_full_scale: 65535.0  # ADU; 16-bit ceiling used as a histogram bound
   histogram_params:
@@ -79,7 +73,7 @@ cosmic_ray:
   faint_cr:
     enable: true                 # second, fainter pass for elongated multi-pixel hits
     enhancement: "lacosmic"      # lacosmic (default) or opt-in residual prototype
-    sigclip: 5.0                 # stricter L.A.Cosmic brightness threshold than the primary pass
+    sigclip: 5.0                 # lower, more permissive L.A.Cosmic threshold than the primary pass
     objlim_boost: 1.5            # multiply objlim on this pass
     niter: 1                     # one extra astroscrappy pass
     min_component_area: 3        # drop single/double-pixel noise
@@ -101,7 +95,7 @@ sep_objects:
   clean: true                    # SEP clean of spurious detections
   clean_param: 1.0               # SEP clean_param
   ellipse_k: 3.0                 # ellipse mask radius in Kron-like units
-  seed_thresh_factor: 1.25       # raise extract_thresh in crowded fields
+  seed_thresh_factor: 1.25       # multiply extract_thresh for first-pass seed extraction
   dynamic_halo_scaling: true     # grow ellipses for brighter objects
   halo_brightness_factor: 0.2    # how fast the halo grows with flux
   halo_flux_reference_percentile: 50.0  # flux percentile treated as "typical"
@@ -117,7 +111,6 @@ sep_objects:
 streak_masking:
   enable: true                   # STREAK bit; production mode is auto_ground only
   mode: "auto_ground"            # binned Hough peaks + contours + strip refine + optional RANSAC
-  dilation_radius: 2             # pixels; grow accepted trails
   profile_accept: true           # keep only the fitted line; drop components wider than max_support_width
   debug: false                   # extra streak diagnostics
   houghpeak_params:
@@ -162,28 +155,23 @@ streak_masking:
     # MegaCam, in sigma: real satellite trails 3.0 and 3.2; saturated-star bleed
     # 1138 and 1345; hot column group ~2000; bright star arm 155.
     #
-    # UNCALIBRATED AT THE HIGH END. 20 is a 6x margin below the two trails that
+    # UNCALIBRATED AT THE HIGH END. 20 is a 6x margin above the two trails that
     # exist locally -- a sample of two. A bright satellite constellation would be
     # deleted by this rule, and nothing in the local corpus would ever show it.
     # Raise it, or null it, if that matters more than the artefacts below.
     #
-    # What turning it off actually costs, measured (veto ON -> OFF, px masked):
-    #   real satellite trails   12001 -> 12001    11034 -> 11034   unaffected
-    #   saturated-star bleed        0 -> 0 (pre-masked veto still suppresses it)
-    #   hot column group            0 -> 10734    returns
-    #   bright star arm            0 -> 4385     returns
-    # Both survivors sit below max_premasked_fraction (0.24 and 0.15 vs a 0.25
-    # threshold), so the pre-masked veto cannot catch them.
+    # Historical 0.2.0 veto measurements preceded the 0.2.1 object-mask fixes.
+    # Correct upstream masks now suppress some of those artefacts on their own;
+    # old per-component pixel counts do not describe the current pipeline.
     #
     # The column is also catchable without brightness: it is static, so it
     # persists at 0.90 across epochs of the same field, against 0.02 for a real
     # trail. `--persistence` uses that. The star arm persists at only 0.41 and is
     # not reliably caught that way.
     max_component_sigma: 20.0
-    max_row_gap: 0               # opt-in gap bridge for full-span Hough candidates (samples)
-    min_row_run: 0               # when bridging, ignore runs shorter than this many samples
+    max_row_gap: 24              # Hough only: group support across short gaps from star masks
+    min_row_run: 8               # reject short noise runs before grouping; gaps stay unfilled
   enable_sparse_ransac: true     # dashed-trail recovery on residual bright pixels
-  sparse_on_primary_weak_only: true  # run RANSAC only when primary confidence is low
   sparse_ransac_params:
     detect_thresh_sig: 6.0       # residual pixels this many σ above sky
     residual_threshold: 1.5      # pixels; RANSAC inlier distance
@@ -198,7 +186,6 @@ variance:
   method: "theoretical"          # "theoretical" (default), "rms_map", or "empirical_fit"
   # ivar = g^2 F^2 / (S*g*F + RN^2). A spatially varying flat moved aperture flux
   # by more than the fixture read-noise floor, so the sky term is S*g*F.
-  flat_fielded_poisson: true
   gain_keyword: ["GAIN", "GAINA", "GAINB", "CCDGAIN"]  # e-/ADU; first present header wins
   rdnoise_keyword: ["RDNOISE", "RDNOIS", "RON"]        # e-; first present header wins
   default_gain: 1.5              # e-/ADU; used only if no gain keyword is present
@@ -206,7 +193,6 @@ variance:
   epsilon: 1.0e-9                # validity cut / safe-flat substitute; not added to the denominator
   flat_rel_noise: 0.003          # fractional flat uncertainty; adds a vignette-scaled term
   rescale_variance: true         # scale so background SNR has robust scatter 1
-  unbias_variance: false         # optional extra unbias (off; rescale is the 0.1 path)
 
 confidence_params:
   dtype: "float32"               # confidence array dtype
@@ -217,7 +203,7 @@ confidence_params:
 output_params:
   output_map_format: "weight"    # primary -o product: "weight" or "confidence"
   mask_detected_in_weight: false # if true, DETECTED pixels also get zero weight
-  mask_bitpix: 16                # FITS BITPIX for the mask (uint16; values 0–63 fit)
+  mask_bitpix: 16                # FITS BITPIX for the mask (uint16; values 0–127 fit)
   ivar_bitpix: 32                # FITS BITPIX for ivar/weight/confidence/sky (float32)
   compress: false                # Rice (.fits.fz); if true and -o omitted, default suffix is .weight.fits.fz
   sky_format: full               # "full" map, or "mesh" for SKYMESH + weightmask-reconstruct-sky

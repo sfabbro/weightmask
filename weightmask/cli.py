@@ -17,7 +17,7 @@ from . import __version__
 from .mef import process_all_hdus
 from .process import validate_config
 from .streaks import persistent_axis_mask
-from .utils import clean_config_dict, extract_hdu_spec
+from .utils import clean_config_dict, extract_hdu_spec, paths_alias
 
 
 def validate_fits_file(file_path: str) -> bool:
@@ -54,7 +54,7 @@ def parse_arguments(argv=None) -> argparse.Namespace:
             "\n"
             "Config keys: weightmask.yml (copy into the working directory; not installed "
             "with the package). Usage: docs/usage.md\n"
-            "Mesh skies: weightmask-reconstruct-sky (also: weightmask reconstruct-sky ...)."
+            "Mesh skies: weightmask-reconstruct-sky."
         ),
         formatter_class=argparse.RawDescriptionHelpFormatter,
     )
@@ -67,8 +67,7 @@ def parse_arguments(argv=None) -> argparse.Namespace:
         "--config",
         type=str,
         default=None,
-        help="YAML config. If omitted, looks for weightmask.yml in the current "
-        "directory (also config.yml, .weightmask.yml). Not bundled in the wheel.",
+        help="YAML config. If omitted, looks for weightmask.yml in the current directory. Not bundled in the wheel.",
     )
     inputs.add_argument(
         "--flat_image",
@@ -146,7 +145,6 @@ def parse_arguments(argv=None) -> argparse.Namespace:
     )
     run.add_argument(
         "--nproc",
-        "--max-workers",
         dest="max_workers",
         type=int,
         default=None,
@@ -279,7 +277,11 @@ def build_persistence_priors(science_path, hdus, other_paths, min_other=2):
     # name. Each (name, file) pair contributes at most one frame: the first
     # name-matching extension with a compatible shape.
     frames_by_name = {name: [] for name in by_name}
+    distinct_paths = []
     for path in other_paths:
+        if paths_alias(path, science_path) or any(paths_alias(path, previous) for previous in distinct_paths):
+            continue
+        distinct_paths.append(path)
         with fitsio.FITS(path, "r") as handle:
             seen = set()
             for ext in range(len(handle)):
@@ -290,9 +292,15 @@ def build_persistence_priors(science_path, hdus, other_paths, min_other=2):
                 name = _ccd_name(header)
                 if name not in name_shape or name in seen:
                     continue
-                seen.add(name)
-                data = np.ascontiguousarray(handle[ext].read(), dtype=np.float32)
+                if _image_shape(header) != name_shape[name]:
+                    continue
+                try:
+                    data = np.ascontiguousarray(handle[ext].read(), dtype=np.float32)
+                except (OSError, TypeError, ValueError) as exc:
+                    print(f"  WARNING: cannot read persistence HDU {ext} from '{path}': {exc}")
+                    continue
                 if data.shape == name_shape[name]:
+                    seen.add(name)
                     frames_by_name[name].append(data)
 
     priors = {}
@@ -308,11 +316,9 @@ def build_persistence_priors(science_path, hdus, other_paths, min_other=2):
 
 
 def _find_default_config() -> Optional[str]:
-    default_configs = ["weightmask.yml", "config.yml", ".weightmask.yml"]
-    for cfg in default_configs:
-        if os.path.exists(cfg):
-            print(f"Using default config file found at: {cfg}")
-            return cfg
+    if os.path.exists("weightmask.yml"):
+        print("Using default config file found at: weightmask.yml")
+        return "weightmask.yml"
     return None
 
 
@@ -320,6 +326,9 @@ def _read_and_clean_config(config_path: str) -> dict:
     try:
         with open(config_path, "r") as f:
             config = yaml.safe_load(f)
+            if not isinstance(config, dict):
+                print(f"ERROR: Config file '{config_path}' must be a YAML dictionary.")
+                return None
             return clean_config_dict(config)
     except OSError as e:
         print(f"ERROR: Failed to read config file '{config_path}': {e}")
@@ -344,6 +353,10 @@ def load_configuration(config_path: str) -> dict:
         print(f"ERROR: Config file '{config_path}' must be a YAML dictionary.")
         return None
 
+    if not validate_config(config):
+        print("ERROR: Configuration validation failed.")
+        return None
+
     if "output_params" not in config:
         config["output_params"] = {}
     if "confidence_params" not in config:
@@ -355,11 +368,20 @@ def load_configuration(config_path: str) -> dict:
     config["output_params"].setdefault("compress", False)
     config["output_params"].setdefault("sky_format", "full")
 
-    if not validate_config(config):
-        print("ERROR: Configuration validation failed.")
-        return None
-
     return config
+
+
+def _validate_output_paths(paths, inputs):
+    outputs = [path for key, path in paths.items() if key != "individual_mask_paths" and path]
+    outputs.extend((paths.get("individual_mask_paths") or {}).values())
+    checked = [path for path in inputs if path]
+    for path in outputs:
+        for previous in checked:
+            if paths_alias(path, previous):
+                print(f"ERROR: Output path '{path}' aliases an input or another output: '{previous}'.")
+                return False
+        checked.append(path)
+    return True
 
 
 def determine_output_paths(args: argparse.Namespace, input_path: str, config: dict | None = None) -> dict:
@@ -475,16 +497,6 @@ def _cleanup_hdul(hdul_input, hdul_flat, hdul_badpix=None, hdul_dark=None):
 
 def run_pipeline(argv=None) -> int:
     """Main function to parse arguments and run the pipeline."""
-    argv = list(sys.argv[1:] if argv is None else argv)
-    # `weightmask reconstruct-sky ...` delegates to the dedicated entry point.
-    # This is the original spelling, from fb2d623; the `weightmask-reconstruct-sky`
-    # console script was added later in 5648d72. Both are supported and neither
-    # is deprecated -- `weightmask-reconstruct-sky` is the one to document.
-    if argv and argv[0] == "reconstruct-sky":
-        from .reconstruct_sky import main as reconstruct_sky_main
-
-        return reconstruct_sky_main(argv[1:])
-
     args = parse_arguments(argv)
 
     print("Starting WeightMask Pipeline...")
@@ -511,6 +523,11 @@ def run_pipeline(argv=None) -> int:
         input_hdu = args.hdu
 
     paths = determine_output_paths(args, input_path, config)
+    config_path = args.config or "weightmask.yml"
+    if not _validate_output_paths(
+        paths, [input_path, flat_path, badpix_path, args.dark_image, config_path, *(args.persistence or [])]
+    ):
+        return 1
 
     hdul_input, hdul_flat = open_fits_files(input_path, flat_path)
     if hdul_input is None:
@@ -543,13 +560,13 @@ def run_pipeline(argv=None) -> int:
 
     detector_priors = None
     persistence = getattr(args, "persistence", None) or []
-    if persistence:
-        detector_priors = build_persistence_priors(input_path, hdus_to_process, persistence)
-        print(f"Persistence prior for {len(detector_priors)} HDU(s) from {len(persistence)} other exposure(s).")
 
     # Every exit from here must release the handles, including an exception out
     # of the run itself: _cleanup_hdul used to run only on the success path.
     try:
+        if persistence:
+            detector_priors = build_persistence_priors(input_path, hdus_to_process, persistence)
+            print(f"Persistence prior for {len(detector_priors)} HDU(s) from {len(persistence)} other exposure(s).")
         process_success_count = process_all_hdus(
             hdus_to_process,
             hdul_input,
@@ -575,7 +592,7 @@ def run_pipeline(argv=None) -> int:
     warnings.filterwarnings("default", category=RuntimeWarning)
 
     if process_success_count == 0:
-        print("\nNo HDUs processed successfully. No output files written.")
+        print("\nNo HDUs processed and written successfully. Output files may be incomplete.")
         return 1
 
     if process_success_count != len(hdus_to_process):
@@ -585,9 +602,8 @@ def run_pipeline(argv=None) -> int:
         # say so; the EXTNAMEs remain the authoritative source index.
         print(
             f"\nERROR: only {process_success_count} of {len(hdus_to_process)} HDUs were "
-            f"processed. The output products are incomplete: they hold "
-            f"{process_success_count} data extension(s) for {len(hdus_to_process)} science "
-            f"HDU(s), so extension position no longer matches the science HDU. Use EXTNAME to "
+            f"processed and written successfully. The output products are incomplete "
+            f"and may have different extension counts. Use EXTNAME to "
             f"identify a product's source HDU, or fix the failing HDU and re-run."
         )
         return 1

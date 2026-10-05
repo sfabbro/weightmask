@@ -1,6 +1,36 @@
 import numpy as np
+import pytest
 
 import weightmask.cosmics as cosmics
+
+
+@pytest.mark.parametrize("gate", [cosmics._post_filter_components, cosmics._filter_faint_components])
+def test_component_contrast_gates_are_invariant_to_sky_level(gate):
+    residual = np.zeros((8, 8), dtype=np.float32)
+    flag = np.zeros(residual.shape, dtype=bool)
+    flag[3, 2:5] = True
+    residual[flag] = 2.0
+    rms = np.ones_like(residual)
+    without_sky = gate(flag, residual, rms, {})
+    with_sky = gate(flag, residual + 100.0, rms, {})
+    assert not without_sky.any()
+    assert np.array_equal(with_sky, without_sky)
+
+
+def test_residual_faint_detection_requires_measured_rms():
+    sky = np.full((32, 32), 100.0, dtype=np.float32)
+    data = sky.copy()
+    data[10, 10:17] += 8.0
+    rms = np.ones_like(sky)
+    measured = cosmics._detect_residual_faint_components(
+        data, np.zeros(data.shape, dtype=bool), sky, rms, {}, psf_aware=False
+    )
+    assert measured[10, 10:17].all()
+    rms[10, 10:17] = np.inf
+    unmeasured = cosmics._detect_residual_faint_components(
+        data, np.zeros(data.shape, dtype=bool), sky, rms, {}, psf_aware=False
+    )
+    assert not unmeasured.any()
 
 
 def test_residual_faint_enhancement_recovers_linear_component_and_rejects_compact_source():

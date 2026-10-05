@@ -45,6 +45,21 @@ class TestObjects(unittest.TestCase):
         # Background should not be masked
         self.assertFalse(obj_mask[10, 10])
 
+    def test_compact_seed_survives_empty_second_pass(self):
+        data = np.zeros((64, 64), dtype=np.float32)
+        data[30:35, 30:35] = 40.0
+        config = {"spike_enable": False, "dynamic_halo_scaling": False}
+        mask = detect_objects(data, np.ones_like(data), None, config)
+        self.assertTrue(mask[32, 32], "a seed swallowed by its ellipse is still an object")
+
+    def test_empty_config_receives_elongated_sky_handoff(self):
+        data = np.zeros((120, 120), dtype=np.float32)
+        data[58:62, 20:100] = 40.0
+        config = {}
+        detect_objects(data, np.ones_like(data), None, config)
+        self.assertIn("_elongated_for_sky", config)
+        self.assertTrue(config["_elongated_for_sky"][60, 60])
+
     def test_detect_objects_with_spikes(self):
         """Test detection with diffraction spike masking."""
         # Add a very bright star to trigger spike masking

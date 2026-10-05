@@ -106,7 +106,7 @@ def detect_objects(data_sub, bkg_rms_map, existing_mask, config):
     object_mask = np.zeros(data_sub.shape, dtype=bool)
 
     try:
-        clean_config = config or {}
+        clean_config = config if config is not None else {}
         base_extract_thresh = float(clean_config.get("extract_thresh", 3.0))
         min_area = int(clean_config.get("min_area", 10))
 
@@ -130,6 +130,7 @@ def detect_objects(data_sub, bkg_rms_map, existing_mask, config):
             return np.zeros(data_sub.shape, dtype=bool)
         seed_mask = np.zeros_like(object_mask, dtype=bool)
         elongated_seed = np.zeros_like(object_mask, dtype=bool)
+        keep_seed_objects = seed_objects
         if len(seed_objects) > 0:
             seed_scaled_a = np.maximum(seed_objects["a"], 1.0)
             seed_scaled_b = np.maximum(seed_objects["b"], 1.0)
@@ -141,6 +142,7 @@ def detect_objects(data_sub, bkg_rms_map, existing_mask, config):
                 with np.errstate(divide="ignore", invalid="ignore"):
                     seed_elong = seed_objects["a"] / np.maximum(seed_objects["b"], 1e-9)
                 keep_seed = seed_elong >= float(clean_config.get("max_elongation", 3.0))
+                keep_seed_objects = seed_objects[~keep_seed]
                 if np.any(keep_seed):
                     _apply_vectorized_ellipse_mask(
                         elongated_seed,
@@ -184,10 +186,6 @@ def detect_objects(data_sub, bkg_rms_map, existing_mask, config):
                 keep_seg_labels = keep_seg_labels[valid_obj]
                 keep_objects = objects[valid_obj]
 
-        print(
-            f"  Detected {len(objects)} objects ({len(keep_objects)} kept for masking, thresh={extract_thresh:.1f} sigma)."
-        )
-
         elongated_mask = np.zeros(data_sub.shape, dtype=bool)
         elongated_mask |= elongated_seed
         if clean_config.get("handoff_elongated_to_streak", True) and segmap is not None and len(objects) > 0:
@@ -205,6 +203,14 @@ def detect_objects(data_sub, bkg_rms_map, existing_mask, config):
         # same config dict to build the sky-only mask. This mutation is the
         # intentional side channel, not an accident -- do not "clean" it.
         clean_config["_elongated_for_sky"] = elongated_mask
+
+        # Seed ellipses exclude bright cores from the second pass. Their
+        # non-elongated objects still need the same halo/spike masking below.
+        keep_objects = np.concatenate((keep_seed_objects, keep_objects))
+        print(
+            f"  Detected {len(seed_objects) + len(objects)} objects "
+            f"({len(keep_objects)} kept for masking, thresh={extract_thresh:.1f} sigma)."
+        )
 
         if len(keep_objects) > 0:
             base_k = float(clean_config.get("ellipse_k", 2.0))

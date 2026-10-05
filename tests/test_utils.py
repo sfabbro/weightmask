@@ -100,6 +100,13 @@ class TestUtils(unittest.TestCase):
         self.assertEqual(cleaned["ok"], -7)
         self.assertEqual(cleaned["pad"], 8)
 
+    def test_boolean_whitespace_and_unicode_digits(self):
+        cleaned = clean_config_dict({"on": " yes ", "off": " false ", "superscript": "²", "decimal": "٤"})
+        self.assertIs(cleaned["on"], True)
+        self.assertIs(cleaned["off"], False)
+        self.assertEqual(cleaned["superscript"], "²")
+        self.assertEqual(cleaned["decimal"], 4)
+
     def test_clean_config_dict_strings(self):
         """Test clean_config_dict with regular strings."""
         config = {

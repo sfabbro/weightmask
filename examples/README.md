@@ -16,8 +16,8 @@ with a spatially varying sky, a variable PSF, and dashed satellite tracks.
 It writes mask FITS under `test_outputs/` (gitignored) and prints
 precision/recall against the injected truth.
 
-`cfht_megaprime_example.py` is a thinner MegaPrime-like walkthrough.
-`real_world_robustness.py` is the same staged detector test on a denser field.
+`cfht_megaprime_example.py` downloads a real 36-CCD CFHT MegaPrime exposure from CADC (~350 MB) and runs the CLI on it.
+`real_world_robustness.py` is the staged synthetic detector test on a denser field.
 `test_real_mef.py` needs external MegaCam files under `benchmark_data/`.
 
 ## Quality bits

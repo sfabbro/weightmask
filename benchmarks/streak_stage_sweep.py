@@ -44,6 +44,7 @@ if REPO not in sys.path:
 from production_inputs import capture_detector_inputs, streak_config  # noqa: E402
 
 import weightmask.streaks as ST  # noqa: E402
+from weightmask.utils import rms_valid_mask, robust_rms  # noqa: E402
 
 DATA = os.path.join(REPO, "benchmark_data", "megacam")
 FLAT = os.path.join(DATA, "perf", "flat_08Bm01_r.fits.fz")
@@ -74,7 +75,8 @@ def component_table(mask, data_sub, rms):
 
     labeled, n = ndi.label(mask, structure=np.ones((3, 3)))
     rows = []
-    bright = (data_sub > 10.0 * np.nanmedian(rms)) & np.isfinite(data_sub)
+    noise = robust_rms(rms, default=np.inf)
+    bright = (data_sub > 10.0 * noise) & np.isfinite(data_sub) & rms_valid_mask(rms)
     blab, bn = ndi.label(bright)
     blobs = [np.nonzero(blab == i) for i in range(1, bn + 1)] if bn else []
     for i in range(1, n + 1):
@@ -242,7 +244,7 @@ def main(argv=None):
     with open(args.out, "w") as handle:
         json.dump(results, handle, indent=1)
     print("wrote", args.out)
-    return 0
+    return int(any(record.get("error") for record in results))
 
 
 if __name__ == "__main__":

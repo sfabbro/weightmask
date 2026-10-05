@@ -14,7 +14,7 @@ Checks, in order:
    declare it;
 3. ``CHANGELOG.md`` has a ``## <version>`` section with real content under it;
 4. a clean tree, so a tagged commit cannot differ from what was reviewed;
-5. an sdist and a wheel build, pass ``twine check``, and the wheel installs and
+5. an sdist and a wheel build, pass ``twine check``, and both install and
    imports *outside* the source tree with the right version and entry points.
 
 Exit 0 means releasable. Exit 1 prints what failed and stops.
@@ -66,17 +66,16 @@ def declared_versions():
 
 
 def latest_tag():
-    result = subprocess.run(
-        ["git", "describe", "--tags", "--abbrev=0"], cwd=REPO, capture_output=True, text=True
-    )
+    result = subprocess.run(["git", "tag", "--list", "v*"], cwd=REPO, capture_output=True, text=True)
     if result.returncode != 0:
         return None
-    return result.stdout.strip().lstrip("v")
+    versions = [tag[1:] for tag in result.stdout.splitlines() if re.fullmatch(r"v\d+\.\d+\.\d+", tag)]
+    return max(versions, key=parse_version) if versions else None
 
 
 def parse_version(text):
-    parts = re.findall(r"\d+", text or "")
-    return tuple(int(p) for p in parts[:3]) if len(parts) >= 3 else None
+    match = re.fullmatch(r"v?(\d+)\.(\d+)\.(\d+)", text or "")
+    return tuple(map(int, match.groups())) if match else None
 
 
 def changelog_section(version):
@@ -88,9 +87,7 @@ def changelog_section(version):
     workflow's own extraction.
     """
     text = CHANGELOG.read_text()
-    match = re.search(
-        rf"^##\s+{re.escape(version)}\b[^\n]*(.*?)(?=^##\s|\Z)", text, re.M | re.S
-    )
+    match = re.search(rf"^##[ \t]+{re.escape(version)}(?:[ \t]+[^\n]*)?\n(.*?)(?=^##[ \t]|\Z)", text, re.M | re.S)
     return match.group(1).strip() if match else None
 
 
@@ -114,14 +111,27 @@ def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__.split("\n")[0])
     parser.add_argument("--version", help="version to release, e.g. 0.2.1")
     parser.add_argument("--skip-build", action="store_true", help="run checks 1-4 only")
+    parser.add_argument(
+        "--outdir",
+        help="copy the validated wheel and sdist into this directory (e.g. dist) after all checks pass",
+    )
     args = parser.parse_args(argv)
 
+    outdir = None
+    if args.outdir:
+        outdir = Path(args.outdir).absolute()
+        if outdir.is_symlink() or (outdir.exists() and (not outdir.is_dir() or any(outdir.iterdir()))):
+            parser.error("--outdir must be absent or an empty directory; existing files will not be removed")
+        if args.skip_build:
+            parser.error("--outdir requires building artifacts; omit --skip-build")
+
+    FAILURES.clear()
     version = args.version
-    CURRENT[0] = version or ""
     if not version:
         pyproject, _module = declared_versions()
         version = pyproject
         print(f"no --version given; using the version in pyproject.toml ({version})")
+    CURRENT[0] = version
 
     section(f"1. version {version}")
     parsed = parse_version(version)
@@ -158,15 +168,18 @@ def main(argv=None):
 
     section("4. tree")
     status = run(["git", "status", "--porcelain"])
+    check(status.returncode == 0, "git status succeeds")
     dirty = [line for line in status.stdout.splitlines() if line.strip()]
     check(
         not dirty,
-        "the working tree is clean"
-        if not dirty
-        else f"uncommitted changes: {[line[3:] for line in dirty]}",
+        "the working tree is clean" if not dirty else f"uncommitted changes: {[line[3:] for line in dirty]}",
     )
-    head = run(["git", "rev-parse", "--short", "HEAD"]).stdout.strip()
-    print(f"  note  would tag HEAD at {head}")
+    head = run(["git", "rev-parse", "--short", "HEAD"])
+    check(head.returncode == 0, "HEAD is a commit")
+    print(f"  note  would tag HEAD at {head.stdout.strip()}")
+
+    if FAILURES:
+        return finish()
 
     if args.skip_build:
         section("build skipped")
@@ -174,13 +187,9 @@ def main(argv=None):
         section("5. artifacts")
         workdir = Path(tempfile.mkdtemp(prefix="wm_release_check_"))
         try:
-            # `build` is deliberately absent from the pixi environment: the
-            # publish workflow installs it into a bare setup-python env, exactly
-            # as PEP 517 intends, so the check mirrors that rather than relying
-            # on a build tool the project itself never uses at runtime.
-            builder = Path(tempfile.mkdtemp(prefix="wm_buildenv_"))
-            if builder.exists():
-                shutil.rmtree(builder)
+            # Build tools are isolated from runtime dependencies and cleaned
+            # together with the temporary artifacts.
+            builder = workdir / "build-env"
             created_builder = run([sys.executable, "-m", "venv", str(builder)])
             if not check(created_builder.returncode == 0, "a build venv can be created"):
                 return finish()
@@ -218,18 +227,20 @@ def main(argv=None):
                 if twine.returncode != 0:
                     print(twine.stdout[-1200:], twine.stderr[-800:])
 
-                venv = workdir / "venv"
-                created = run([builder_python, "-m", "venv", str(venv)])
-                if check(created.returncode == 0, "a clean venv can be created"):
+                for artifact in artifacts:
+                    venv = workdir / f"venv-{artifact.name}"
+                    created = run([builder_python, "-m", "venv", str(venv)])
+                    if not check(created.returncode == 0, f"a clean venv can be created for {artifact.name}"):
+                        continue
                     pip = [str(venv / "bin" / "python"), "-m", "pip", "install", "--quiet"]
-                    for artifact in sorted(workdir.glob("*")):
-                        if artifact.suffix in (".whl", ".gz"):
-                            installed_artifact = run(pip + [str(artifact)])
-                            if installed_artifact.returncode != 0:
-                                check(False, f"installing {artifact.name}")
+                    installed_artifact = run(pip + [str(artifact)])
+                    if not check(installed_artifact.returncode == 0, f"installing {artifact.name}"):
+                        print(installed_artifact.stderr[-1200:])
+                        continue
                     outside = run(
                         [
                             str(venv / "bin" / "python"),
+                            "-I",
                             "-c",
                             "import weightmask;"
                             "from weightmask.contract import ProducerMetadata;"
@@ -242,20 +253,35 @@ def main(argv=None):
                         cwd="/",
                     )
                     check(
-                        outside.returncode == 0 and outside.stdout.strip().endswith(version),
-                        f"the installed package imports outside the source tree and reports {version}"
+                        outside.returncode == 0 and outside.stdout.strip() == f"{version} {version}",
+                        f"{artifact.name} imports outside the source tree and reports {version}"
                         if outside.returncode == 0
-                        else "the installed package failed to import outside the source tree",
+                        else f"{artifact.name} failed to import outside the source tree",
                     )
                     scripts = [p.name for p in (venv / "bin").glob("weightmask*")]
                     check(
                         set(scripts) >= {"weightmask", "weightmask-reconstruct-sky"},
                         f"console scripts installed: {scripts}",
                     )
+                if outdir and not FAILURES:
+                    if outdir.is_symlink() or (outdir.exists() and (not outdir.is_dir() or any(outdir.iterdir()))):
+                        check(False, "output directory changed during the build; no existing files overwritten")
+                        return finish()
+                    try:
+                        outdir.mkdir(parents=True, exist_ok=True)
+                        for artifact in artifacts:
+                            with artifact.open("rb") as source, (outdir / artifact.name).open("xb") as destination:
+                                shutil.copyfileobj(source, destination)
+                    except OSError as error:
+                        check(False, f"could not stage validated artifacts: {error}")
+                        return finish()
+                    staged = sorted(p.name for p in outdir.iterdir())
+                    check(
+                        staged == [a.name for a in artifacts],
+                        f"staged validated artifacts to {args.outdir}: {staged}",
+                    )
         finally:
             shutil.rmtree(workdir, ignore_errors=True)
-            if "builder" in dir() and builder:
-                shutil.rmtree(builder, ignore_errors=True)
 
     return finish()
 
