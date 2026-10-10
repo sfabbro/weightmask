@@ -1096,6 +1096,70 @@ class _ProductPublication:
                 print(f"  WARNING: Could not remove {kind} '{path}': {exc}; first attempt failed: {first_error}")
 
 
+def _merge_dark_mask(i, hdu_sci, pre, *, dark_path, hdul_dark, dark_cfg):
+    """Fold the dark frame's hot-pixel mask for HDU ``i`` into ``pre``.
+
+    ``dark_path`` (a per-worker reopen) wins over the already-open ``hdul_dark``.
+    Every failure declines to add a dark mask and returns ``pre`` unchanged: an
+    absent, short or unreadable dark must not fail an HDU that is otherwise
+    fine.
+    """
+    dark_hdu = None
+    fd_local = None
+    close_fd = False
+    try:
+        if dark_path is not None:
+            try:
+                fd_local = fitsio.FITS(dark_path, "r")
+                close_fd = True
+                if i < len(fd_local):
+                    dark_hdu = fd_local[i]
+                else:
+                    print(
+                        f"    WARNING: dark frame {dark_path} has {len(fd_local)} HDU(s), "
+                        f"none for index {i}. No dark hot-pixel mask for this CCD."
+                    )
+                    dark_hdu = None
+            except Exception as e:
+                print(f"    WARNING: dark frame HDU {i} unavailable: {e}. Skipping dark mask.")
+                dark_hdu = None
+        elif hdul_dark is not None:
+            try:
+                if i < len(hdul_dark):
+                    dark_hdu = hdul_dark[i]
+                else:
+                    print(
+                        f"    WARNING: dark frame has {len(hdul_dark)} HDU(s), "
+                        f"none for index {i}. No dark hot-pixel mask for this CCD."
+                    )
+                    dark_hdu = None
+            except Exception as e:
+                print(f"    WARNING: dark frame HDU {i} unavailable: {e}. Skipping dark mask.")
+                dark_hdu = None
+        if dark_hdu is None:
+            return pre
+        try:
+            dark_data = np.ascontiguousarray(dark_hdu.read().astype(np.float32, copy=False))
+            dark_hot = detect_dark_hot_pixels(dark_data, dark_cfg)
+            sci_shape = tuple(hdu_sci.get_dims())
+            if dark_hot.shape != sci_shape:
+                print(f"    Skipping dark mask for HDU {i}: shape mismatch.")
+            else:
+                if pre is not None and pre.shape != sci_shape:
+                    pre = None
+                pre = dark_hot if pre is None else (pre | dark_hot)
+                print(f"    Dark frame adds {int(np.count_nonzero(dark_hot))} hot pixels to HDU {i}.")
+        except Exception as e:
+            print(f"    WARNING: dark mask failed for HDU {i}: {e}")
+        return pre
+    finally:
+        if close_fd and fd_local is not None:
+            try:
+                fd_local.close()
+            except Exception:
+                pass
+
+
 def _process_all_hdus_to_paths(
     hdus_to_process: list,
     hdul_input,
@@ -1164,62 +1228,6 @@ def _process_all_hdus_to_paths(
     conf_scope = config.get("confidence_params", {}).get("normalize_scope", "per_hdu")
     dark_cfg_global = config.get("dark_masking", {})
 
-    def _merge_dark(i, hdu_sci, pre):
-        dark_hdu = None
-        fd_local = None
-        close_fd = False
-        try:
-            if dk_path_u is not None:
-                try:
-                    fd_local = fitsio.FITS(dk_path_u, "r")
-                    close_fd = True
-                    if i < len(fd_local):
-                        dark_hdu = fd_local[i]
-                    else:
-                        print(
-                            f"    WARNING: dark frame {dk_path_u} has {len(fd_local)} HDU(s), "
-                            f"none for index {i}. No dark hot-pixel mask for this CCD."
-                        )
-                        dark_hdu = None
-                except Exception as e:
-                    print(f"    WARNING: dark frame HDU {i} unavailable: {e}. Skipping dark mask.")
-                    dark_hdu = None
-            elif hdul_dark is not None:
-                try:
-                    if i < len(hdul_dark):
-                        dark_hdu = hdul_dark[i]
-                    else:
-                        print(
-                            f"    WARNING: dark frame has {len(hdul_dark)} HDU(s), "
-                            f"none for index {i}. No dark hot-pixel mask for this CCD."
-                        )
-                        dark_hdu = None
-                except Exception as e:
-                    print(f"    WARNING: dark frame HDU {i} unavailable: {e}. Skipping dark mask.")
-                    dark_hdu = None
-            if dark_hdu is None:
-                return pre
-            try:
-                dark_data = np.ascontiguousarray(dark_hdu.read().astype(np.float32, copy=False))
-                dark_hot = detect_dark_hot_pixels(dark_data, dark_cfg_global)
-                sci_shape = tuple(hdu_sci.get_dims())
-                if dark_hot.shape != sci_shape:
-                    print(f"    Skipping dark mask for HDU {i}: shape mismatch.")
-                else:
-                    if pre is not None and pre.shape != sci_shape:
-                        pre = None
-                    pre = dark_hot if pre is None else (pre | dark_hot)
-                    print(f"    Dark frame adds {int(np.count_nonzero(dark_hot))} hot pixels to HDU {i}.")
-            except Exception as e:
-                print(f"    WARNING: dark mask failed for HDU {i}: {e}")
-            return pre
-        finally:
-            if close_fd and fd_local is not None:
-                try:
-                    fd_local.close()
-                except Exception:
-                    pass
-
     def _compute_one(i):
         pre = flat_bad_masks.get(i) if flat_bad_masks else None
         close = None
@@ -1237,7 +1245,7 @@ def _process_all_hdus_to_paths(
             if err is not None or hdu_sci is None:
                 print(f"Skipping HDU {i}: {err or 'cannot access input HDU'}.")
                 return (i, (None, None, None, None, None, None), None, hdu_name)
-            pre2 = _merge_dark(i, hdu_sci, pre)
+            pre2 = _merge_dark_mask(i, hdu_sci, pre, dark_path=dk_path_u, hdul_dark=hdul_dark, dark_cfg=dark_cfg_global)
             prior = detector_priors.get(i) if isinstance(detector_priors, dict) else None
             result = process_hdu(
                 hdu_sci,
