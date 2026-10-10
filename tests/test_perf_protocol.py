@@ -229,6 +229,14 @@ def test_exposure_comparison_uses_interleaved_repetitions_and_writes_report(tmp_
 
     monkeypatch.setattr(exposure_time, "run_once", fake_run_once)
     monkeypatch.setattr(exposure_time, "_arm_output_equivalent", lambda _paths: True)
+    # `comparison` hashes `[exposure, FLAT]` into the report. The shipped FLAT is
+    # a gitignored benchmark_data file, so the real one is absent on the runner
+    # and the test would fail there while passing on a developer's tree. Nothing
+    # reads its contents here -- `run_once` is faked and the report only sha256s
+    # the path -- so a fixture stands in.
+    flat = tmp_path / "flat.fits.fz"
+    flat.write_bytes(b"flat")
+    monkeypatch.setattr(exposure_time, "FLAT", str(flat))
     report_path = tmp_path / "report.json"
     report = exposure_time.comparison(
         SimpleNamespace(repeats=5, seed=17, keep=False),
