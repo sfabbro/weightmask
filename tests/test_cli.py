@@ -1,14 +1,17 @@
 import contextlib
+import copy
 import io
 import os
 import sys
 import tempfile
 import unittest
 from argparse import Namespace
+from pathlib import Path
 from unittest.mock import MagicMock, patch
 
 import fitsio
 import numpy as np
+import yaml
 
 from weightmask.cli import run_pipeline, validate_config, validate_fits_file, validate_input_files
 
@@ -44,6 +47,29 @@ class TestValidateFitsFile(unittest.TestCase):
 
 
 class TestValidateConfig(unittest.TestCase):
+    @staticmethod
+    def _canonical_config():
+        path = Path(__file__).resolve().parents[1] / "weightmask.yml"
+        return yaml.safe_load(path.read_text())
+
+    @staticmethod
+    def _replace(config, path, value):
+        changed = copy.deepcopy(config)
+        target = changed
+        for key in path[:-1]:
+            target = target[key]
+        target[path[-1]] = value
+        return changed
+
+    @staticmethod
+    def _leaves(config, prefix=()):
+        for key, value in config.items():
+            path = (*prefix, key)
+            if isinstance(value, dict):
+                yield from TestValidateConfig._leaves(value, path)
+            else:
+                yield path, value
+
     def test_validate_config_valid(self):
         """Test with a fully valid configuration."""
         valid_config = {
@@ -97,6 +123,173 @@ class TestValidateConfig(unittest.TestCase):
         }
         self.assertFalse(validate_config(invalid_config))
 
+    def test_every_canonical_leaf_has_declared_type_validation(self):
+        config = self._canonical_config()
+        for path, value in self._leaves(config):
+            if isinstance(value, bool):
+                malformed = 1
+            elif isinstance(value, (int, float)):
+                malformed = True
+            elif isinstance(value, str):
+                malformed = 1
+            elif isinstance(value, list):
+                malformed = [1]
+            elif value is None:
+                malformed = {}
+            else:
+                self.fail(f"No malformed-value fixture for {'.'.join(path)} ({type(value).__name__})")
+            with self.subTest(path=".".join(path)):
+                self.assertFalse(validate_config(self._replace(config, path, malformed)))
+
+    def test_numeric_values_must_be_finite(self):
+        config = self._canonical_config()
+        for path, value in self._leaves(config):
+            if isinstance(value, float):
+                for malformed in (float("nan"), float("inf")):
+                    with self.subTest(path=".".join(path), malformed=malformed):
+                        self.assertFalse(validate_config(self._replace(config, path, malformed)))
+
+    def test_every_canonical_leaf_is_consumed_by_its_runtime_section(self):
+        package = Path(__file__).resolve().parents[1] / "weightmask"
+        consumers = {
+            "flat_masking": ("bad.py", "mef.py"),
+            "dark_masking": ("bad.py", "mef.py"),
+            "saturation": ("satur.py", "process.py"),
+            "sep_background": ("background.py", "process.py"),
+            "cosmic_ray": ("cosmics.py", "process.py"),
+            "sep_objects": ("objects.py", "process.py"),
+            "streak_masking": ("streaks.py", "process.py"),
+            "variance": ("variance.py", "process.py"),
+            "confidence_params": ("weight.py", "mef.py"),
+            "output_params": ("weight.py", "mef.py", "process.py", "cli.py"),
+        }
+        config = self._canonical_config()
+        for section, filenames in consumers.items():
+            source = "\n".join((package / filename).read_text() for filename in filenames)
+            for path, _value in self._leaves({section: config[section]}):
+                key = path[-1]
+                consumed = f'.get("{key}"' in source or f'["{key}"]' in source
+                with self.subTest(path=".".join(path)):
+                    self.assertTrue(consumed, f"Canonical key {'.'.join(path)} is not consumed")
+
+    def test_rejects_unknown_keys_at_every_mapping_level(self):
+        paths = [
+            ("flat_masking",),
+            ("dark_masking",),
+            ("saturation",),
+            ("saturation", "histogram_params"),
+            ("sep_background",),
+            ("cosmic_ray",),
+            ("cosmic_ray", "faint_cr"),
+            ("cosmic_ray", "faint_cr", "residual"),
+            ("sep_objects",),
+            ("streak_masking",),
+            ("streak_masking", "houghpeak_params"),
+            ("streak_masking", "contour_params"),
+            ("streak_masking", "mask_params"),
+            ("streak_masking", "sparse_ransac_params"),
+            ("variance",),
+            ("confidence_params",),
+            ("output_params",),
+        ]
+        config = self._canonical_config()
+        for path in paths:
+            changed = copy.deepcopy(config)
+            target = changed
+            for key in path:
+                target = target[key]
+            target["misspelled_setting"] = 1
+            with self.subTest(path=".".join(path)):
+                self.assertFalse(validate_config(changed))
+
+    def test_rejects_invalid_ranges_and_cross_field_combinations(self):
+        cases = [
+            (("flat_masking", "local_filter_size"), 0),
+            (("flat_masking", "dead_ccd_badpix_fraction"), 1.1),
+            (("saturation", "bleed_grow_vertical"), -1),
+            (("sep_background", "iterations"), -1),
+            (("sep_background", "mask_threshold"), 1.1),
+            (("cosmic_ray", "niter"), -1),
+            (("cosmic_ray", "max_component_area"), 0),
+            (("cosmic_ray", "faint_cr", "min_component_area"), -1),
+            (("sep_objects", "min_area"), 0),
+            (("sep_objects", "deblend_cont"), 1.1),
+            (("streak_masking", "houghpeak_params", "min_votes"), -1),
+            (("streak_masking", "contour_params", "area_cut"), -1.0),
+            (("streak_masking", "mask_params", "rotation_interpolation_order"), 6),
+            (("streak_masking", "mask_params", "min_mask_pixels"), -1),
+            (("streak_masking", "sparse_ransac_params", "max_trials"), -1),
+            (("variance", "epsilon"), 0.0),
+            (("variance", "flat_rel_noise"), -1.0),
+            (("confidence_params", "normalize_percentile"), 0.0),
+        ]
+        config = self._canonical_config()
+        for path, value in cases:
+            with self.subTest(path=".".join(path), value=value):
+                self.assertFalse(validate_config(self._replace(config, path, value)))
+
+        cross_field_cases = [
+            (("flat_masking", "local_low_thresh"), 2.0, ("flat_masking", "local_high_thresh"), 1.0),
+            (
+                ("saturation", "histogram_params", "hist_min_adu"),
+                50000.0,
+                ("saturation", "histogram_params", "hist_max_adu"),
+                40000.0,
+            ),
+            (("saturation", "bleed_cap_min"), 201, ("saturation", "bleed_cap_max"), 200),
+            (("sep_background", "box_size"), 2048, ("sep_background", "max_box_size"), 1024),
+            (
+                ("cosmic_ray", "faint_cr", "min_component_area"),
+                13,
+                ("cosmic_ray", "faint_cr", "max_component_area"),
+                12,
+            ),
+            (
+                ("cosmic_ray", "faint_cr", "residual", "min_component_area"),
+                13,
+                ("cosmic_ray", "faint_cr", "residual", "max_component_area"),
+                12,
+            ),
+            (
+                ("streak_masking", "mask_params", "min_row_hits"),
+                257,
+                ("streak_masking", "mask_params", "strip_length"),
+                256,
+            ),
+            (
+                ("streak_masking", "mask_params", "max_support_width"),
+                81,
+                ("streak_masking", "mask_params", "strip_width"),
+                80,
+            ),
+        ]
+        for first_path, first_value, second_path, second_value in cross_field_cases:
+            changed = self._replace(config, first_path, first_value)
+            changed = self._replace(changed, second_path, second_value)
+            with self.subTest(first=".".join(first_path), second=".".join(second_path)):
+                self.assertFalse(validate_config(changed))
+
+    def test_background_max_box_default_tracks_explicit_box_size(self):
+        self.assertTrue(validate_config({"sep_background": {"box_size": 2048}}))
+
+    def test_iteration_counts_follow_runtime_zero_semantics(self):
+        zero_disables = [
+            {"sep_background": {"iterations": 0}},
+            {"cosmic_ray": {"niter": 0}},
+            {"cosmic_ray": {"faint_cr": {"niter": 0}}},
+        ]
+        for config in zero_disables:
+            with self.subTest(config=config):
+                self.assertTrue(validate_config(config))
+
+        zero_is_invalid = [
+            {"streak_masking": {"sparse_ransac_params": {"max_trials": 0}}},
+            {"streak_masking": {"sparse_ransac_params": {"max_trails": 0}}},
+        ]
+        for config in zero_is_invalid:
+            with self.subTest(config=config):
+                self.assertFalse(validate_config(config))
+
 
 class TestRunPipeline(unittest.TestCase):
     def setUp(self):
@@ -104,7 +297,8 @@ class TestRunPipeline(unittest.TestCase):
         self.workspace = self.test_dir.name
 
         self.input_file = os.path.join(self.workspace, "test_input.fits")
-        data = np.random.normal(100, 10, (100, 100)).astype(np.float32)
+        rng = np.random.default_rng(0)
+        data = rng.normal(100, 10, (100, 100)).astype(np.float32)
         fitsio.write(self.input_file, data, clobber=True)
 
         self.config_file = os.path.join(self.workspace, "test_config.yml")
@@ -299,6 +493,9 @@ class TestCliHelp(unittest.TestCase):
         self.assertIn("Outputs", text)
         self.assertIn("Run", text)
         self.assertIn("--version", text)
+        self.assertIn("bundled", text)
+        self.assertNotIn("not installed", text.lower())
+        self.assertNotIn("not bundled", text.lower())
 
     def test_reconstruct_sky_help_mentions_output(self):
         from io import StringIO
@@ -460,7 +657,8 @@ class TestValidateInputFiles(unittest.TestCase):
             log = buf.getvalue()
             self.assertNotEqual(code, 0, "a partial run must not exit 0")
             self.assertIn("only 2 of 3 HDUs", log)
-            self.assertIn("EXTNAME", log)
+            self.assertIn("No new product set was published", log)
+            self.assertFalse(os.path.exists(out))
 
     def test_handles_are_released_even_when_the_run_raises(self):
         """_cleanup_hdul used to run only on the success path."""

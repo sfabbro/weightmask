@@ -3,6 +3,7 @@ from unittest.mock import MagicMock, patch
 
 import numpy as np
 
+from weightmask.errors import StageFailure
 from weightmask.mef import process_hdu
 
 
@@ -133,6 +134,45 @@ class TestProcessHDU(unittest.TestCase):
         self.assertIsNone(weight_map)
         self.assertIsNone(inv_var_data)
         self.assertIsNone(mask_data)
+
+    def test_process_hdu_propagates_typed_stage_failure(self):
+        failure = StageFailure("cosmic_ray.primary", "broken backend")
+        background = (np.zeros((100, 100), np.float32), np.ones((100, 100), np.float32))
+
+        with (
+            patch(
+                "weightmask.process.detect_saturated_pixels",
+                return_value=(65000.0, "mock", np.zeros((100, 100), bool)),
+            ),
+            patch("weightmask.process.estimate_background", return_value=background),
+            patch("weightmask.process.detect_cosmic_rays", side_effect=failure),
+        ):
+            with self.assertRaises(StageFailure) as raised:
+                process_hdu(self.mock_hdu_sci, self.mock_hdu_flat, self.config, hdu_index=1)
+
+        self.assertIs(raised.exception, failure)
+
+    def test_zero_object_iterations_skip_detector_and_succeed(self):
+        config = dict(self.config)
+        config["sep_background"] = {"iterations": 0}
+        shape = (100, 100)
+        background = (np.zeros(shape, np.float32), np.ones(shape, np.float32))
+
+        with (
+            patch("weightmask.process.detect_saturated_pixels", return_value=(65000.0, "mock", np.zeros(shape, bool))),
+            patch("weightmask.process.estimate_background", return_value=background),
+            patch("weightmask.process.detect_cosmic_rays", return_value=np.zeros(shape, bool)),
+            patch("weightmask.process.detect_objects") as objects,
+            patch("weightmask.process.calculate_inverse_variance", return_value=np.ones(shape, np.float32)),
+            patch(
+                "weightmask.process.generate_weight_and_confidence",
+                return_value=(np.ones(shape, np.float32), np.ones(shape, np.float32), self.mock_product),
+            ),
+        ):
+            result = process_hdu(self.mock_hdu_sci, self.mock_hdu_flat, config, hdu_index=1)
+
+        objects.assert_not_called()
+        self.assertIsNotNone(result[0])
 
     def test_process_hdu_still_passes_the_real_flat_when_bad_mask_is_precomputed(self):
         """A precomputed bad mask must not let the flat field through as None.

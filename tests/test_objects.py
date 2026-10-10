@@ -1,9 +1,11 @@
 import contextlib
 import io
 import unittest
+from unittest.mock import patch
 
 import numpy as np
 
+from weightmask.errors import StageFailure
 from weightmask.objects import detect_objects
 
 
@@ -12,9 +14,19 @@ class TestObjects(unittest.TestCase):
         # Create a small synthetic image
         self.shape = (100, 100)
         # Background is random noise around 0
-        self.data_sub = np.random.normal(0, 1.0, self.shape).astype(np.float32)
+        self.rng = np.random.default_rng(0)
+        self.data_sub = self.rng.normal(0, 1.0, self.shape).astype(np.float32)
         self.bkg_rms_map = np.ones(self.shape, dtype=np.float32)
         self.existing_mask = np.zeros(self.shape, dtype=bool)
+
+    def test_fixture_generation_preserves_global_rng_state(self):
+        before = np.random.get_state()
+        TestObjects().setUp()
+        after = np.random.get_state()
+
+        self.assertEqual(before[0], after[0])
+        np.testing.assert_array_equal(before[1], after[1])
+        self.assertEqual(before[2:], after[2:])
 
     def add_star(self, data, y, x, flux, radius):
         """Add a simple 2D Gaussian star."""
@@ -131,10 +143,11 @@ class TestObjects(unittest.TestCase):
         """Test adaptive thresholding in highly cluttered images."""
         # Create a highly cluttered image to trigger the mad_approx logic
         # We need tail_ratio > 3.0 and enough valid data
-        cluttered_data = np.random.normal(0, 1.0, (150, 150)).astype(np.float32)
+        rng = np.random.default_rng(1)
+        cluttered_data = rng.normal(0, 1.0, (150, 150)).astype(np.float32)
         # Add many bright "clutter" pixels to create a fat tail
-        clutter_indices_y = np.random.randint(0, 150, 500)
-        clutter_indices_x = np.random.randint(0, 150, 500)
+        clutter_indices_y = rng.integers(0, 150, 500)
+        clutter_indices_x = rng.integers(0, 150, 500)
         cluttered_data[clutter_indices_y, clutter_indices_x] = 20.0
 
         bkg_rms = np.ones((150, 150), dtype=np.float32)
@@ -226,15 +239,46 @@ class TestObjects(unittest.TestCase):
         self.assertFalse(np.any(mask))
 
     def test_detect_objects_exception_handling(self):
-        """Return empty mask when SEP raises (e.g. 1D arrays)."""
         data_sub = np.ones(10, dtype=np.float32)
         bkg_rms_map = np.ones(10, dtype=np.float32)
 
-        mask = detect_objects(data_sub, bkg_rms_map, None, {})
+        with self.assertRaisesRegex(StageFailure, "objects.seed") as raised:
+            detect_objects(data_sub, bkg_rms_map, None, {})
 
-        self.assertEqual(mask.shape, data_sub.shape)
-        self.assertFalse(np.any(mask))
-        self.assertEqual(mask.dtype, bool)
+        self.assertEqual(raised.exception.stage, "objects.seed")
+
+    def test_missing_sep_backend_is_not_an_empty_detection(self):
+        with patch("weightmask.objects.sep", None):
+            with self.assertRaisesRegex(StageFailure, "objects.backend") as raised:
+                detect_objects(self.data_sub, self.bkg_rms_map, self.existing_mask, {})
+
+        self.assertEqual(raised.exception.stage, "objects.backend")
+
+    def test_sep_main_failure_is_not_an_empty_detection(self):
+        no_objects = np.empty(0, dtype=[("x", "f8")])
+
+        with patch("weightmask.objects._run_sep_extract", side_effect=[no_objects, OSError("main failure")]):
+            with self.assertRaisesRegex(StageFailure, "objects.main") as raised:
+                detect_objects(self.data_sub, self.bkg_rms_map, self.existing_mask, {})
+
+        self.assertEqual(raised.exception.stage, "objects.main")
+        self.assertIsInstance(raised.exception.__cause__, OSError)
+
+    def test_object_postprocessing_failure_is_not_an_empty_detection(self):
+        objects = np.array(
+            [(50.0, 50.0, 2.0, 2.0, 0.0, 100.0)],
+            dtype=[("x", "f8"), ("y", "f8"), ("a", "f8"), ("b", "f8"), ("theta", "f8"), ("flux", "f8")],
+        )
+
+        with (
+            patch("weightmask.objects._run_sep_extract", return_value=objects),
+            patch("weightmask.objects._apply_vectorized_ellipse_mask", side_effect=ValueError("ellipse failure")),
+        ):
+            with self.assertRaisesRegex(StageFailure, "objects.postprocess") as raised:
+                detect_objects(self.data_sub, self.bkg_rms_map, self.existing_mask, {})
+
+        self.assertEqual(raised.exception.stage, "objects.postprocess")
+        self.assertIsInstance(raised.exception.__cause__, ValueError)
 
     def test_detect_objects_happy_path_smoke(self):
         """Minimal happy-path smoke alongside PR #11 suite."""

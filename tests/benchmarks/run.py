@@ -30,6 +30,17 @@ ROOT = Path(__file__).resolve().parents[2]
 MANIFEST_DIR = Path(__file__).resolve().parent / "manifests"
 OUTPUT_ROOT = ROOT / "test_outputs" / "benchmarks"
 
+_SYNTHETIC_CASE_GATES = {
+    "synthetic_sparse": {
+        "centerline_coverage_min": 0.35,
+        "along_trail_coverage_min": 0.35,
+        "false_positive_per_mpix_max": 1000.0,
+        "overmask_pixels_per_truth_max": 0.25,
+        "object_recall_min": 0.90,
+        "bad_pixel_f1_min": 0.50,
+    }
+}
+
 
 def _load_repo_config():
     with open(ROOT / "weightmask.yml", "r") as handle:
@@ -45,7 +56,7 @@ def load_manifest(suite_name):
 
 
 def _mask_stats(pred_mask, gt_mask, eval_gt_mask=None):
-    """Halo-tolerant precision and original-truth recall (metric revision v2)."""
+    """Compatibility precision/recall statistics for benchmark diagnostics."""
     if eval_gt_mask is None:
         eval_gt_mask = gt_mask
     tp = int(np.sum(pred_mask & eval_gt_mask))
@@ -61,8 +72,87 @@ def _mask_stats(pred_mask, gt_mask, eval_gt_mask=None):
         "pred_area": int(np.sum(pred_mask)),
         "gt_area": int(np.sum(gt_mask)),
         "overmask_fraction": float(fp / (np.sum(pred_mask) + 1e-9)) if np.sum(pred_mask) > 0 else 0.0,
+        "false_positive_pixels": fp,
+        "false_positive_per_mpix": float(fp / pred_mask.size * 1e6),
+        "overmask_pixels_per_truth": float(fp / (np.sum(gt_mask) + 1e-9)),
         "width_ratio": float(np.sum(pred_mask) / (np.sum(gt_mask) + 1e-9)) if np.sum(gt_mask) > 0 else 0.0,
     }
+
+
+def _streak_geometry_stats(pred_mask, components, centerlines):
+    from scipy.ndimage import binary_dilation
+
+    components = np.asarray(components)
+    centerlines = np.asarray(centerlines)
+    tolerant = binary_dilation(pred_mask, iterations=2)
+    centerline_coverages = []
+    along_coverages = []
+    for label in np.unique(components):
+        if label <= 0:
+            continue
+        coords = np.argwhere(centerlines == label)
+        if coords.size == 0:
+            continue
+        centerline = centerlines == label
+        centerline_coverages.append(float(np.mean(pred_mask[centerline])))
+        if len(coords) < 2:
+            along_coverages.append(float(np.any(tolerant[centerline])))
+            continue
+        centered = coords - np.mean(coords, axis=0)
+        _, _, vectors = np.linalg.svd(centered, full_matrices=False)
+        positions = centered @ vectors[0]
+        hits = tolerant[coords[:, 0], coords[:, 1]]
+        if not np.any(hits):
+            along_coverages.append(0.0)
+        else:
+            span = float(np.max(positions) - np.min(positions))
+            along_coverages.append(float((np.max(positions[hits]) - np.min(positions[hits])) / max(span, 1.0)))
+    return {
+        "centerline_coverage": float(np.mean(centerline_coverages)) if centerline_coverages else 0.0,
+        "along_trail_coverage": float(np.mean(along_coverages)) if along_coverages else 0.0,
+    }
+
+
+def _synthetic_case_gate_failures(case_name, result):
+    gates = _SYNTHETIC_CASE_GATES.get(case_name)
+    if gates is None:
+        return []
+    failures = []
+    streak = result.get("streak_stats", {})
+    object_metrics = result.get("weightmask", {}).get("Objects", (np.nan, np.nan))
+    bad_pixels = result.get("bad_pixel_stats", {})
+    values = {
+        "centerline coverage": streak.get("centerline_coverage"),
+        "along-trail coverage": streak.get("along_trail_coverage"),
+        "false positives per Mpix": streak.get("false_positive_per_mpix"),
+        "overmask pixels per truth": streak.get("overmask_pixels_per_truth"),
+        "object recall": object_metrics[1] if len(object_metrics) > 1 else np.nan,
+        "bad-pixel F1": bad_pixels.get("f1"),
+    }
+    def finite(value):
+        try:
+            return bool(np.isfinite(float(value)))
+        except (TypeError, ValueError):
+            return False
+
+    failures.extend(f"{case_name}: {name} is nonfinite" for name, value in values.items() if not finite(value))
+    limits = (
+        ("centerline coverage", "centerline_coverage_min", lambda value, limit: value < limit, "<"),
+        ("along-trail coverage", "along_trail_coverage_min", lambda value, limit: value < limit, "<"),
+        ("false positives per Mpix", "false_positive_per_mpix_max", lambda value, limit: value > limit, ">"),
+        ("overmask pixels per truth", "overmask_pixels_per_truth_max", lambda value, limit: value > limit, ">"),
+        ("object recall", "object_recall_min", lambda value, limit: value < limit, "<"),
+        ("bad-pixel F1", "bad_pixel_f1_min", lambda value, limit: value < limit, "<"),
+    )
+    for name, gate_name, failed, relation in limits:
+        if gate_name not in gates:
+            failures.append(f"{case_name}: missing gate {gate_name}")
+            continue
+        value = values[name]
+        limit = gates[gate_name]
+        if finite(value) and failed(float(value), limit):
+            failures.append(f"{case_name}: {name} {float(value):.3f} {relation} {limit:.3f}")
+    return failures
 
 
 def _simple_hough_baseline(data_sub, bkg_rms, thresh_sig=5.0, half_width=3):
@@ -250,6 +340,42 @@ def _synthetic_v2_cases():
     ]
 
 
+def _evaluate_synthetic_case(case, with_baselines=False):
+    args = SimpleNamespace(**case)
+    metrics, products = run_masking_test(str(ROOT / "weightmask.yml"), args, save_fits=False, return_products=True)
+    case_result = {"weightmask": metrics}
+    from scipy.ndimage import binary_dilation
+
+    dilated_streak_gt = binary_dilation(products["ground_truth"]["streak"], iterations=2)
+    streak_stats = _mask_stats(
+        products["masks"]["streaks"], products["ground_truth"]["streak"], eval_gt_mask=dilated_streak_gt
+    )
+    streak_stats.update(
+        _streak_geometry_stats(
+            products["masks"]["streaks"],
+            products["ground_truth"].get("streak_components", np.zeros_like(products["ground_truth"]["streak"])),
+            products["ground_truth"].get("streak_centerlines", np.zeros_like(products["ground_truth"]["streak"])),
+        )
+    )
+    case_result["streak_stats"] = streak_stats
+    case_result["bad_pixel_stats"] = _benchmark_synthetic_bad_pixels(case["seed"], case["size"])
+    if with_baselines:
+        data_sub = products["science"] - np.nanmedian(products["science"])
+        case_result["baselines"] = {
+            "simple_hough": _mask_stats(
+                _simple_hough_baseline(data_sub, products["bkg_rms"]),
+                products["ground_truth"]["streak"],
+                eval_gt_mask=dilated_streak_gt,
+            ),
+            "radon": _mask_stats(
+                _radon_baseline(data_sub, products["bkg_rms"]),
+                products["ground_truth"]["streak"],
+                eval_gt_mask=dilated_streak_gt,
+            ),
+        }
+    return case_result, products
+
+
 def run_synthetic_v2(with_baselines=False, selected_cases=None):
     out_dir = OUTPUT_ROOT / "synthetic_v2"
     out_dir.mkdir(parents=True, exist_ok=True)
@@ -257,31 +383,7 @@ def run_synthetic_v2(with_baselines=False, selected_cases=None):
     for case in _synthetic_v2_cases():
         if selected_cases and case["name"] not in selected_cases:
             continue
-        args = SimpleNamespace(**case)
-        metrics, products = run_masking_test(str(ROOT / "weightmask.yml"), args, save_fits=False, return_products=True)
-        case_result = {"weightmask": metrics}
-        from scipy.ndimage import binary_dilation
-
-        dilated_streak_gt = binary_dilation(products["ground_truth"]["streak"], iterations=2)
-        streak_stats = _mask_stats(
-            products["masks"]["streaks"], products["ground_truth"]["streak"], eval_gt_mask=dilated_streak_gt
-        )
-        case_result["streak_stats"] = streak_stats
-        case_result["bad_pixel_stats"] = _benchmark_synthetic_bad_pixels(case["seed"], case["size"])
-        if with_baselines:
-            data_sub = products["science"] - np.nanmedian(products["science"])
-            case_result["baselines"] = {
-                "simple_hough": _mask_stats(
-                    _simple_hough_baseline(data_sub, products["bkg_rms"]),
-                    products["ground_truth"]["streak"],
-                    eval_gt_mask=dilated_streak_gt,
-                ),
-                "radon": _mask_stats(
-                    _radon_baseline(data_sub, products["bkg_rms"]),
-                    products["ground_truth"]["streak"],
-                    eval_gt_mask=dilated_streak_gt,
-                ),
-            }
+        case_result, products = _evaluate_synthetic_case(case, with_baselines=with_baselines)
         results[case["name"]] = case_result
         np.savez_compressed(
             out_dir / f"{case['name']}.npz",
@@ -289,9 +391,12 @@ def run_synthetic_v2(with_baselines=False, selected_cases=None):
             bkg_rms=products["bkg_rms"],
             streak_pred=products["masks"]["streaks"].astype(np.uint8),
             streak_truth=products["ground_truth"]["streak"].astype(np.uint8),
+            streak_components=products["ground_truth"].get("streak_components", np.zeros_like(products["ground_truth"]["streak"], dtype=np.int16)),
+            streak_centerlines=products["ground_truth"].get("streak_centerlines", np.zeros_like(products["ground_truth"]["streak"], dtype=np.int16)),
         )
     failures = [] if results else ["No benchmark cases were evaluated"]
     for name, result in results.items():
+        failures.extend(_synthetic_case_gate_failures(name, result))
         scores = {
             "streak F1": result["streak_stats"]["f1"],
             "object recall": result["weightmask"]["Objects"][1],

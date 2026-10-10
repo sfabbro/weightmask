@@ -60,6 +60,11 @@ class TestRetiredConfig(unittest.TestCase):
         self.assertNotIn("method", config["saturation"])
         self.assertNotIn("flat_fielded_poisson", config["variance"])
 
+    def test_retired_saturation_plateau_percentile_is_rejected(self):
+        from weightmask.process import validate_config
+
+        self.assertFalse(validate_config({"saturation": {"histogram_params": {"plateau_percentile": 99.8}}}))
+
     def test_process_rejects_retired_keys_before_running_stages(self):
         from weightmask.process import process_image
 
@@ -192,6 +197,113 @@ class TestProcessImageConfigIsolation(unittest.TestCase):
         process_image(data, {"GAIN": 2.5, "RDNOISE": 5.0}, np.ones_like(data), cfg, tile_size=32)
         self.assertNotIn("gain", cfg["variance"])
         self.assertNotIn("read_noise", cfg["variance"])
+
+
+def _detector_prior_config():
+    return {"saturation": {"mask_bleed_trails": False}, "streak_masking": {"enable": True}}
+
+
+def _run_with_detector_prior(detector_result, detector_prior, bad_mask=None):
+    from weightmask.process import process_image
+
+    shape = (8, 8)
+    seen = {}
+
+    def capture(_data_sub, _bkg_rms_map, existing_mask, _streak_cfg):
+        seen["exclude"] = np.array(existing_mask, copy=True)
+        return np.array(detector_result, copy=True)
+
+    zero_mask = np.zeros(shape, dtype=bool)
+    background = (np.zeros(shape, dtype=np.float32), np.ones(shape, dtype=np.float32))
+    with (
+        patch("weightmask.process.detect_saturated_pixels", return_value=(100.0, "test", zero_mask.copy())),
+        patch("weightmask.process.estimate_background", return_value=background),
+        patch("weightmask.process.detect_cosmic_rays", return_value=zero_mask.copy()),
+        patch("weightmask.process.detect_objects", return_value=zero_mask.copy()),
+        patch("weightmask.process.calculate_inverse_variance", return_value=np.ones(shape, dtype=np.float32)),
+        patch(
+            "weightmask.process.generate_weight_and_confidence",
+            return_value=(np.ones(shape, dtype=np.float32), np.ones(shape, dtype=np.float32), None),
+        ),
+        patch("weightmask.process.detect_streaks", side_effect=capture),
+    ):
+        result = process_image(
+            np.zeros(shape, dtype=np.float32),
+            {},
+            np.ones(shape, dtype=np.float32),
+            _detector_prior_config(),
+            detector_prior=detector_prior,
+            bad_mask=bad_mask,
+        )
+    return result, seen
+
+
+class TestDetectorPriorContract(unittest.TestCase):
+    def test_shape_mismatch_is_rejected_explicitly(self):
+        from weightmask.process import process_image
+
+        with self.assertRaisesRegex(ValueError, "detector prior shape"):
+            process_image(
+                np.zeros((8, 8), dtype=np.float32),
+                {},
+                np.ones((8, 8), dtype=np.float32),
+                _detector_prior_config(),
+                detector_prior=np.zeros((7, 8), dtype=bool),
+            )
+
+    def test_non_contiguous_prior_is_accepted_and_propagated(self):
+        base = np.zeros((8, 16), dtype=bool)
+        base[2, 6] = True
+        prior = base[:, ::2]
+
+        _result, seen = _run_with_detector_prior(np.zeros((8, 8), dtype=bool), prior)
+
+        self.assertFalse(prior.flags.c_contiguous)
+        np.testing.assert_array_equal(seen["exclude"], prior)
+
+    def test_prior_is_not_mutated(self):
+        storage = np.zeros((8, 16), dtype=bool)
+        prior = storage[:, ::2]
+        prior[2, 3] = 1
+        before = storage.copy()
+
+        _run_with_detector_prior(np.zeros((8, 8), dtype=bool), prior)
+
+        self.assertFalse(prior.flags.c_contiguous)
+        np.testing.assert_array_equal(storage, before)
+
+    def test_prior_is_added_to_existing_streak_exclusion(self):
+        prior = np.zeros((8, 8), dtype=bool)
+        prior[2, 3] = True
+        bad_mask = np.zeros((8, 8), dtype=bool)
+        bad_mask[5, 6] = True
+
+        _result, seen = _run_with_detector_prior(np.zeros((8, 8), dtype=bool), prior, bad_mask=bad_mask)
+
+        self.assertTrue(seen["exclude"][2, 3])
+        self.assertTrue(seen["exclude"][5, 6])
+
+    def test_prior_only_pixels_do_not_receive_streak_bits(self):
+        prior = np.zeros((8, 8), dtype=bool)
+        prior[2, 3] = True
+
+        mask, _ivar, weight, _confidence, _sky, _header = _run_with_detector_prior(np.zeros((8, 8), dtype=bool), prior)[
+            0
+        ]
+
+        self.assertEqual(int(mask[2, 3] & int(QualityBit.STREAK)), 0)
+        self.assertGreater(weight[2, 3], 0.0)
+
+    def test_detector_overlap_with_prior_is_not_reported_as_a_streak(self):
+        prior = np.zeros((8, 8), dtype=bool)
+        prior[2, 3] = True
+        confirmed = prior.copy()
+        confirmed[5, 6] = True
+
+        mask, *_rest = _run_with_detector_prior(confirmed, prior)[0]
+
+        self.assertEqual(int(mask[2, 3] & int(QualityBit.STREAK)), 0)
+        self.assertNotEqual(int(mask[5, 6] & int(QualityBit.STREAK)), 0)
 
 
 class TestElixirKeepMap(unittest.TestCase):
@@ -379,7 +491,7 @@ class TestGlobalConfidenceRescale(unittest.TestCase):
 
 
 class TestFlatNoiseVariance(unittest.TestCase):
-    def test_term_lowes_vignetted_more(self):
+    def test_term_raises_calibrated_variance_more_below_median(self):
         from weightmask.variance import _calculate_inverse_variance_theoretical as f
 
         sky = np.full((32, 32), 2700.0, dtype=np.float64)
@@ -387,10 +499,8 @@ class TestFlatNoiseVariance(unittest.TestCase):
         flat[:, :8] = 0.7
         base = f(sky, flat, 1.5, 5.0, 1e-9)
         with_term = f(sky, flat, 1.5, 5.0, 1e-9, 0.003)
-        self.assertTrue(bool(((with_term < base) & (base > 0)).all()))
-        rc = float(with_term[16, 16] / base[16, 16])
-        re = float(with_term[16, 2] / base[16, 2])
-        self.assertLess(re, rc)  # vignette scaling bites harder at low flat
+        added_variance = np.reciprocal(with_term) - np.reciprocal(base)
+        np.testing.assert_allclose(added_variance[16, [16, 2]], [65.61, 93.72857142857143], rtol=1e-5)
         same = f(sky, flat, 1.5, 5.0, 1e-9, 0.0)
         np.testing.assert_array_equal(same, base)
 

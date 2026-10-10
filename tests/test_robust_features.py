@@ -16,7 +16,8 @@ class TestRobustFeatures(unittest.TestCase):
         self.size = 256
         self.shape = (self.size, self.size)
         self.noise = 10.0
-        self.data = np.random.normal(100, self.noise, self.shape).astype(np.float32)
+        self.rng = np.random.default_rng(0)
+        self.data = self.rng.normal(100, self.noise, self.shape).astype(np.float32)
 
     def test_background_tiered_retry(self):
         """Test that background estimation retries with larger box if it fails."""
@@ -45,7 +46,7 @@ class TestRobustFeatures(unittest.TestCase):
 
     def test_background_mask_fallback(self):
         """Test that high mask coverage triggers global fallback."""
-        data = np.random.normal(100, 10, self.shape).astype(np.float32)
+        data = self.rng.normal(100, 10, self.shape).astype(np.float32)
         mask = np.ones(self.shape, dtype=bool)
         # Only 5% unmasked
         mask[50:60, 50:60] = False
@@ -66,7 +67,7 @@ class TestRobustFeatures(unittest.TestCase):
         obj_mask = np.zeros(self.shape, dtype=bool)
 
         # Need sci_data with the noise
-        data = np.random.normal(100, 10, self.shape).astype(np.float32)
+        data = self.rng.normal(100, 10, self.shape).astype(np.float32)
 
         scaled_inv_var = _rescale_variance_robust(inv_var, data, sky, obj_mask, 1e-9)
 

@@ -1,4 +1,4 @@
-"""Elongated detections stay out of DETECTED and out of the sky mesh."""
+"""Unaccepted elongated detections remain in the full object footprint."""
 
 import unittest
 from unittest.mock import patch
@@ -11,7 +11,7 @@ from weightmask.process import process_image
 
 
 class TestElongatedSkyHandoff(unittest.TestCase):
-    def test_bar_is_in_the_sky_mask_and_not_detected(self):
+    def test_bar_is_in_full_object_mask_and_remains_detected_when_unaccepted(self):
         from weightmask.background import estimate_background
 
         shape = (120, 120)
@@ -41,7 +41,7 @@ class TestElongatedSkyHandoff(unittest.TestCase):
         bar = np.zeros(shape, dtype=bool)
         bar[58:62, 20:100] = True
         self.assertGreater(int(np.count_nonzero(seen[-1] & bar)), 0)
-        self.assertEqual(int(np.count_nonzero(((mask & int(QualityBit.DETECTED)) != 0) & bar)), 0)
+        self.assertGreater(int(np.count_nonzero(((mask & int(QualityBit.DETECTED)) != 0) & bar)), 0)
 
 
 if __name__ == "__main__":

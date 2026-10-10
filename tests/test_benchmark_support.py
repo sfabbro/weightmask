@@ -8,7 +8,7 @@ import numpy as np
 import pytest
 from scipy.ndimage import binary_dilation
 
-from benchmarks import perf_megacam
+from benchmarks import cr_faint_curves, perf_megacam, streak_inject
 from tests import simulate_and_test as simulation
 from tests.benchmarks import download_data, run
 from weightmask.contract import INVERSE_VARIANCE_SEMANTICS, MASK_POLARITY
@@ -20,6 +20,114 @@ def test_streak_flux_controls_injected_signal():
     bright, _, _ = simulation.create_simulated_data(**arguments, streak_flux=20)
     assert np.any(bright[truth["streak"]] > faint[truth["streak"]])
     assert np.array_equal(bright[~truth["streak"]], faint[~truth["streak"]])
+
+
+def test_streak_source_poisson_uses_gain_and_preserves_invalid_pixels():
+    raw = np.full((32, 32), 100.0, dtype=np.float32)
+    source = np.full(raw.shape, 20.0, dtype=np.float32)
+    invalid = np.zeros(raw.shape, dtype=bool)
+    invalid[3, 4] = True
+    result = streak_inject.inject_source_poisson(raw, source, 2.0, np.random.default_rng(4), invalid)
+    assert result[3, 4] == raw[3, 4]
+    assert np.mean(result - raw) == pytest.approx(20.0, abs=2.0)
+
+
+def test_injected_truth_rejects_overlap_and_invalid_support():
+    invalid = np.zeros((120, 120), dtype=bool)
+    invalid[45:75, 45:75] = True
+    flux, truth, trails = streak_inject.inject_grid(
+        invalid.shape,
+        [(40, 8.0, False), (40, 8.0, False)],
+        np.random.default_rng(9),
+        min_separation=0.0,
+        invalid_mask=invalid,
+    )
+    assert not np.any(truth & invalid)
+    assert len(trails) <= 2
+    assert np.all(np.isfinite(flux))
+
+
+def test_streak_scoreable_truth_reports_upstream_and_clean_baseline_rejections():
+    body = np.zeros((8, 8), dtype=bool)
+    body[2, 2] = body[3, 3] = True
+    data = np.ones(body.shape, dtype=np.float32)
+    existing = np.zeros(body.shape, dtype=bool)
+    existing[2, 2] = True
+    baseline = np.zeros(body.shape, dtype=bool)
+    baseline[3, 3] = True
+    scoreable, rejected = streak_inject.scoreable_truth(body, data, existing, baseline)
+    assert not scoreable.any()
+    assert np.array_equal(rejected, body)
+
+
+def test_cr_truth_pixels_are_unique_and_valid():
+    sci = np.full((40, 40), 100.0, dtype=np.float32)
+    sky = np.full_like(sci, 100.0)
+    rms = np.full_like(sci, 2.0)
+    invalid = np.zeros(sci.shape, dtype=bool)
+    invalid[10:20, 10:20] = True
+    injected, singles, worms = cr_faint_curves.inject(
+        sci, sky, rms, np.random.default_rng(3), n_single=30, n_worm=20, gain=1.5, invalid_mask=invalid
+    )
+    assert not np.any((singles | worms) & invalid)
+    assert not np.any(singles & worms)
+    assert np.all(np.isfinite(injected))
+    _, _, _, rejected = cr_faint_curves.inject(
+        sci,
+        sky,
+        rms,
+        np.random.default_rng(3),
+        n_single=30,
+        n_worm=20,
+        gain=1.5,
+        invalid_mask=invalid,
+        return_rejected=True,
+    )
+    assert all(item["reason"] in {"truth_overlap", "placement_failed"} for item in rejected)
+
+
+def test_cr_scoreable_truth_reports_upstream_rejections():
+    single = np.zeros((8, 8), dtype=bool)
+    worm = np.zeros_like(single)
+    single[2, 2] = True
+    worm[3, 3] = True
+    data = np.ones_like(single, dtype=np.float32)
+    existing = np.zeros_like(single)
+    existing[2, 2] = True
+    baseline = np.zeros_like(single)
+    baseline[3, 3] = True
+    score_single, score_worm, rejected_single, rejected_worm = cr_faint_curves.scoreable_truth(
+        single, worm, (data, existing), baseline
+    )
+    assert not score_single[2, 2]
+    assert rejected_single[2, 2]
+    assert not score_worm[3, 3]
+    assert rejected_worm[3, 3]
+
+
+def test_synthetic_streak_truth_only_marks_injected_support():
+    data = np.zeros((256, 256), dtype=np.float32)
+    truth = {name: np.zeros(data.shape, bool) for name in ("sat", "cr", "stars", "streak", "defects")}
+    simulation._add_streaks(data, truth, 256, 40.0, "complex")
+    supported = binary_dilation(data > 0, iterations=2)
+    assert np.all(~truth["streak"] | supported)
+
+
+def test_synthetic_object_recall_excludes_prior_masks():
+    args = SimpleNamespace(size=384, noise=5.0, stars=20, streak=50.0, mask_pct=0.0, regime_type="normal", seed=11)
+    metrics = simulation.run_masking_test("weightmask.yml", args, save_fits=False)
+    assert metrics["Objects"][1] >= 0.90
+
+
+def test_complex_component_labels_record_upstream_object_exclusion():
+    args = SimpleNamespace(size=256, noise=1.0, stars=0, streak=80.0, mask_pct=0.0, regime_type="complex", seed=7)
+    _, products = simulation.run_masking_test("weightmask.yml", args, save_fits=False, return_products=True)
+    component = products["ground_truth"]["streak_components"] == 1
+    exclusion = products["streak_exclusion_mask"]
+    prediction = products["masks"]["streaks"]
+    assert np.any(component)
+    assert np.any(component & exclusion)
+    assert not np.any(prediction & exclusion)
 
 
 def test_complex_mode_reaches_simulator(tmp_path):
@@ -183,30 +291,6 @@ def test_dark_manifest_selects_science_and_does_not_claim_fake_comparators():
     )
     assert "Observation.type = 'OBJECT'" in case["cadc_query"]
     assert not case["comparators"]
-
-
-def test_ransac_artifact_keys_include_exposure_and_hdu():
-    from tests.test_streak_dead_stages import TestRansacEarnsItsCost
-
-    row = {"length": 1500, "sigma": 12, "dashed": True, "seed": 0, "recall_line": 0.9}
-    records = [{"exposure": "one", "hdu": hdu, "rows": [row]} for hdu in (1, 2)]
-    assert len(TestRansacEarnsItsCost._rows(records)) == 2
-
-
-def test_ransac_artifact_comparison_rejects_missing_off_cells():
-    from tests.test_streak_dead_stages import TestRansacEarnsItsCost
-
-    check = TestRansacEarnsItsCost("test_ransac_is_the_sole_finder_of_a_long_dashed_trail")
-    check.on = [
-        {
-            "exposure": "one",
-            "hdu": 1,
-            "rows": [{"length": 1500, "sigma": 12, "dashed": True, "seed": 0, "recall_line": 0.9}],
-        }
-    ]
-    check.off = []
-    with pytest.raises(AssertionError, match="same cells"):
-        check.test_ransac_is_the_sole_finder_of_a_long_dashed_trail()
 
 
 def test_sweep_gates_reject_nonfinite_scores():

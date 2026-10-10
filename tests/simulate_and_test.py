@@ -13,8 +13,8 @@ from weightmask.streaks import detect_streaks
 
 # Scores made before these revisions used a fixed noise-scaled injection and
 # counted tolerated halo pixels as recovered truth; they are not comparable.
-GENERATOR_REVISION = "streak-flux-v2"
-METRIC_REVISION = "halo-precision-core-recall-v2"
+GENERATOR_REVISION = "streak-flux-v3-supported-truth"
+METRIC_REVISION = "centerline-along-coverage-v3"
 
 
 def _f1(precision, recall):
@@ -129,6 +129,19 @@ def _add_cosmic_rays(data, gt, size, rng):
 def _add_streaks(data, gt, size, streak_flux, regime_type):
     from skimage.draw import line
 
+    def mark(i, j, radius, component, centerline=False):
+        gt["streak"][max(0, i - radius) : min(size, i + radius + 1), max(0, j - radius) : min(size, j + radius + 1)] = (
+            True
+        )
+        components = gt.get("streak_components")
+        if components is not None:
+            components[
+                max(0, i - radius) : min(size, i + radius + 1), max(0, j - radius) : min(size, j + radius + 1)
+            ] = component
+        centerlines = gt.get("streak_centerlines")
+        if centerline and centerlines is not None:
+            centerlines[i, j] = component
+
     s_flux = streak_flux
     rr, cc = line(100, 100, size - 100, size - 200)
 
@@ -140,24 +153,20 @@ def _add_streaks(data, gt, size, streak_flux, regime_type):
                     flux_scale = 0.8
                     if regime_type == "variable_width_streak":
                         flux_scale *= 0.5 + 0.5 * np.sin((i + j) / 60.0)
-                    data[i, j] += s_flux * flux_scale
-                    gt["streak"][
-                        max(0, i - 2) : min(size, i + 3),
-                        max(0, j - 2) : min(size, j + 3),
-                    ] = True
+                    flux = s_flux * flux_scale
+                    data[i, j] += flux
+                    if flux > 0:
+                        mark(i, j, 2, 1, centerline=w == 0)
     else:
         for i, j in zip(rr, cc):
             if 0 <= i < size and 0 <= j < size:
                 data[i, j] += s_flux
-                gt["streak"][max(0, i - 1) : min(size, i + 2), max(0, j - 1) : min(size, j + 2)] = True
+                mark(i, j, 1, 1, centerline=True)
 
     dot_flux = 2.0 * streak_flux
     dots_y0, dots_x0 = int(0.2 * size), int(0.8 * size)
     dots_yf, dots_xf = int(0.8 * size), int(0.2 * size)
     rr, cc = line(dots_y0, dots_x0, dots_yf, dots_xf)
-    for i, j in zip(rr, cc):
-        if 0 <= i < size and 0 <= j < size:
-            gt["streak"][max(0, i - 1) : min(size, i + 2), max(0, j - 1) : min(size, j + 2)] = True
 
     if regime_type != "normal":
         cycle_len = 40
@@ -172,22 +181,21 @@ def _add_streaks(data, gt, size, streak_flux, regime_type):
 
             if flux > 0 and 0 <= i < size and 0 <= j < size:
                 data[i, j] += flux
+                mark(i, j, 1, 2, centerline=True)
 
         dots_y0_2, dots_x0_2 = int(0.1 * size), int(0.9 * size)
         dots_yf_2, dots_xf_2 = int(0.9 * size), int(0.1 * size)
         rr2, cc2 = line(dots_y0_2, dots_x0_2, dots_yf_2, dots_xf_2)
         faint_flux = 0.5 * streak_flux
-        for i, j in zip(rr2, cc2):
-            if 0 <= i < size and 0 <= j < size:
-                gt["streak"][max(0, i - 1) : min(size, i + 2), max(0, j - 1) : min(size, j + 2)] = True
-
         for i, j in zip(rr2[::15], cc2[::15]):
             if 0 <= i < size and 0 <= j < size:
                 data[i, j] += faint_flux
+                mark(i, j, 1, 3, centerline=True)
     else:
         for i, j in zip(rr[::10], cc[::10]):
             if 0 <= i < size and 0 <= j < size:
                 data[i, j] += dot_flux
+                mark(i, j, 1, 2, centerline=True)
 
 
 def _inject_dark_defects(data, gt, size, noise_level, rng):
@@ -219,6 +227,8 @@ def create_simulated_data(size=1024, noise_level=10.0, num_stars=50, streak_flux
         "sat": np.zeros((size, size), dtype=bool),
         "cr": np.zeros((size, size), dtype=bool),
         "streak": np.zeros((size, size), dtype=bool),
+        "streak_components": np.zeros((size, size), dtype=np.int16),
+        "streak_centerlines": np.zeros((size, size), dtype=np.int16),
         "defects": np.zeros((size, size), dtype=bool),
     }
 
@@ -405,10 +415,11 @@ def run_masking_test(config_path, args, save_fits=True, return_products=False):
     # 3. Test Objects
     sky_map, _ = estimate_background(sci_data, existing_mask, config.get("sep_background", {}))
     data_sub = sci_data - sky_map
+    object_prior_mask = existing_mask.copy()
     # Use initial_mask here to avoid losing objects that were wrongly flagged as CRs/Saturation
     # to get cleaner metrics on object detection itself.
     obj_mask = detect_objects(data_sub, bkg_rms, initial_mask, config.get("sep_objects", {}))
-    metrics["Objects"] = evaluate_mask(obj_mask, gt["stars"], "Objects", pre_mask=initial_mask)
+    metrics["Objects"] = evaluate_mask(obj_mask, gt["stars"], "Objects", pre_mask=object_prior_mask)
     if save_fits:
         fitsio.write(
             os.path.join(output_dir, "mask_obj.fits"),
@@ -441,6 +452,7 @@ def run_masking_test(config_path, args, save_fits=True, return_products=False):
                 "objects": obj_mask,
                 "streaks": streak_mask,
             },
+            "streak_exclusion_mask": existing_mask.copy(),
         }
 
     return metrics

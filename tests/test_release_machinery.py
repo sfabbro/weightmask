@@ -15,11 +15,14 @@ These tests never build, tag or publish anything.
 """
 
 import importlib.util
+import io
 import os
 import re
 import subprocess
 import sys
+import tarfile
 import tempfile
+import threading
 import unittest
 import zipfile
 from pathlib import Path
@@ -28,6 +31,24 @@ from unittest.mock import patch
 REPO = Path(__file__).resolve().parents[1]
 WORKFLOWS = REPO / ".github" / "workflows"
 RELEASE_WORKFLOW = WORKFLOWS / "release.yml"
+
+
+def _evidence_fixture(**changes):
+    evidence = {
+        "schema": "weightmask.release-evidence.v1",
+        "status": "passed",
+        "version": "0.2.1",
+        "commit_sha": "a" * 40,
+        "config_sha": "b" * 64,
+        "input_manifest_sha": "c" * 64,
+        "metric_revisions": ["truth-band-recall-v2"],
+        "command": "pixi run science-gate -- --manifest evidence.json",
+        "timestamp": "2026-10-07T23:00:00Z",
+        "data_ids": ["fixture:1013719p"],
+        "real_trail_recall": 1.0,
+    }
+    evidence.update(changes)
+    return evidence
 
 
 def _load_release_check():
@@ -74,6 +95,71 @@ class TestVersionParsing(unittest.TestCase):
                 self.assertEqual(release_check.latest_tag(), "0.3.0")
 
 
+class TestReleaseEvidence(unittest.TestCase):
+    def test_manifest_validates_all_release_identity_fields(self):
+        from benchmarks.release_evidence import validate_manifest
+
+        self.assertEqual(
+            validate_manifest(
+                _evidence_fixture(),
+                version="0.2.1",
+                commit_sha="a" * 40,
+                config_sha="b" * 64,
+                input_manifest_sha="c" * 64,
+            ),
+            [],
+        )
+
+    def test_manifest_mutations_are_unqualified(self):
+        from benchmarks.release_evidence import validate_manifest
+
+        for mutation in (
+            {"status": "skipped"},
+            {"status": "failed"},
+            {"commit_sha": "d" * 40},
+            {"config_sha": "d" * 64},
+            {"input_manifest_sha": "d" * 64},
+            {"real_trail_recall": "n/a"},
+            {"real_trail_recall": "n/a", "scope_exclusions": []},
+            {"real_trail_recall": 1.0, "scope_exclusions": ["real_trail_recall"]},
+            {"scope_exclusions": ["not-a-claim"]},
+            {"metric_revisions": ["old-revision"]},
+            {"metric_revisions": None},
+            {"config_sha": ""},
+        ):
+            with self.subTest(mutation=mutation):
+                errors = validate_manifest(
+                    {**_evidence_fixture(), **mutation},
+                    version="0.2.1",
+                    commit_sha="a" * 40,
+                    config_sha="b" * 64,
+                    input_manifest_sha="c" * 64,
+                    metric_revisions=["truth-band-recall-v2"],
+                    require_qualified=True,
+                )
+                self.assertTrue(errors)
+
+    def test_excluded_real_trail_recall_is_qualified(self):
+        from benchmarks.release_evidence import validate_manifest
+
+        errors = validate_manifest(
+            _evidence_fixture(real_trail_recall="n/a", scope_exclusions=["real_trail_recall"]),
+            version="0.2.1",
+            commit_sha="a" * 40,
+            config_sha="b" * 64,
+            input_manifest_sha="c" * 64,
+            metric_revisions=["truth-band-recall-v2"],
+            require_qualified=True,
+        )
+        self.assertEqual(errors, [])
+
+    def test_missing_manifest_is_rejected_only_for_qualified_release(self):
+        from benchmarks.release_evidence import validate_manifest
+
+        self.assertTrue(validate_manifest(None, version="0.2.1", require_qualified=True))
+        self.assertTrue(validate_manifest(None, version="0.2.1", require_qualified=False))
+
+
 class TestChangelogSectionExtraction(unittest.TestCase):
     def _with_changelog(self, text):
         """Point the module at a temporary CHANGELOG and extract from it."""
@@ -108,6 +194,10 @@ class TestChangelogSectionExtraction(unittest.TestCase):
 
     def test_a_prerelease_heading_is_not_the_stable_release(self):
         self.assertIsNone(self._with_changelog("## 0.2.1-rc1\n\nPreview only.\n"))
+
+    def test_changelog_states_the_real_trail_exclusion(self):
+        body = release_check.changelog_section("0.2.1")
+        self.assertIn("does not claim validated real-trail recall", body)
 
 
 class TestReleaseWorkflowShape(unittest.TestCase):
@@ -175,6 +265,53 @@ class TestReleaseWorkflowShape(unittest.TestCase):
         config_text = RELEASE_WORKFLOW.read_text()
         self.assertIn("id-token: write", config_text, "trusted publishing needs id-token: write")
         self.assertIn("contents: write", config_text, "creating the tag and release needs it")
+
+    def test_release_actions_are_pinned_to_commit_shas(self):
+        config_text = RELEASE_WORKFLOW.read_text()
+        for action in (
+            "actions/checkout",
+            "prefix-dev/setup-pixi",
+            "actions/upload-artifact",
+            "pypa/gh-action-pypi-publish",
+            "softprops/action-gh-release",
+        ):
+            self.assertRegex(config_text, rf"{re.escape(action)}@[0-9a-f]{{40}}")
+
+    def test_release_evidence_is_checked_and_attached_before_tagging(self):
+        import yaml
+
+        steps = yaml.safe_load(RELEASE_WORKFLOW.read_text())["jobs"]["release"]["steps"]
+        evidence = next(i for i, step in enumerate(steps) if step.get("name") == "Validate release evidence")
+        tag = next(i for i, step in enumerate(steps) if step.get("name") == "Tag")
+        self.assertLess(evidence, tag)
+        upload = next(i for i, step in enumerate(steps) if step.get("uses", "").startswith("actions/upload-artifact@"))
+        self.assertLess(upload, tag)
+        self.assertIn("evidence", steps[upload]["with"]["path"])
+        release = next(step for step in steps if step.get("name") == "Create the GitHub release")
+        self.assertIn("evidence", release["with"]["files"])
+
+    def test_publish_requires_supplied_evidence_and_does_not_inline_it(self):
+        import yaml
+
+        config = yaml.safe_load(RELEASE_WORKFLOW.read_text())
+        evidence_input = config[True]["workflow_dispatch"]["inputs"]["evidence_b64"]
+        self.assertEqual(evidence_input["default"], "")
+        steps = config["jobs"]["release"]["steps"]
+        install = next(step for step in steps if step.get("name") == "Install supplied release evidence")
+        emit = next(step for step in steps if step.get("name") == "Emit release evidence")
+        self.assertIn("!inputs.dry_run", install.get("if", ""))
+        self.assertIn("inputs.dry_run", emit.get("if", ""))
+        self.assertNotIn("inputs.evidence_b64", install.get("run", ""))
+        self.assertEqual(install["env"]["RELEASE_EVIDENCE_B64"], "${{ inputs.evidence_b64 }}")
+        self.assertIn("base64 -d", install["run"])
+
+    def test_release_permissions_are_narrow_and_publish_is_not_tagged_by_dry_run(self):
+        import yaml
+
+        job = yaml.safe_load(RELEASE_WORKFLOW.read_text())["jobs"]["release"]
+        self.assertEqual(set(job["permissions"]), {"contents", "id-token"})
+        self.assertEqual(job["permissions"]["contents"], "write")
+        self.assertEqual(job["permissions"]["id-token"], "write")
 
     def test_it_checks_out_the_tags(self):
         """Otherwise the newest-tag guard is skipped without saying so.
@@ -309,8 +446,17 @@ class TestReleaseWorkflowShape(unittest.TestCase):
         self.assertIsNotNone(upload, "dry runs and failed publications must retain validated artifacts")
         self.assertLess(upload, next(i for i, step in enumerate(steps) if step.get("name") == "Tag"))
         self.assertNotIn("if", steps[upload], "dry runs also need reviewable artifacts")
-        self.assertEqual(steps[upload]["with"]["path"], "dist/*")
+        self.assertIn("dist/*", steps[upload]["with"]["path"])
+        self.assertIn("weightmask/weightmask.yml", steps[upload]["with"]["path"])
         self.assertEqual(steps[upload]["with"]["if-no-files-found"], "error")
+
+    def test_github_release_attaches_the_validated_config(self):
+        import yaml
+
+        steps = yaml.safe_load(RELEASE_WORKFLOW.read_text())["jobs"]["release"]["steps"]
+        release = next(step for step in steps if step.get("name") == "Create the GitHub release")
+        self.assertIn("dist/*", release["with"]["files"])
+        self.assertIn("weightmask/weightmask.yml", release["with"]["files"])
 
 
 class TestCheckTaskIsWiredUp(unittest.TestCase):
@@ -387,7 +533,12 @@ class TestCheckTaskIsWiredUp(unittest.TestCase):
                     artifacts = Path(args[-1])
                     with zipfile.ZipFile(artifacts / "weightmask-0.2.1-py3-none-any.whl", "w") as wheel:
                         wheel.writestr("weightmask/_version.py", '__version__ = "0.2.1"')
-                    (artifacts / "weightmask-0.2.1.tar.gz").write_bytes(b"test sdist")
+                        wheel.writestr("weightmask/weightmask.yml", release_check.PACKAGED_CONFIG.read_bytes())
+                    with tarfile.open(artifacts / "weightmask-0.2.1.tar.gz", "w:gz") as archive:
+                        data = release_check.PACKAGED_CONFIG.read_bytes()
+                        member = tarfile.TarInfo("weightmask-0.2.1/weightmask/weightmask.yml")
+                        member.size = len(data)
+                        archive.addfile(member, io.BytesIO(data))
                 elif "venv" in args:
                     scripts = Path(args[-1]) / "bin"
                     scripts.mkdir(parents=True, exist_ok=True)
@@ -398,6 +549,15 @@ class TestCheckTaskIsWiredUp(unittest.TestCase):
                 elif "-c" in args:
                     if "ProducerMetadata" in args[-1]:
                         self.assertIn("-I", args, "artifact imports must ignore PYTHONPATH and the user site")
+                        self.assertEqual(args[-1], release_check.artifact_smoke_script())
+                        self.assertIn("default_config_path", args[-1])
+                        self.assertIn("copy_default_config", args[-1])
+                        self.assertIn("hashlib.sha256(config_data).hexdigest()", args[-1])
+                        self.assertIn("copied.read_bytes() == config_data", args[-1])
+                        self.assertEqual(
+                            kwargs["env"]["WEIGHTMASK_EXPECTED_CONFIG_SHA256"],
+                            release_check.config_sha256(release_check.PACKAGED_CONFIG),
+                        )
                         text = "0.2.1 0.2.1\n"
                     else:
                         text = "0.2.1\n"
@@ -415,6 +575,262 @@ class TestCheckTaskIsWiredUp(unittest.TestCase):
             self.assertEqual(len({python for python, _ in installed}), 2, "sdist cannot shadow the wheel smoke check")
             self.assertEqual({p.name for p in output.iterdir()}, {Path(artifact).name for _, artifact in installed})
             self.assertFalse(workdir.exists(), "build tools and test environments must be cleaned up")
+
+
+class TestPackagedConfiguration(unittest.TestCase):
+    def test_root_copy_matches_packaged_resource(self):
+        from weightmask.config import default_config_path, default_config_resource
+
+        packaged = default_config_resource().read_bytes()
+        self.assertEqual(packaged, (REPO / "weightmask.yml").read_bytes())
+        with default_config_path() as path:
+            self.assertEqual(path.read_bytes(), packaged)
+
+    def test_isolated_artifact_smoke_script_is_valid_and_executes(self):
+        script = release_check.artifact_smoke_script()
+        compile(script, "<artifact-smoke>", "exec")
+        result = subprocess.run(
+            [sys.executable, "-I", "-c", script],
+            cwd="/",
+            env={
+                **os.environ,
+                "WEIGHTMASK_EXPECTED_CONFIG_SHA256": release_check.config_sha256(release_check.PACKAGED_CONFIG),
+            },
+            capture_output=True,
+            text=True,
+        )
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(result.stdout.strip(), "0.2.1 0.2.1")
+
+    def test_default_config_can_be_copied_without_source_tree(self):
+        from weightmask.config import copy_default_config
+
+        with tempfile.TemporaryDirectory() as tmp:
+            destination = Path(tmp) / "config.yml"
+            self.assertEqual(copy_default_config(destination), destination)
+            self.assertEqual(destination.read_bytes(), (REPO / "weightmask.yml").read_bytes())
+            with self.assertRaises(FileExistsError):
+                copy_default_config(destination)
+            copy_default_config(destination, overwrite=True)
+
+    def test_copy_rejects_existing_and_dangling_symlinks_even_when_overwriting(self):
+        from weightmask.config import copy_default_config
+
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            target = root / "real.yml"
+            target.write_text("do not clobber")
+            for name, link_target in (("existing.yml", target), ("dangling.yml", root / "missing.yml")):
+                link = root / name
+                link.symlink_to(link_target)
+                for overwrite in (False, True):
+                    with self.assertRaises(FileExistsError):
+                        copy_default_config(link, overwrite=overwrite)
+                self.assertTrue(link.is_symlink())
+            self.assertEqual(target.read_text(), "do not clobber")
+
+    def test_concurrent_no_overwrite_copy_has_one_winner(self):
+        from concurrent.futures import ThreadPoolExecutor
+
+        from weightmask.config import copy_default_config, default_config_bytes
+
+        with tempfile.TemporaryDirectory() as tmp:
+            destination = Path(tmp) / "config.yml"
+            barrier = threading.Barrier(8)
+
+            def copy():
+                barrier.wait()
+                try:
+                    copy_default_config(destination)
+                except FileExistsError:
+                    return False
+                return True
+
+            with ThreadPoolExecutor(max_workers=8) as executor:
+                results = list(executor.map(lambda _: copy(), range(8)))
+            self.assertEqual(sum(results), 1)
+            self.assertEqual(destination.read_bytes(), default_config_bytes())
+
+    def test_overwrite_failure_preserves_existing_file_and_cleans_temporary(self):
+        from unittest.mock import patch
+
+        from weightmask.config import copy_default_config
+
+        with tempfile.TemporaryDirectory() as tmp:
+            destination = Path(tmp) / "config.yml"
+            destination.write_text("keep this generation")
+            with patch("weightmask.config.os.replace", side_effect=OSError("replace failed")):
+                with self.assertRaises(OSError):
+                    copy_default_config(destination, overwrite=True)
+            self.assertEqual(destination.read_text(), "keep this generation")
+            self.assertEqual(list(Path(tmp).glob(".config.yml.*")), [])
+
+    def test_overwrite_preserves_existing_regular_file_mode(self):
+        from weightmask.config import copy_default_config, default_config_bytes
+
+        with tempfile.TemporaryDirectory() as tmp:
+            destination = Path(tmp) / "config.yml"
+            destination.write_bytes(b"old generation")
+            destination.chmod(0o640)
+            copy_default_config(destination, overwrite=True)
+            self.assertEqual(destination.read_bytes(), default_config_bytes())
+            self.assertEqual(destination.stat().st_mode & 0o777, 0o640)
+
+    def test_overwrite_rejects_fifo_and_device_targets(self):
+        from weightmask.config import copy_default_config
+
+        with tempfile.TemporaryDirectory() as tmp:
+            fifo = Path(tmp) / "config.fifo"
+            os.mkfifo(fifo)
+            with self.assertRaises(FileExistsError):
+                copy_default_config(fifo, overwrite=True)
+            with self.assertRaises(FileExistsError):
+                copy_default_config(Path("/dev/null"), overwrite=True)
+
+    def test_config_docs_do_not_fetch_a_mutable_main_copy(self):
+        for rel in ("README.md", "docs/installation.md", "docs/usage.md"):
+            text = (REPO / rel).read_text()
+            self.assertNotIn("blob/main/weightmask.yml", text)
+            self.assertNotIn("not bundled", text.lower())
+
+    def test_readme_doc_links_use_the_release_tag(self):
+        import re
+
+        version = re.search(r'^version = "([^"]+)"$', (REPO / "pyproject.toml").read_text(), re.MULTILINE).group(1)
+        prefix = f"https://github.com/astroai/weightmask/blob/v{version}/"
+        text = (REPO / "README.md").read_text()
+        for target in (
+            "docs/installation.md",
+            "docs/usage.md",
+            "docs/algorithms.md",
+            "docs/api.md",
+            "docs/releasing.md",
+            "CHANGELOG.md",
+            "LICENSE",
+        ):
+            self.assertIn(prefix + target, text)
+        metadata = (REPO / "pyproject.toml").read_text()
+        self.assertIn(f'Changelog = "{prefix}CHANGELOG.md"', metadata)
+
+
+class TestArtifactRetentionDocumentation(unittest.TestCase):
+    DOCUMENT = REPO / "docs" / "releasing.md"
+    INSPECTION_PATTERNS = (
+        "__pycache__/",
+        ".pixi/",
+        ".venv*/",
+        ".uv-cache/",
+        ".env",
+        "venv/",
+        "env/",
+        ".pytest_cache/",
+        ".ruff_cache/",
+        ".mypy_cache/",
+        ".cache",
+        ".coverage",
+        ".coverage.*",
+        "coverage.xml",
+        "htmlcov/",
+    )
+
+    @classmethod
+    def _inspection_block(cls):
+        text = cls.DOCUMENT.read_text()
+        start = text.index("## Inspect ignored artifacts before a dry run")
+        end = text.index("## Retention policy for benchmark and release evidence")
+        return text[start:end]
+
+    @classmethod
+    def _launcher_inspection_block(cls):
+        text = cls.DOCUMENT.read_text()
+        start = text.index("Inspect a suspected launcher without executing it:")
+        end = text.index("From the current checkout, rebuild the environment")
+        return text[start:end]
+
+    def test_release_docs_cover_safe_ignored_artifact_inventory(self):
+        text = self.DOCUMENT.read_text()
+        for term in (
+            "git status --short --ignored",
+            "git check-ignore -v",
+            "test_outputs/",
+            "benchmark_data/",
+            "duplicate",
+            "`dist/`",
+            ".pytest_cache",
+            ".ruff_cache",
+            ".mypy_cache",
+            "stale local environments",
+            "stale executable shebangs",
+        ):
+            self.assertIn(term, text, f"release docs are missing the WM-29 inspection guidance: {term}")
+
+    def test_release_docs_define_provenance_and_large_data_retention(self):
+        text = self.DOCUMENT.read_text()
+        for term in (
+            "JSON or Markdown report",
+            "commit SHA",
+            "configuration SHA",
+            "FITS/cache products",
+            "detector caches",
+            "CANFAR session",
+            "There is no automatic cleanup",
+            "pixi reinstall --locked",
+        ):
+            self.assertIn(term, text, f"release docs are missing the WM-29 retention rule: {term}")
+
+    def test_every_ignored_environment_and_cache_pattern_is_in_inventory(self):
+        gitignore = (REPO / ".gitignore").read_text()
+        block = self._inspection_block()
+        for pattern in self.INSPECTION_PATTERNS:
+            self.assertIn(pattern, gitignore, f".gitignore is missing the expected pattern: {pattern}")
+            self.assertIn(pattern, block, f"WM-29 inventory omits .gitignore pattern: {pattern}")
+
+    def test_inspection_blocks_forbid_environment_execution(self):
+        for block in (self._inspection_block(), self._launcher_inspection_block()):
+            self.assertNotRegex(
+                block,
+                r"(?m)^\s*(?:pixi|python(?:\d+(?:\.\d+)*)?|pip|uv|conda|pytest|ruff|weightmask|release-check)\b",
+            )
+            self.assertNotRegex(block, r"(?m)^\s*(?:source|activate|exec|rm|mv|cp|unlink|clean)\b")
+
+    def test_launcher_inspection_reads_only_metadata_and_first_line(self):
+        block = self._launcher_inspection_block()
+        for command in ("file", "readlink", "read -r", "shebang"):
+            self.assertIn(command, block, f"launcher inspection must use read-only {command}: {block}")
+
+    def test_inventory_uses_portable_recursive_size_for_a_temp_tree(self):
+        block = self._inspection_block()
+        self.assertIn('du -sk "$path"', block)
+        self.assertNotIn("stat -f", block)
+        self.assertNotRegex(block, r"du\s+[^\n]*\s--(?:\s|\")")
+        loop = re.search(r"for path in test_outputs benchmark_data.*?^done$", block, re.M | re.S)
+        self.assertIsNotNone(loop, "the documented inventory loop must remain executable")
+
+        with tempfile.TemporaryDirectory(prefix="wm29 tree ") as tmp:
+            root = Path(tmp)
+            payload = root / "test_outputs" / "nested" / "payload.bin"
+            payload.parent.mkdir(parents=True)
+            payload.write_bytes(b"x" * 8192)
+            result = subprocess.run(
+                ["bash", "-eu", "-c", loop.group(0)],
+                cwd=root,
+                capture_output=True,
+                text=True,
+                check=True,
+            )
+            reported = next(line for line in result.stdout.splitlines() if line.endswith("test_outputs"))
+            directory_kib = int(reported.split()[0])
+            file_kib = int(
+                subprocess.run(["du", "-sk", str(payload)], capture_output=True, text=True, check=True).stdout.split()[
+                    0
+                ]
+            )
+            self.assertGreaterEqual(directory_kib, file_kib)
+
+    def test_retention_guidance_has_no_destructive_cleanup_command(self):
+        text = self.DOCUMENT.read_text()
+        self.assertNotRegex(text, r"(?m)^\s*(?:rm|git\s+clean|pixi\s+clean)\b")
+        self.assertNotRegex(text, r"(?m)^\s*find\b.*(?:-delete|-exec\s+rm)\b")
 
 
 class TestDocsMatchCurrentSurface(unittest.TestCase):

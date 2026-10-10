@@ -115,14 +115,12 @@ class TestRealDataAssertionsAreVisible(unittest.TestCase):
     def test_the_skipping_tests_name_what_they_need(self):
         """A skip must be traceable to a file, not a bare 'if not available'.
 
-        Two kinds of input are missing on the runner: ``benchmark_data`` for the
-        MegaCam amps, and ``test_outputs`` for the stage-sweep JSONs. Each test
-        must name the one it depends on, so ``pytest -rs`` says which artefact is
-        absent instead of just 'not available'.
+        The MegaCam assertions depend on ``benchmark_data``. Stage tests now run
+        without the historical ``test_outputs`` fixture and therefore must not
+        be listed as skipped here.
         """
         expected = {
             "tests/test_brightness_veto.py": "benchmark_data",
-            "tests/test_streak_dead_stages.py": "test_outputs",
         }
         for test, needed in expected.items():
             text = (REPO / test).read_text()

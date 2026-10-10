@@ -5,10 +5,9 @@ that has to hold on every commit, so that a threshold or gate change cannot
 quietly trade recall for speed.
 
 Every assertion here is a *lower bound* (or, for false positives and coverage, an
-upper bound), so improving the detector never turns this red. The one number that
-is deliberately not asserted is the dashed-trail recall: it is 0 today, and
-pinning it at 0 would make fixing it a test failure. It is recorded in
-``docs/detector_audit.md`` instead.
+upper bound), so improving the detector never turns this red. The dashed cell is
+kept as an explicit unsupported-regime xfail until the benchmark matrix supports
+a stable multi-seed floor.
 """
 
 import contextlib
@@ -26,8 +25,18 @@ if str(ROOT) not in sys.path:
 if str(ROOT / "benchmarks") not in sys.path:
     sys.path.insert(0, str(ROOT / "benchmarks"))
 
-from benchmarks.production_inputs import capture_detector_inputs, streak_config  # noqa: E402
-from benchmarks.streak_inject import inject_grid, score_mask, trail_recall  # noqa: E402
+from benchmarks.production_inputs import (  # noqa: E402
+    capture_detector_inputs,
+    production_gain_read_noise,
+    streak_config,
+)
+from benchmarks.streak_inject import (  # noqa: E402
+    inject_grid,
+    inject_source_poisson,
+    score_mask,
+    scoreable_truth,
+    trail_recall,
+)
 from weightmask.streaks import detect_streaks  # noqa: E402
 
 SHAPE = (700, 700)
@@ -39,7 +48,7 @@ ALL_SPECS = CONTINUOUS_SPECS + DASHED_SPECS
 # path** (process_image's iterated background and accumulated exclusion), which
 # is how the detector is actually fed. Re-measured 2026-09-29:
 #   continuous trails  recall 0.910 / 0.994, recall5 1.000 both
-#   dashed trail        recall 0.000 (the known, unpinned gap)
+#   dashed trail        recall 0.000 (unsupported at this cell)
 #   mask coverage       0.0186 of the frame
 #   fp5                 669 px
 #
@@ -50,8 +59,8 @@ ALL_SPECS = CONTINUOUS_SPECS + DASHED_SPECS
 # previously invisible rather than a separate population of false positives.
 # It is bounded by the injected trail length, not by the sky. The 800 px figure
 # leaves room for that halo while still catching a runaway mask.
-FLOOR_CONTINUOUS_RECALL = 0.75
-FLOOR_CONTINUOUS_RECALL5 = 0.95
+FLOOR_SUPPORTED_CONTINUOUS_RECALL = 0.75
+FLOOR_SUPPORTED_CONTINUOUS_RECALL5 = 0.95
 FLOOR_ALL_RECALL5 = 0.60
 CEILING_FP5_PX = 800
 CEILING_COVERAGE = 0.05
@@ -93,38 +102,74 @@ class TestStreakRecallFloor(unittest.TestCase):
             )
         cls.empty_mask = empty
         finite = data_sub[np.isfinite(data_sub)]
-        noise = float(np.median(np.abs(finite - np.median(finite))) * 1.4826)
-
-        rng = np.random.default_rng(0)
-        flux, cls.truth, cls.trails = inject_grid(cls.sci.shape, ALL_SPECS, rng, min_separation=150.0)
-        cls.n_continuous = sum(1 for trail in cls.trails if not trail["dashed"])
+        noise = float(np.nanmedian(rms[np.isfinite(rms)]))
+        if not np.isfinite(noise) or noise <= 0:
+            noise = float(np.median(np.abs(finite - np.median(finite))) * 1.4826)
 
         cfg = dict(cls.streak_cfg_full)
         cls.clean_mask = detect_streaks(data_sub, rms, cls.empty_mask, cfg)
-        cls.mask = detect_streaks(data_sub + flux * noise, rms, cls.empty_mask, dict(cfg))
-        cls.fp_px, cls.fp5_px, _novel = score_mask(cls.mask, cls.clean_mask, cls.truth)
+        rng = np.random.default_rng(0)
+        flux, cls.truth, cls.trails, cls.rejected_cells = inject_grid(
+            cls.sci.shape,
+            ALL_SPECS,
+            rng,
+            min_separation=150.0,
+            invalid_mask=~np.isfinite(cls.sci) | cls.clean_mask,
+            return_rejected=True,
+        )
+        cls.n_continuous = sum(1 for trail in cls.trails if not trail["dashed"])
+        gain, _read_noise = production_gain_read_noise({"GAIN": 1.5, "RDNOISE": 5.0}, config)
+        raw_test = inject_source_poisson(
+            cls.sci,
+            flux * noise,
+            gain,
+            np.random.default_rng(100),
+            invalid_mask=~np.isfinite(cls.sci),
+        )
+        with contextlib.redirect_stdout(io.StringIO()):
+            injected_sub, injected_rms, injected_existing = capture_detector_inputs(
+                raw_test,
+                {"GAIN": 1.5, "RDNOISE": 5.0},
+                config,
+                flat=np.ones(cls.sci.shape, dtype=np.float32),
+            )
+        cls.mask = detect_streaks(injected_sub, injected_rms, injected_existing, dict(cfg))
+        cls.scoreable = np.zeros(cls.sci.shape, dtype=bool)
+        cls.rejected_truth = np.zeros(cls.sci.shape, dtype=bool)
+        for trail in cls.trails:
+            accepted, rejected = scoreable_truth(trail["truth"], injected_sub, injected_existing, cls.clean_mask)
+            cls.scoreable |= accepted
+            cls.rejected_truth |= rejected
+        cls.fp_px, cls.fp5_px, _novel = score_mask(cls.mask, cls.clean_mask, cls.scoreable)
 
-        cls.per_trail = [trail_recall(cls.mask, trail["truth"]) for trail in cls.trails]
-        cls.continuous = [trail_recall(cls.mask, trail["truth"]) for trail in cls.trails if not trail["dashed"]]
+        cls.per_trail = [
+            trail_recall(cls.mask, scoreable_truth(trail["truth"], injected_sub, injected_existing, cls.clean_mask)[0])
+            for trail in cls.trails
+        ]
+        cls.continuous = [
+            trail_recall(cls.mask, scoreable_truth(trail["truth"], injected_sub, injected_existing, cls.clean_mask)[0])
+            for trail in cls.trails
+            if not trail["dashed"]
+        ]
         assert cls.n_continuous >= 2, "fixture must place the continuous trails"
 
     def test_the_quiet_frame_alone_yields_no_streak_pixels(self):
         """A clean synthetic field must not produce a streak mask at all."""
         self.assertEqual(int(np.count_nonzero(self.clean_mask)), 0)
 
-    def test_continuous_trails_are_recalled(self):
+    def test_supported_continuous_trails_are_recalled(self):
         recalls = [exact for exact, _, _ in self.continuous]
         tolerant = [loose for _, loose, _ in self.continuous]
         mean_recall = float(np.mean(recalls))
         mean_tolerant = float(np.mean(tolerant))
         self.assertGreaterEqual(
             mean_recall,
-            FLOOR_CONTINUOUS_RECALL,
+            FLOOR_SUPPORTED_CONTINUOUS_RECALL,
             f"continuous-trail recall fell to {mean_recall:.3f} ({recalls})",
         )
         self.assertGreaterEqual(
             mean_tolerant,
-            FLOOR_CONTINUOUS_RECALL5,
+            FLOOR_SUPPORTED_CONTINUOUS_RECALL5,
             f"5px-tolerant continuous recall fell to {mean_tolerant:.3f} ({tolerant})",
         )
 
@@ -135,21 +180,22 @@ class TestStreakRecallFloor(unittest.TestCase):
     def test_false_positives_stay_bounded(self):
         self.assertLessEqual(self.fp5_px, CEILING_FP5_PX, f"novel false-positive pixels rose to {self.fp5_px}")
 
+    def test_rejected_truth_cells_are_reported(self):
+        self.assertIsInstance(self.rejected_cells, list)
+        self.assertEqual(int(np.count_nonzero(self.scoreable & self.rejected_truth)), 0)
+
     def test_the_mask_does_not_run_away(self):
         coverage = float(np.mean(self.mask))
         self.assertLessEqual(coverage, CEILING_COVERAGE, f"mask covers {coverage:.2%} of the frame")
 
-    def test_dashed_gap_is_recorded_not_asserted(self):
-        """Documents today's known gap without freezing it in place."""
+    @unittest.expectedFailure
+    def test_unsupported_dashed_cell_is_not_a_recall_floor(self):
         dashed = [trail for trail in self.trails if trail["dashed"]]
         for trail in dashed:
             exact, tolerant, line = trail_recall(self.mask, trail["truth"])
-            self.assertGreaterEqual(exact, 0.0)
+            self.assertGreater(exact, 0.0)
             self.assertGreaterEqual(tolerant, exact)
-            print(
-                f"[knowngap] dashed len={trail['length']} sig={trail['peak_sig']}: "
-                f"recall={exact:.3f} recall5={tolerant:.3f} recall_line={line:.3f}"
-            )
+            self.assertGreaterEqual(line, exact)
 
 
 if __name__ == "__main__":

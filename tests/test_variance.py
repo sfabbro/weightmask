@@ -97,18 +97,25 @@ class TestVariance(unittest.TestCase):
         inv_var = _calculate_inverse_variance_theoretical(sky, flat, gain=2.0, read_noise_e=0.0, epsilon=1e-3)
         self.assertEqual(float(inv_var[0, 0]), 0.0)
 
-    def test_flat_rel_noise_vignette_boost(self):
-        sky_adu, gain, read_noise_e, rel0 = 8000.0, 1.5, 5.0, 0.003
-        sky = np.array([[sky_adu, sky_adu]], dtype=np.float32)
+    def test_flat_rel_noise_propagates_to_output_adu_variance(self):
+        expected_variance = {0.25: 2100.0, 0.5: 1100.0, 1.0: 600.0, 2.0: 350.0}
+        sky = np.array([[1000.0]], dtype=np.float32)
+
+        for flat_value, variance in expected_variance.items():
+            with self.subTest(flat=flat_value):
+                flat = np.array([[flat_value]], dtype=np.float32)
+                got = _calculate_inverse_variance_theoretical(
+                    sky, flat, gain=2.0, read_noise_e=0.0, epsilon=1e-9, flat_rel_noise=0.01
+                )
+                np.testing.assert_allclose(got[0, 0], 1.0 / variance, rtol=1e-6)
+
+    def test_flat_rel_noise_boosts_below_median_uncertainty(self):
+        sky = np.full((1, 2), 1000.0, dtype=np.float32)
         flat = np.array([[1.0, 0.25]], dtype=np.float32)
-        got = _calculate_inverse_variance_theoretical(sky, flat, gain, read_noise_e, epsilon=1e-9, flat_rel_noise=rel0)
-        med_flat = 0.625
-        for i, flat_val in enumerate((1.0, 0.25)):
-            rel = rel0 / np.sqrt(max(flat_val / med_flat, 0.1))
-            sky_e = sky_adu * gain
-            denom = sky_e * flat_val + read_noise_e**2 + (sky_e * rel) ** 2
-            want = (gain**2 * flat_val**2) / denom
-            np.testing.assert_allclose(got[0, i], want, rtol=1e-5)
+        got = _calculate_inverse_variance_theoretical(
+            sky, flat, gain=2.0, read_noise_e=0.0, epsilon=1e-9, flat_rel_noise=0.01
+        )
+        np.testing.assert_allclose(got, [[1.0 / 562.5, 1.0 / 2250.0]], rtol=1e-6)
 
     def test_canonical_yaml_rel_term_is_not_the_bare_kernel(self):
         import yaml
@@ -294,8 +301,7 @@ class TestVariance(unittest.TestCase):
         """Test successful calculation of empirical noise parameters."""
         from weightmask.variance import _calculate_empirical_noise_params
 
-        # Set up a random seed for reproducibility
-        np.random.seed(42)
+        rng = np.random.default_rng(42)
 
         # True parameters
         true_gain = 2.0
@@ -310,11 +316,11 @@ class TestVariance(unittest.TestCase):
         # Generate synthetic data
         for y in range(0, shape[0], patch_size):
             for x in range(0, shape[1], patch_size):
-                median_signal = np.random.uniform(50, 1000)
+                median_signal = rng.uniform(50, 1000)
                 var_adu = true_rn_adu**2 + median_signal / true_gain
                 std_adu = np.sqrt(var_adu)
 
-                noise = np.random.normal(loc=0, scale=std_adu, size=(patch_size, patch_size))
+                noise = rng.normal(loc=0, scale=std_adu, size=(patch_size, patch_size))
                 patch_data = median_signal + noise
                 sci_data[y : y + patch_size, x : x + patch_size] = patch_data
 
@@ -335,7 +341,8 @@ class TestVariance(unittest.TestCase):
 
         shape = (256, 256)
         patch_size = 64
-        sci_data = np.random.normal(100, 10, shape).astype(np.float32)
+        rng = np.random.default_rng(0)
+        sci_data = rng.normal(100, 10, shape).astype(np.float32)
 
         # Mask almost everything so valid_pixels.size < 100
         obj_mask = np.ones(shape, dtype=bool)
@@ -352,7 +359,8 @@ class TestVariance(unittest.TestCase):
         # Shape 128x128 with patch size 64 -> only 4 patches (needs 10)
         shape = (128, 128)
         patch_size = 64
-        sci_data = np.random.normal(100, 10, shape).astype(np.float32)
+        rng = np.random.default_rng(1)
+        sci_data = rng.normal(100, 10, shape).astype(np.float32)
         obj_mask = np.zeros(shape, dtype=bool)
 
         emp_gain, emp_rn_e = _calculate_empirical_noise_params(sci_data, obj_mask, patch_size, robust_sigma_clip=3.0)
@@ -379,8 +387,7 @@ class TestVariance(unittest.TestCase):
         """Test empirical calculation when linear regression fails (invalid slope/intercept)."""
         from weightmask.variance import _calculate_empirical_noise_params
 
-        # Set up a random seed
-        np.random.seed(42)
+        rng = np.random.default_rng(42)
 
         shape = (1024, 1024)
         patch_size = 64
@@ -392,12 +399,12 @@ class TestVariance(unittest.TestCase):
 
         for y in range(0, shape[0], patch_size):
             for x in range(0, shape[1], patch_size):
-                median_signal = np.random.uniform(50, 1000)
+                median_signal = rng.uniform(50, 1000)
                 # Intentionally make variance negatively correlated with signal
                 var_adu = 1000.0 / median_signal
                 std_adu = np.sqrt(var_adu)
 
-                noise = np.random.normal(loc=0, scale=std_adu, size=(patch_size, patch_size))
+                noise = rng.normal(loc=0, scale=std_adu, size=(patch_size, patch_size))
                 patch_data = median_signal + noise
                 sci_data[y : y + patch_size, x : x + patch_size] = patch_data
 
@@ -456,7 +463,7 @@ class TestVariance(unittest.TestCase):
         """Test _rescale_variance_robust happy path where scaling should happen."""
         from weightmask.variance import _rescale_variance_robust
 
-        np.random.seed(42)
+        rng = np.random.default_rng(42)
         shape = (100, 100)
 
         # We want SNR to have a specific standard deviation.
@@ -466,7 +473,7 @@ class TestVariance(unittest.TestCase):
         # If we set sci_data to normal(0, target_stdev), the calculated stdev should be target_stdev.
 
         target_stdev = 2.0
-        sci_data = np.random.normal(loc=0.0, scale=target_stdev, size=shape)
+        sci_data = rng.normal(loc=0.0, scale=target_stdev, size=shape)
         sky_map = np.zeros(shape)
         inv_variance = np.ones(shape)
         obj_mask = np.zeros(shape, dtype=bool)
@@ -492,10 +499,10 @@ class TestVariance(unittest.TestCase):
         """Test _rescale_variance_robust with non-finite SNR values."""
         from weightmask.variance import _rescale_variance_robust
 
-        np.random.seed(42)
+        rng = np.random.default_rng(42)
         shape = (20, 20)
 
-        sci_data = np.random.normal(0, 1, shape)
+        sci_data = rng.normal(0, 1, shape)
         sky_map = np.zeros(shape)
         inv_variance = np.ones(shape)
         obj_mask = np.zeros(shape, dtype=bool)

@@ -1,14 +1,24 @@
-"""Aperture flux on original pixels, with the weight plane used as a mask.
+"""Photometric behavior through the per-image production pipeline."""
 
-The flat-fielded Poisson formula must be used for a spatially varying flat;
-omitting F from its sky term moves weighted flux beyond the read-noise floor.
-"""
-
+import contextlib
+import io
 import unittest
+from pathlib import Path
 
 import numpy as np
+import yaml
 
-from weightmask.variance import _calculate_inverse_variance_theoretical
+from weightmask.contract import QualityBit
+from weightmask.process import process_image
+
+ROOT = Path(__file__).resolve().parents[1]
+SHAPE = (64, 64)
+HEADER = {
+    "GAIN": 1.5,
+    "RDNOISE": 5.0,
+    "DATASEC": "[1:64,1:64]",
+    "CCDSIZE": "[1:64,1:64]",
+}
 
 
 def _aperture(shape, cy, cx, radius):
@@ -16,66 +26,59 @@ def _aperture(shape, cy, cx, radius):
     return (yy - cy) ** 2 + (xx - cx) ** 2 <= radius**2
 
 
-def _flux(image, keep):
-    return float(np.sum(image[keep]))
+def _config():
+    config = yaml.safe_load((ROOT / "weightmask.yml").read_text())
+    config["streak_masking"]["enable"] = False
+    config["sep_background"].update({"method": "median_filter", "iterations": 1})
+    config["sep_objects"]["extract_thresh"] = 100.0
+    config["cosmic_ray"]["faint_cr"]["enable"] = False
+    config["saturation"]["mask_bleed_trails"] = False
+    config["variance"]["rescale_variance"] = False
+    return config
 
 
-def _weighted_flux(image, weight, aperture):
-    w = np.asarray(weight, dtype=np.float64)[aperture]
-    total = float(np.sum(w))
-    return float(np.sum(np.asarray(image, dtype=np.float64)[aperture] * w) / total * np.count_nonzero(aperture))
+def _run(data, flat):
+    with contextlib.redirect_stdout(io.StringIO()):
+        return process_image(data, HEADER, flat, _config(), tile_size=32)
+
+
+def _weighted_aperture_flux(image, weight, aperture):
+    values = np.asarray(image, dtype=np.float64)[aperture]
+    weights = np.asarray(weight, dtype=np.float64)[aperture]
+    valid = weights > 0.0
+    return float(np.sum(values[valid] * weights[valid]) / np.sum(weights[valid]) * np.count_nonzero(aperture))
 
 
 class TestPhotometryBias(unittest.TestCase):
-    def test_cr_in_the_wing_moves_flux_until_it_is_masked(self):
-        shape = (32, 32)
-        yy, xx = np.ogrid[: shape[0], : shape[1]]
-        star = 200.0 * np.exp(-0.5 * ((yy - 16) ** 2 + (xx - 16) ** 2) / 4.0)
-        aperture = _aperture(shape, 16, 16, 8)
-        clean = _flux(star, aperture)
-        spiked = star.copy()
-        spiked[16, 22] += 500.0
-        self.assertGreater(_flux(spiked, aperture), clean + 100.0)
-        keep = aperture.copy()
-        keep[16, 22] = False
-        self.assertAlmostEqual(_flux(spiked, keep), _flux(star, keep), places=5)
+    def test_process_image_masks_cosmic_ray_before_aperture_flux(self):
+        rng = np.random.default_rng(0)
+        yy, xx = np.mgrid[:64, :64]
+        clean = (1000.0 + rng.normal(0.0, 5.0, SHAPE)).astype(np.float32)
+        clean += 200.0 * np.exp(-0.5 * ((yy - 32) ** 2 + (xx - 32) ** 2) / 4.0)
+        spiked = clean.copy()
+        spiked[32, 40] += 500.0
+        aperture = _aperture(SHAPE, 32, 32, 8)
 
-    def test_a_wider_trail_pad_moves_more_flux(self):
-        shape = (32, 32)
-        yy, xx = np.ogrid[: shape[0], : shape[1]]
-        star = 200.0 * np.exp(-0.5 * ((yy - 16) ** 2 + (xx - 16) ** 2) / 4.0)
-        aperture = _aperture(shape, 16, 16, 8)
-        trail = np.zeros(shape, dtype=bool)
-        trail[10:24, 18] = True
-        tight = aperture & ~trail
-        pad = trail.copy()
-        pad[:, 16:21] = True
-        wide = aperture & ~pad
-        clean = _flux(star, aperture)
-        self.assertGreater(clean - _flux(star, wide), clean - _flux(star, tight))
+        clean_mask, _clean_ivar, clean_weight, *_ = _run(clean, np.ones(SHAPE, dtype=np.float32))
+        spiked_mask, _spiked_ivar, spiked_weight, *_ = _run(spiked, np.ones(SHAPE, dtype=np.float32))
 
-    def test_vignette_weight_ratio_and_flux_against_the_read_noise_floor(self):
-        gain = 1.5
-        read_noise_e = 5.0
-        sky_adu = 1000.0
-        flat_value = 0.7
-        sky = np.full((32, 32), sky_adu, dtype=np.float32)
-        uniform = np.full((32, 32), flat_value, dtype=np.float32)
-        photon = _calculate_inverse_variance_theoretical(sky, uniform, gain, 0.0, 1e-9)
-        np.testing.assert_allclose(photon, gain * flat_value / sky_adu, rtol=1e-6)
+        bit = int(QualityBit.COSMIC_RAY)
+        self.assertNotEqual(int(spiked_mask[32, 40] & bit), 0)
+        self.assertEqual(float(spiked_weight[32, 40]), 0.0)
+        clean_flux = _weighted_aperture_flux(clean, clean_weight, aperture)
+        spiked_flux = _weighted_aperture_flux(spiked, spiked_weight, aperture)
+        self.assertLess(abs(spiked_flux - clean_flux), 0.001 * abs(clean_flux))
 
-        varying = np.ones((32, 32), dtype=np.float32)
-        varying[:, :16] = flat_value
-        yy, xx = np.ogrid[:32, :32]
-        star = 800.0 * np.exp(-0.5 * ((yy - 16) ** 2 + (xx - 10) ** 2) / 4.0)
-        aperture = _aperture((32, 32), 16, 12, 8)
-        w_photon = _calculate_inverse_variance_theoretical(sky, varying, gain, read_noise_e, 1e-9)
-        expected = gain**2 * varying**2 / (sky * gain * varying + read_noise_e**2)
-        np.testing.assert_allclose(w_photon, expected, rtol=1e-6)
-        wrong_sky_term = gain**2 * varying**2 / (sky * gain + read_noise_e**2)
-        delta = abs(_weighted_flux(star, wrong_sky_term, aperture) - _weighted_flux(star, w_photon, aperture))
-        floor = (read_noise_e / gain) * np.sqrt(float(np.count_nonzero(aperture)))
-        self.assertGreater(delta, floor)
+    def test_process_image_uses_flat_fielded_poisson_variance(self):
+        rng = np.random.default_rng(1)
+        data = (1000.0 + rng.normal(0.0, 5.0, SHAPE)).astype(np.float32)
+        flat = np.ones(SHAPE, dtype=np.float32)
+        flat[:, :32] = 0.7
+
+        _mask, inverse_variance, _weight, _confidence, sky, _header = _run(data, flat)
+        expected = 1.5**2 * flat**2 / (sky * 1.5 * flat + 5.0**2)
+        np.testing.assert_allclose(inverse_variance, expected, rtol=0.03, atol=1.0e-6)
+        self.assertGreater(float(np.mean(inverse_variance[:, 32:])), float(np.mean(inverse_variance[:, :32])))
 
 
 if __name__ == "__main__":

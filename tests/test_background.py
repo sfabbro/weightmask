@@ -153,6 +153,48 @@ class TestSkyMeshRoundtrip(unittest.TestCase):
         with self.assertRaises(ValueError):
             parse_sky_mesh_header({"SKYH": 10, "SKYW": 10})
 
+    def test_mesh_header_requires_complete_consistent_positive_dimensions(self):
+        from weightmask.background import parse_sky_mesh_header
+
+        valid = {"SKYMESH": True, "MESHBW": 8, "MESHBH": 8, "SKYH": 32, "SKYW": 24}
+        invalid = (
+            {key: value for key, value in valid.items() if key != "MESHBH"},
+            {**valid, "MESHBW": 4},
+            {**valid, "MESHBH": 0},
+            {**valid, "SKYH": -1},
+            {**valid, "SKYW": 0},
+        )
+        for header in invalid:
+            with self.subTest(header=header), self.assertRaises(ValueError):
+                parse_sky_mesh_header(header)
+
+    def test_mesh_data_requires_rank_finiteness_and_implied_shape(self):
+        from weightmask.background import reconstruct_sky_mesh
+
+        invalid = (
+            np.ones(16, dtype=np.float32),
+            np.ones((4, 4, 1), dtype=np.float32),
+            np.ones((3, 4), dtype=np.float32),
+            np.ones((5, 4), dtype=np.float32),
+            np.full((4, 4), np.nan, dtype=np.float32),
+            np.full((4, 4), np.inf, dtype=np.float32),
+        )
+        for mesh in invalid:
+            with self.subTest(shape=mesh.shape), self.assertRaises(ValueError):
+                reconstruct_sky_mesh(mesh, (32, 32), 8)
+
+    def test_one_node_mesh_dimensions_roundtrip(self):
+        from weightmask.background import reconstruct_sky_from_header, sky_to_mesh
+
+        for shape in ((1, 1), (1, 7), (7, 1)):
+            with self.subTest(shape=shape):
+                sky = np.full(shape, 1234.0, dtype=np.float32)
+                mesh, cards = sky_to_mesh(sky, 8)
+                rebuilt = reconstruct_sky_from_header(mesh, cards)
+                self.assertEqual(mesh.shape, (1, 1))
+                self.assertEqual(rebuilt.shape, shape)
+                np.testing.assert_array_equal(rebuilt, sky)
+
     def test_single_node_column_mesh_reconstructs_at_full_width(self):
         """A mesh narrower than one box has one node column, not one output column.
 

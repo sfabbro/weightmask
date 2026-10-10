@@ -85,6 +85,122 @@ class TestBadPixels(unittest.TestCase):
         self.assertTrue(mask[:4, :4].all())
         self.assertFalse(mask[4:, 4:].any())
 
+    def test_tiled_local_mask_matches_full_mask_near_tile_boundaries(self):
+        y, x = np.mgrid[:48, :48]
+        flat = (1.0 + 0.001 * x + 0.002 * y).astype(np.float32)
+        defects = np.zeros(flat.shape, dtype=bool)
+        for rows, columns in (
+            (slice(5, 8), slice(13, 16)),
+            (slice(20, 23), slice(16, 19)),
+            (slice(13, 16), slice(5, 8)),
+            (slice(16, 19), slice(24, 27)),
+        ):
+            flat[rows, columns] = 0.2
+            defects[rows, columns] = True
+        config = {
+            "local_filter_size": 5,
+            "local_low_thresh": 0.5,
+            "local_high_thresh": 2.0,
+            "col_enable": False,
+        }
+
+        full = detect_bad_pixels(flat, config, using_unit_flat=False)
+
+        self.assertTrue(full[defects].all())
+        for tile_size in (8, 16, 24):
+            with self.subTest(tile_size=tile_size):
+                tiled = compute_flat_bad_mask(flat, config, tile_size=tile_size)
+                np.testing.assert_array_equal(tiled, full)
+
+    def test_tiled_column_statistics_cover_the_full_hdu(self):
+        flat = np.ones((64, 64), dtype=np.float32)
+        flat[:40, 31] = 0.2
+        config = {
+            "local_low_thresh": 0.0,
+            "local_high_thresh": 10.0,
+            "col_enable": True,
+            "col_deriv_sigma": 3.0,
+            "col_dead_thresh": 0.5,
+        }
+
+        full = detect_bad_pixels(flat, config, using_unit_flat=False)
+
+        self.assertTrue(full[:, 31].all())
+        for tile_size in (8, 16, 32):
+            with self.subTest(tile_size=tile_size):
+                tiled = compute_flat_bad_mask(flat, config, tile_size=tile_size)
+                np.testing.assert_array_equal(tiled, full)
+
+    def test_bad_column_derivative_is_attributed_to_the_deviating_column(self):
+        flat = np.broadcast_to(np.linspace(0.9, 1.1, 96, dtype=np.float32), (64, 96)).copy()
+        flat[:, 47] = 1.8
+        config = {
+            "local_low_thresh": 0.0,
+            "local_high_thresh": 10.0,
+            "col_enable": True,
+            "col_deriv_sigma": 5.0,
+            "col_dead_thresh": 0.0,
+        }
+
+        mask = detect_bad_pixels(flat, config, using_unit_flat=False)
+
+        self.assertTrue(mask[:, 47].all())
+        self.assertFalse(mask[:, :47].any())
+        self.assertFalse(mask[:, 48:].any())
+
+    def test_bad_column_attribution_handles_adjacent_and_edge_defects(self):
+        config = {
+            "local_low_thresh": 0.0,
+            "local_high_thresh": 10.0,
+            "col_enable": True,
+            "col_deriv_sigma": 5.0,
+            "col_dead_thresh": 0.0,
+        }
+        for columns, value in (((0,), 1.8), ((95,), 0.2), ((47, 48), 1.8)):
+            with self.subTest(columns=columns):
+                flat = np.broadcast_to(np.linspace(0.9, 1.1, 96, dtype=np.float32), (64, 96)).copy()
+                flat[:, columns] = value
+                expected = np.zeros(flat.shape, dtype=bool)
+                expected[:, columns] = True
+
+                mask = detect_bad_pixels(flat, config, using_unit_flat=False)
+
+                np.testing.assert_array_equal(mask, expected)
+
+    def test_tiled_local_filter_working_set_is_limited_to_core_plus_halo(self):
+        from scipy.ndimage import median_filter
+
+        shapes = []
+
+        def recording_filter(values, *args, **kwargs):
+            shapes.append(values.shape)
+            return median_filter(values, *args, **kwargs)
+
+        flat = np.ones((48, 48), dtype=np.float32)
+        config = {"local_filter_size": 5, "col_enable": False}
+        with patch("scipy.ndimage.median_filter", side_effect=recording_filter):
+            compute_flat_bad_mask(flat, config, tile_size=16)
+
+        self.assertIn((20, 20), shapes)
+        self.assertTrue(all(height <= 20 and width <= 20 for height, width in shapes))
+
+    def test_tiled_mask_allocates_only_one_full_hdu_boolean_array(self):
+        flat = np.ones((48, 64), dtype=np.float32)
+        original_zeros = np.zeros
+        full_hdu_boolean_allocations = []
+
+        def recording_zeros(shape, *args, **kwargs):
+            dtype = kwargs.get("dtype", args[0] if args else float)
+            allocation_shape = (shape,) if np.isscalar(shape) else tuple(shape)
+            if allocation_shape == flat.shape and np.dtype(dtype) == np.dtype(bool):
+                full_hdu_boolean_allocations.append(allocation_shape)
+            return original_zeros(shape, *args, **kwargs)
+
+        with patch("weightmask.bad.np.zeros", side_effect=recording_zeros):
+            compute_flat_bad_mask(flat, {"local_filter_size": 5}, tile_size=16)
+
+        self.assertEqual(full_hdu_boolean_allocations, [flat.shape])
+
     def test_detect_bad_pixels_empty_config(self):
         """Test bad pixel detection with empty configuration."""
         flat_data = np.ones((100, 100), dtype=np.float32)

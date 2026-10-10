@@ -58,7 +58,7 @@ class TestFlatBadMaskCache(unittest.TestCase):
         base = self._cache_file()
         self.assertEqual(base, self._cache_file())
         self.assertNotEqual(base, self._cache_file(hdu_index=4))
-        self.assertNotEqual(base, self._cache_file(tile_size=512))
+        self.assertEqual(base, self._cache_file(tile_size=512))
         self.assertNotEqual(base, self._cache_file(shape=(64, 97)))
         self.assertNotEqual(base, self._cache_file(flat_cfg={**self.cfg, "local_low_thresh": 0.6}))
         self.assertIsNone(self._cache_file(flat_path=None))
@@ -80,6 +80,14 @@ class TestFlatBadMaskCache(unittest.TestCase):
         self.assertEqual(spy.call_count, 1)
         np.testing.assert_array_equal(first, second)
         self.assertTrue(os.path.exists(self._cache_file()))
+
+    def test_cache_is_reused_across_tile_sizes(self):
+        flat = _flat()
+        with mock.patch.object(bad, "compute_flat_bad_mask", side_effect=bad.compute_flat_bad_mask) as spy:
+            first = bad.compute_flat_bad_mask_cached(flat, self.cfg, 16, flat_path=self.flat_path, hdu_index=3)
+            second = bad.compute_flat_bad_mask_cached(flat, self.cfg, 32, flat_path=self.flat_path, hdu_index=3)
+        self.assertEqual(spy.call_count, 1)
+        np.testing.assert_array_equal(first, second)
 
     def test_unwritable_cache_dir_warns_instead_of_failing_silently(self):
         """A read-only cache location must not hide a repeated ~20 s/HDU cost.

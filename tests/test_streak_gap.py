@@ -9,6 +9,82 @@ from weightmask.streaks import _largest_contiguous_run, _refine_trail_mask
 
 
 class TestGapTolerantStreakSupport(unittest.TestCase):
+    def test_fan_candidate_uses_its_own_spatially_varying_noise(self):
+        yy, xx = np.indices((120, 40))
+        sideband = (xx < 10) | (xx >= 30)
+        alternating = np.where((yy + xx) % 2, -1.0, 1.0).astype(np.float32)
+        low_noise = np.zeros(yy.shape, dtype=np.float32)
+        low_noise[sideband] = 0.1 * alternating[sideband]
+        low_noise[:, 16:25] += 2.0
+        high_noise = np.zeros(yy.shape, dtype=np.float32)
+        high_noise[sideband] = 10.0 * alternating[sideband]
+        high_noise[:, 20] += 5.0
+
+        def strip(sampled):
+            return {
+                "sampled": sampled,
+                "inside": np.ones(sampled.shape, dtype=bool),
+                "y_coords": yy,
+                "x_coords": xx,
+            }
+
+        strips = [strip(low_noise), strip(low_noise)] + [strip(high_noise) for _ in range(10)]
+        candidate = {"source": "houghpeaks", "clipped_endpoints": ((20, 0), (20, 119))}
+        config = {
+            "padding": 0,
+            "profile_percentile": 50,
+            "profile_sigma_threshold": 3.0,
+            "min_col_hit_fraction": 0.2,
+            "min_row_hit_fraction": 0.2,
+            "max_support_width": 4,
+        }
+        with (
+            patch("weightmask.streaks._sample_trail_strip", side_effect=strips),
+            patch("weightmask.streaks._refit_endpoints_from_strip", return_value=candidate["clipped_endpoints"]),
+        ):
+            mask, info = _refine_trail_mask(np.zeros_like(low_noise), np.ones_like(low_noise), candidate, config)
+
+        self.assertFalse(mask.any())
+        self.assertEqual(info["reject_reason"], "width_over_max")
+
+    def test_winning_fan_retains_its_recomputed_scatter_for_acceptance(self):
+        yy, xx = np.indices((120, 40))
+        sideband = (xx < 10) | (xx >= 30)
+        alternating = np.where((yy + xx) % 2, -1.0, 1.0).astype(np.float32)
+        high_noise = np.zeros(yy.shape, dtype=np.float32)
+        high_noise[sideband] = 10.0 * alternating[sideband]
+        high_noise[:, 16:25] += 50.0
+        low_noise = np.zeros(yy.shape, dtype=np.float32)
+        low_noise[sideband] = 0.1 * alternating[sideband]
+        low_noise[:, 19:22] += 1.0
+
+        def strip(sampled):
+            return {
+                "sampled": sampled,
+                "inside": np.ones(sampled.shape, dtype=bool),
+                "y_coords": yy,
+                "x_coords": xx,
+            }
+
+        strips = [strip(high_noise), strip(high_noise)] + [strip(low_noise) for _ in range(10)]
+        candidate = {"source": "houghpeaks", "clipped_endpoints": ((20, 0), (20, 119))}
+        config = {
+            "padding": 0,
+            "profile_percentile": 50,
+            "profile_sigma_threshold": 3.0,
+            "min_col_hit_fraction": 0.2,
+            "min_row_hit_fraction": 0.2,
+            "max_support_width": 4,
+        }
+        with (
+            patch("weightmask.streaks._sample_trail_strip", side_effect=strips),
+            patch("weightmask.streaks._refit_endpoints_from_strip", return_value=candidate["clipped_endpoints"]),
+        ):
+            mask, info = _refine_trail_mask(np.zeros_like(low_noise), np.ones_like(low_noise), candidate, config)
+
+        self.assertGreater(mask.sum(), 300)
+        self.assertEqual(info["support_width"], 3)
+
     def test_narrow_refit_cannot_replace_a_coherent_trail_with_a_short_fragment(self):
         rng = np.random.default_rng(0)
         yy, xx = np.indices((200, 40))

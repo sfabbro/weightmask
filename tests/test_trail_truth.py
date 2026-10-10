@@ -25,10 +25,13 @@ from benchmarks.curate_trail_truth import (
     _connected_groups,
     _normalise_normal,
     find_chip_replicas,
+    geometry_from_header,
     line_to_mosaic,
     longest_support_run,
     write_fixture,
 )
+from weightmask.contract import QualityBit
+from weightmask.mef import _streak_catalog
 
 FIXTURE = Path(__file__).resolve().parents[1] / "benchmarks" / "trail_truth" / "megacam_real_labels.json"
 MEGACAM_SHAPE = (4644, 2112)
@@ -257,6 +260,32 @@ def test_line_to_mosaic_normal_and_offset_are_consistent():
 
         xy = ccd_to_mosaic([point], chip)[0]
         assert float(normal @ xy) == pytest.approx(mosaic["offset_deg"], abs=1e-9)
+
+
+def test_pipeline_common_geometry_matches_curation_tangent_plane():
+    scale = 5.194e-05
+    header = {
+        "CTYPE1": "RA---TAN",
+        "CTYPE2": "DEC--TAN",
+        "CRVAL1": 150.0,
+        "CRVAL2": 2.0,
+        "CRPIX1": 81.0,
+        "CRPIX2": 21.0,
+        "CD1_1": -scale,
+        "CD1_2": 0.0,
+        "CD2_1": 0.0,
+        "CD2_2": scale,
+    }
+    mask = np.zeros((64, 64), np.uint32)
+    mask[np.arange(48), np.arange(48) + 8] = int(QualityBit.STREAK)
+
+    component = _streak_catalog(0, mask, header)[0]
+    reference = line_to_mosaic(
+        component["local"]["point"], component["local"]["direction"], geometry_from_header(header)
+    )
+
+    np.testing.assert_allclose(component["common"]["normal"], reference["normal"], atol=1.0e-12)
+    assert component["common"]["offset_deg"] == pytest.approx(reference["offset_deg"], abs=1.0e-12)
 
 
 def test_normalise_normal_canonicalises_sign():

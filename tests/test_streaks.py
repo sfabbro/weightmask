@@ -1,6 +1,9 @@
+import contextlib
+import io
 import unittest
 
 import numpy as np
+from scipy.ndimage import binary_dilation, label
 
 from weightmask.streaks import _drop_bright_components, _drop_premasked_components, detect_streaks
 
@@ -34,6 +37,29 @@ class TestStreaks(unittest.TestCase):
         config.update(overrides)
         return config
 
+    def _clutter_scene(self, seed, trail=False):
+        rng = np.random.default_rng(seed)
+        data_sub = np.zeros(self.shape, dtype=np.float32)
+        source = np.zeros(self.shape, dtype=bool)
+        source_signal = np.zeros(self.shape, dtype=np.float32)
+        ys = rng.integers(10, self.shape[0] - 10, size=80)
+        xs = rng.integers(10, self.shape[1] - 10, size=80)
+        for y, x in zip(ys, xs):
+            data_sub[y - 1 : y + 2, x - 1 : x + 2] += 30.0
+            source[y - 1 : y + 2, x - 1 : x + 2] = True
+            source_signal[y - 1 : y + 2, x - 1 : x + 2] += 30.0
+        truth = np.zeros(self.shape, dtype=bool)
+        if trail:
+            for x in range(20, 236):
+                y = 80 + int(0.35 * (x - 20))
+                truth[y - 1 : y + 2, x - 1 : x + 2] = True
+                data_sub[y - 1 : y + 2, x - 1 : x + 2] = 60.0
+        return data_sub, source, source_signal, truth
+
+    def _detect_quietly(self, data_sub, existing_mask, config):
+        with contextlib.redirect_stdout(io.StringIO()):
+            return detect_streaks(data_sub, self.rms, existing_mask, config)
+
     def test_detect_single_continuous_streak(self):
         data_sub = np.zeros(self.shape, dtype=np.float32)
         for x in range(20, 236):
@@ -60,21 +86,40 @@ class TestStreaks(unittest.TestCase):
         self.assertTrue(mask[140, 200] or mask[139, 200] or mask[141, 200])
 
     def test_reject_star_field_clutter_without_true_trail(self):
-        rng = np.random.default_rng(7)
-        data_sub = rng.normal(0.0, 1.0, self.shape).astype(np.float32)
-        ys = rng.integers(10, self.shape[0] - 10, size=80)
-        xs = rng.integers(10, self.shape[1] - 10, size=80)
-        data_sub[ys, xs] += 30.0
-        existing_mask = np.zeros(self.shape, dtype=bool)
-        for y, x in zip(ys, xs):
-            existing_mask[max(0, y - 1) : min(self.shape[0], y + 2), max(0, x - 1) : min(self.shape[1], x + 2)] = True
-
         config = self._config()
         config["mask_params"].update({"max_support_width": 6, "min_row_hit_fraction": 0.5})
+        for seed in range(30):
+            data_sub, source, source_signal, _truth = self._clutter_scene(seed)
+            masked = self._detect_quietly(data_sub, source, config)
+            components, n_components = label(masked, structure=np.ones((3, 3), dtype=bool))
+            largest = max((int(np.count_nonzero(components == i)) for i in range(1, n_components + 1)), default=0)
+            false_pixels_per_mpix = float(np.count_nonzero(masked)) / masked.size * 1.0e6
+            source_flux_loss = float(source_signal[masked].sum() / source_signal[source].sum())
+            self.assertLessEqual(false_pixels_per_mpix, 100.0)
+            self.assertLessEqual(largest, 100)
+            self.assertLessEqual(source_flux_loss, 0.01)
 
-        masked = detect_streaks(data_sub, self.rms, existing_mask, config)
-
-        self.assertLess(np.sum(masked), 0.35 * masked.size)
+    def test_trail_precision_and_clean_source_loss_are_bounded(self):
+        metrics = []
+        for seed in range(30):
+            data_sub, source, source_signal, truth = self._clutter_scene(seed, trail=True)
+            masked = self._detect_quietly(data_sub, source, self._config())
+            eval_truth = binary_dilation(truth, iterations=5)
+            true_positive = int(np.count_nonzero(masked & eval_truth))
+            predicted = int(np.count_nonzero(masked))
+            precision = true_positive / predicted if predicted else 0.0
+            recall = float(np.count_nonzero(masked & truth)) / np.count_nonzero(truth)
+            false_pixels_per_mpix = float(np.count_nonzero(masked & ~eval_truth)) / masked.size * 1.0e6
+            components, n_components = label(masked & ~eval_truth, structure=np.ones((3, 3), dtype=bool))
+            largest = max((int(np.count_nonzero(components == i)) for i in range(1, n_components + 1)), default=0)
+            clean_source = source & ~eval_truth
+            source_flux_loss = float(source_signal[masked & clean_source].sum() / source_signal[clean_source].sum())
+            metrics.append((precision, recall, false_pixels_per_mpix, largest, source_flux_loss))
+        self.assertGreaterEqual(min(metric[0] for metric in metrics), 0.95)
+        self.assertGreaterEqual(min(metric[1] for metric in metrics), 0.85)
+        self.assertLessEqual(max(metric[2] for metric in metrics), 250.0)
+        self.assertLessEqual(max(metric[3] for metric in metrics), 32)
+        self.assertLessEqual(max(metric[4] for metric in metrics), 0.005)
 
     def test_preserve_sparse_trail_detection_with_ransac(self):
         data_sub = np.zeros(self.shape, dtype=np.float32)
@@ -107,8 +152,8 @@ class TestPremaskedVeto(unittest.TestCase):
     """A component the pipeline already flagged is not a new finding.
 
     On real MegaCam amps the dominant false positive is a saturated star's bleed,
-    45% of whose pixels are already masked, against 2% for a real satellite
-    trail. This is the cheapest of the four ways the two classes separate: both
+    45% of whose pixels are already masked, against 2% for an unconfirmed linear
+    feature. This is the cheapest of the four ways the two classes separate: both
     masks are already in hand at that point in the pipeline.
     """
 
@@ -180,7 +225,7 @@ class TestPremaskedVeto(unittest.TestCase):
 
         repo = Path(__file__).resolve().parents[1]
         frac = yaml.safe_load(open(repo / "weightmask.yml"))["streak_masking"]["mask_params"]["max_premasked_fraction"]
-        self.assertGreater(frac, 0.02, "must not touch real trails (measured 0.02)")
+        self.assertGreater(frac, 0.02, "must not touch unconfirmed linear features (measured 0.02)")
         self.assertLess(frac, 0.45, "must catch bleed (measured 0.45)")
 
 
@@ -256,7 +301,7 @@ class TestBrightnessVeto(unittest.TestCase):
 
         repo = Path(__file__).resolve().parents[1]
         sigma = yaml.safe_load(open(repo / "weightmask.yml"))["streak_masking"]["mask_params"]["max_component_sigma"]
-        self.assertGreater(sigma, 3.2, "must not touch real trails (measured 3.0/3.2 sigma p90)")
+        self.assertGreater(sigma, 3.2, "must not touch unconfirmed linear features (measured 3.0/3.2 sigma p90)")
         self.assertLess(sigma, 155.0, "must catch bright star arm (155 sigma) and bleed (1138/1345 sigma)")
 
 

@@ -9,10 +9,14 @@ from astropy.io import fits
 
 from tests.benchmarks.download_data import validate_case_file
 from tests.benchmarks.run import (
+    _SYNTHETIC_CASE_GATES,
+    _evaluate_synthetic_case,
     _load_case_label,
     _load_quality_reference,
     _quality_gate_failures,
     _quality_validation_metrics,
+    _synthetic_case_gate_failures,
+    _synthetic_v2_cases,
     load_manifest,
     main,
     run_suite,
@@ -31,6 +35,102 @@ class TestBenchmarks(unittest.TestCase):
         self.assertEqual(summary["suite"], "synthetic_v2")
         self.assertIn("synthetic_sparse", summary["results"])
         self.assertIn("bad_pixel_stats", summary["results"]["synthetic_sparse"])
+
+    def test_ci_sized_synthetic_case_has_numerical_gates(self):
+        summary = run_suite("synthetic_v2", with_baselines=False, selected_cases={"synthetic_sparse"})
+        result = summary["results"]["synthetic_sparse"]
+        self.assertEqual(_synthetic_case_gate_failures("synthetic_sparse", result), [])
+        self.assertIn("synthetic_sparse", _SYNTHETIC_CASE_GATES)
+        self.assertIn("centerline_coverage", result["streak_stats"])
+        self.assertIn("along_trail_coverage", result["streak_stats"])
+        self.assertTrue(0.0 <= result["streak_stats"]["centerline_coverage"] <= 1.0)
+        self.assertTrue(0.0 <= result["streak_stats"]["along_trail_coverage"] <= 1.0)
+        self.assertGreaterEqual(result["streak_stats"]["false_positive_per_mpix"], 0.0)
+        self.assertGreaterEqual(result["streak_stats"]["overmask_pixels_per_truth"], 0.0)
+
+    def test_ci_sized_synthetic_each_metric_gate_is_independent(self):
+        summary = run_suite("synthetic_v2", with_baselines=False, selected_cases={"synthetic_sparse"})
+        result = summary["results"]["synthetic_sparse"]
+        mutations = {
+            "centerline_coverage": 0.0,
+            "along_trail_coverage": 0.0,
+            "false_positive_per_mpix": 1e9,
+            "overmask_pixels_per_truth": 1e9,
+            "object_recall": 0.0,
+            "bad_pixel_f1": 0.0,
+        }
+        labels = {
+            "centerline_coverage": "centerline coverage",
+            "along_trail_coverage": "along-trail coverage",
+            "false_positive_per_mpix": "false positives per Mpix",
+            "overmask_pixels_per_truth": "overmask pixels per truth",
+            "object_recall": "object recall",
+            "bad_pixel_f1": "bad-pixel F1",
+        }
+        for metric, value in mutations.items():
+            mutated = {
+                **result,
+                "streak_stats": {**result["streak_stats"]},
+                "weightmask": {**result["weightmask"]},
+                "bad_pixel_stats": {**result["bad_pixel_stats"]},
+            }
+            if metric in {
+                "centerline_coverage",
+                "along_trail_coverage",
+                "false_positive_per_mpix",
+                "overmask_pixels_per_truth",
+            }:
+                mutated["streak_stats"][metric] = value
+            elif metric == "object_recall":
+                mutated["weightmask"]["Objects"] = (mutated["weightmask"]["Objects"][0], value)
+            else:
+                mutated["bad_pixel_stats"]["f1"] = value
+            failures = _synthetic_case_gate_failures("synthetic_sparse", mutated)
+            self.assertTrue(any(labels[metric] in failure for failure in failures), metric)
+
+    def test_ci_sized_synthetic_nonfinite_and_missing_gate_fail(self):
+        summary = run_suite("synthetic_v2", with_baselines=False, selected_cases={"synthetic_sparse"})
+        result = summary["results"]["synthetic_sparse"]
+        for metric in (
+            "centerline_coverage",
+            "along_trail_coverage",
+            "false_positive_per_mpix",
+            "overmask_pixels_per_truth",
+        ):
+            mutated = {**result, "streak_stats": {**result["streak_stats"], metric: np.nan}}
+            self.assertTrue(_synthetic_case_gate_failures("synthetic_sparse", mutated))
+        self.assertEqual(
+            set(_SYNTHETIC_CASE_GATES["synthetic_sparse"]),
+            {
+                "centerline_coverage_min",
+                "along_trail_coverage_min",
+                "false_positive_per_mpix_max",
+                "overmask_pixels_per_truth_max",
+                "object_recall_min",
+                "bad_pixel_f1_min",
+            },
+        )
+        for gate_name in _SYNTHETIC_CASE_GATES["synthetic_sparse"]:
+            reduced = {
+                key: value for key, value in _SYNTHETIC_CASE_GATES["synthetic_sparse"].items() if key != gate_name
+            }
+            with patch.dict(_SYNTHETIC_CASE_GATES, {"synthetic_sparse": reduced}):
+                failures = _synthetic_case_gate_failures("synthetic_sparse", result)
+            self.assertTrue(any(gate_name in failure for failure in failures), gate_name)
+
+    def test_ci_sized_synthetic_floors_hold_across_fixed_seeds(self):
+        case = next(case for case in _synthetic_v2_cases() if case["name"] == "synthetic_sparse")
+        observed = []
+        for seed in (11, 12, 13):
+            seeded = {**case, "seed": seed}
+            result, _ = _evaluate_synthetic_case(seeded)
+            observed.append(result)
+            self.assertFalse(_synthetic_case_gate_failures("synthetic_sparse", result), seed)
+        for metric in ("centerline_coverage", "along_trail_coverage"):
+            self.assertGreaterEqual(
+                min(result["streak_stats"][metric] for result in observed),
+                _SYNTHETIC_CASE_GATES["synthetic_sparse"][f"{metric}_min"],
+            )
 
     def test_validate_case_file_rejects_wrong_instrument(self):
         with tempfile.TemporaryDirectory() as tmpdir:

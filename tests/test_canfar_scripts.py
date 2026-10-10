@@ -1,5 +1,6 @@
 """Exercise CANFAR orchestration locally, without submissions or benchmarks."""
 
+import hashlib
 import importlib.util
 import json
 import os
@@ -10,6 +11,7 @@ import unittest
 from pathlib import Path
 
 import numpy as np
+import pytest
 from astropy.io import fits
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -62,7 +64,15 @@ class TestCanfarScripts(unittest.TestCase):
                     "E5",
                     job["tag"],
                 ],
-                env=dict(self.env, MANIFEST_SHA="fixture", OMP_NUM_THREADS="9", MKL_NUM_THREADS="9"),
+                env=dict(
+                    self.env,
+                    MANIFEST_SHA=manifest["code"]["pinned_sha"],
+                    MANIFEST_FILE_SHA=hashlib.sha256(
+                        (ROOT / "benchmarks/canfar_experiments/manifest.json").read_bytes()
+                    ).hexdigest(),
+                    OMP_NUM_THREADS="9",
+                    MKL_NUM_THREADS="9",
+                ),
                 capture_output=True,
                 text=True,
             )
@@ -93,6 +103,52 @@ esac
             self.assertEqual(sum(line.startswith("create ") for line in calls), 2)
             self.assertEqual(sum(line.startswith("info ") for line in calls), 0 if no_wait else 2)
 
+    def test_setup_dry_run_keeps_current_runner_separate_from_science_checkout(self):
+        self.executable(
+            "canfar",
+            """echo "$*" >> "$LOG"
+case "$1" in
+  create)
+    case "$*" in
+      *"git clone"*)
+        if [ -f "$LOG.state" ]; then exit 1; fi
+        printf '%s' stale > "$LOG.state";;
+      *"git fetch origin"*) printf '%s' fetched > "$LOG.state";;
+      *"checkout -B runner origin/main"*)
+        test "$(cat "$LOG.state")" = fetched
+        printf '%s' runner-origin-main > "$LOG.state";;
+      *"rev-parse HEAD"*) test "$(cat "$LOG.state")" = runner-origin-main;;
+    esac
+    echo "ID: setup$(date +%s%N)";;
+  info) echo 'Status: Completed';;
+esac
+""",
+        )
+        bootstrap = self.work / "bootstrap"
+        setup_env = dict(self.env, PROJECT_MOUNT=str(self.work), BOOTSTRAP=str(bootstrap))
+        for _ in range(2):
+            result = subprocess.run(
+                ["bash", str(SCRIPTS / "submit_all.sh"), "setup"],
+                env=setup_env,
+                capture_output=True,
+                text=True,
+            )
+            self.assertEqual(result.returncode, 0, result.stderr)
+        calls = Path(self.env["LOG"]).read_text().splitlines()
+        creates = [line for line in calls if line.startswith("create ")]
+        self.assertIn("git clone https://github.com/astroai/weightmask.git", creates[0])
+        self.assertIn("git -C " + str(bootstrap) + " checkout -B runner origin/main", creates[2])
+        self.assertIn("git -C " + str(bootstrap) + " grep -F wm27-provenance-v2", creates[4])
+        self.assertIn(
+            "git -C "
+            + str(bootstrap)
+            + " ls-files --error-unmatch benchmarks/canfar/run_one.sh benchmarks/canfar/manifest.py",
+            creates[5],
+        )
+        self.assertNotIn("cc1d7caf", "\n".join(creates))
+        self.assertEqual((Path(self.env["LOG"] + ".state")).read_text(), "runner-origin-main")
+        self.assertIn("bootstrap exists; reusing", result.stdout)
+
     def test_mask_identity_covers_all_hdus_and_matches_exposures(self):
         repo = self.work / "repo"
         perf = repo / "test_outputs/perf"
@@ -103,7 +159,17 @@ esac
         result.mkdir(parents=True)
         control = result.parent / "E0-w8"
         control.mkdir()
-        (job / "group.json").write_text(json.dumps({"job": {"workers": 1}, "group": {"safe_ids": ["a", "b"]}}))
+        (job / "group.json").write_text(
+            json.dumps(
+                {
+                    "job": {"workers": 1},
+                    "group": {"safe_ids": ["a", "b"]},
+                    "manifest_sha256": "m" * 64,
+                    "manifest_status": "historical",
+                    "code_pinned_sha": "c" * 40,
+                }
+            )
+        )
         (perf / "megacam_perf_E5-pinned.json").write_text(json.dumps({"per_exposure": [{"wall_s": 1, "cpu_s": 1}]}))
         zero = np.zeros((3, 4), np.uint8)
         for exposure in ("a", "b"):
@@ -124,6 +190,12 @@ esac
         run = subprocess.run(
             [sys.executable, "-c", block, str(job), str(result), "E5", "pinned", "0"],
             cwd=repo,
+            env=dict(
+                self.env,
+                CHECKOUT_REF="fixture-ref",
+                CHECKOUT_SHA="c" * 40,
+                RUN_ONE_VERSION="wm27-provenance-v2",
+            ),
             capture_output=True,
             text=True,
         )
@@ -133,6 +205,12 @@ esac
         self.assertFalse(metrics["mask_diff"]["identical"])
         self.assertEqual(set(metrics["mask_checksums"]), {"a", "b"})
         self.assertEqual(metrics["mask_checksum_scope"], "all-image-hdus-v1")
+        self.assertEqual(metrics["manifest_sha256"], "m" * 64)
+        self.assertEqual(metrics["manifest_status"], "historical")
+        self.assertEqual(metrics["code_pinned_sha"], "c" * 40)
+        self.assertEqual(metrics["run_one_version"], "wm27-provenance-v2")
+        self.assertEqual(metrics["checkout_ref"], "fixture-ref")
+        self.assertEqual(metrics["checkout_sha"], "c" * 40)
 
     def test_aggregate_does_not_claim_legacy_or_swapped_identity(self):
         spec = importlib.util.spec_from_file_location("aggregate", SCRIPTS / "aggregate.py")
@@ -182,6 +260,156 @@ esac
         )
         self.assertNotEqual(result.returncode, 0)
         self.assertIn("per-exposure mapping", result.stderr)
+
+    def test_manifest_rejects_removed_parameters(self):
+        from benchmarks.canfar.manifest import validate_manifest
+
+        manifest = json.loads((ROOT / "benchmarks/canfar_experiments/manifest.json").read_text())
+        with pytest.raises(ValueError, match="Unsupported configuration key") as raised:
+            validate_manifest(manifest, "E3")
+        self.assertIn("mrt_rescue_params", str(raised.value))
+        self.assertIn("satdet_params", str(raised.value))
+
+    def test_manifest_accepts_canonical_override_keys(self):
+        from benchmarks.canfar.manifest import validate_manifest
+
+        manifest = json.loads((ROOT / "benchmarks/canfar_experiments/manifest.json").read_text())
+        manifest["groups"][0]["config_set"] = {
+            "cosmic_ray.dilation_radius": 2,
+            "variance.method": "rms_map",
+        }
+        validate_manifest(manifest, "E0")
+
+    def test_manifest_rejects_unresolved_e0_and_multiflat_e7(self):
+        from benchmarks.canfar.manifest import validate_manifest
+
+        manifest = json.loads((ROOT / "benchmarks/canfar_experiments/manifest.json").read_text())
+        manifest["groups"][0]["safe_ids"] = ["TBD"]
+        with pytest.raises(ValueError, match="E0 group has unresolved inputs"):
+            validate_manifest(manifest, "E0")
+        with pytest.raises(ValueError, match="E7 multiple flats"):
+            validate_manifest(manifest, "E7")
+
+    def test_manifest_rejects_paired_id_cardinality_mismatch(self):
+        from benchmarks.canfar.manifest import validate_manifest
+
+        manifest = json.loads((ROOT / "benchmarks/canfar_experiments/manifest.json").read_text())
+        manifest["groups"][0]["publisherIDs"] = []
+        with pytest.raises(ValueError, match="safe_ids/publisherIDs cardinality mismatch"):
+            validate_manifest(manifest, "E0")
+
+    def test_download_checks_cardinality_before_pairing_ids(self):
+        source = (SCRIPTS / "run_one.sh").read_text()
+        self.assertLess(
+            source.index("safe_ids/publisherIDs cardinality mismatch before download"),
+            source.index('zip(grp["publisherIDs"], grp["safe_ids"])'),
+        )
+
+    def test_manifest_rejects_unresolved_e8(self):
+        from benchmarks.canfar.manifest import validate_manifest
+
+        manifest = json.loads((ROOT / "benchmarks/canfar_experiments/manifest.json").read_text())
+        with pytest.raises(ValueError, match="E8.*unresolved"):
+            validate_manifest(manifest, "E8")
+
+    def test_manifest_accepts_resolved_e8(self):
+        from benchmarks.canfar.manifest import validate_manifest
+
+        manifest = json.loads((ROOT / "benchmarks/canfar_experiments/manifest.json").read_text())
+        group = next(group for group in manifest["groups"] if group["exp_id"] == "E8")
+        group.update(
+            {
+                "safe_ids": ["1030000p"],
+                "publisherIDs": ["ivo://cadc.nrc.ca/CFHT?1030000/1030000p"],
+                "flat_safe_ids": ["08Bm02.flat.g.36.02"],
+                "flat_publisherIDs": ["ivo://cadc.nrc.ca/CFHT?08Bm02.flat.g.36.02/08Bm02.flat.g.36.02"],
+                "flat_paths": ["08Bm02.flat.g.36.02.fits.fz"],
+            }
+        )
+        validate_manifest(manifest, "E8")
+
+    def test_manifest_is_pinned_historical_and_hash_is_content_hash(self):
+        from benchmarks.canfar.manifest import manifest_sha256
+
+        path = ROOT / "benchmarks/canfar_experiments/manifest.json"
+        manifest = json.loads(path.read_text())
+        self.assertEqual(manifest["status"], "historical")
+        self.assertTrue(manifest["historical"])
+        self.assertTrue(manifest["pinned"])
+        self.assertEqual(manifest_sha256(path), hashlib.sha256(path.read_bytes()).hexdigest())
+        self.assertEqual(
+            manifest["runner"]["sha256"], hashlib.sha256((SCRIPTS / "run_one.sh").read_bytes()).hexdigest()
+        )
+        self.assertEqual(
+            manifest["runner"]["validator_sha256"], hashlib.sha256((SCRIPTS / "manifest.py").read_bytes()).hexdigest()
+        )
+
+    def test_run_one_and_setup_pin_provenance_version(self):
+        run_one = (SCRIPTS / "run_one.sh").read_text()
+        submit_all = (SCRIPTS / "submit_all.sh").read_text()
+        self.assertIn('RUN_ONE_VERSION="wm27-provenance-v2"', run_one)
+        self.assertIn("manifest_sha256=", run_one)
+        self.assertIn("checkout_sha=", run_one)
+        self.assertIn("VALIDATOR_SHA256", run_one)
+        self.assertIn("wm27-provenance-v2", submit_all)
+
+    def test_run_one_rejects_code_or_manifest_hash_mismatch(self):
+        prefix = (SCRIPTS / "run_one.sh").read_text().split('git clone "$REPO_URL"')[0]
+        prefix = prefix.replace('BOOTSTRAP="$(cd "$(dirname "$0")/../.." && pwd)"', f'BOOTSTRAP="{ROOT}"')
+        manifest = json.loads((ROOT / "benchmarks/canfar_experiments/manifest.json").read_text())
+        for env_updates, expected in (
+            ({"MANIFEST_SHA": "wrong"}, "manifest code SHA mismatch"),
+            (
+                {
+                    "MANIFEST_SHA": manifest["code"]["pinned_sha"],
+                    "MANIFEST_FILE_SHA": "0" * 64,
+                },
+                "manifest file SHA mismatch",
+            ),
+            (
+                {
+                    "MANIFEST_SHA": manifest["code"]["pinned_sha"],
+                    "VALIDATOR_SHA256": "0" * 64,
+                },
+                "validator SHA mismatch",
+            ),
+        ):
+            result = subprocess.run(
+                ["bash", "-c", prefix, "run_one.sh", "E0", "w8"],
+                env=dict(self.env, **env_updates),
+                capture_output=True,
+                text=True,
+            )
+            self.assertNotEqual(result.returncode, 0)
+            self.assertIn(expected, result.stderr)
+
+    def test_submit_rejects_mutated_manifest_before_canfar_create(self):
+        self.executable("canfar", 'echo called >> "$LOG"\n')
+        path = self.work / "manifest.json"
+        manifest = json.loads((ROOT / "benchmarks/canfar_experiments/manifest.json").read_text())
+        manifest["groups"][-1]["safe_ids"] = ["TBD"]
+        path.write_text(json.dumps(manifest))
+        result = subprocess.run(
+            ["bash", str(SCRIPTS / "submit_all.sh"), "e8"],
+            env=dict(self.env, MANIFEST_PATH=str(path)),
+            capture_output=True,
+            text=True,
+        )
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("E8 group has unresolved inputs", result.stderr + result.stdout)
+        self.assertFalse(Path(self.env["LOG"]).exists())
+
+    def test_submit_rejects_historical_removed_parameter_group(self):
+        self.executable("canfar", 'echo called >> "$LOG"\n')
+        result = subprocess.run(
+            ["bash", str(SCRIPTS / "submit_all.sh"), "submit", "E3"],
+            env=self.env,
+            capture_output=True,
+            text=True,
+        )
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("Unsupported configuration key", result.stderr + result.stdout)
+        self.assertFalse(Path(self.env["LOG"]).exists())
 
     def test_speed_floor_requires_the_same_input_cell(self):
         spec = importlib.util.spec_from_file_location("aggregate", SCRIPTS / "aggregate.py")

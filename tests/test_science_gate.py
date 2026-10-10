@@ -29,6 +29,25 @@ class TestScienceGateSkip(unittest.TestCase):
         self.assertIn("not a pass", text)
         self.assertNotIn("status: passed", text)
 
+    def test_missing_fits_emits_release_evidence_manifest(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            out = os.path.join(tmp, "science-gate.md")
+            manifest = os.path.join(tmp, "science-gate.json")
+            code = main(["--data-dir", tmp, "--out", out, "--manifest", manifest, "--version", "0.2.1"])
+            self.assertEqual(code, 0)
+            evidence = json.loads(open(manifest).read())
+        self.assertEqual(evidence["status"], "skipped")
+        self.assertEqual(evidence["version"], "0.2.1")
+        self.assertIn("commit_sha", evidence)
+        self.assertIn("config_sha", evidence)
+        self.assertIn("input_manifest_sha", evidence)
+        self.assertIn("metric_revisions", evidence)
+        self.assertIn("command", evidence)
+        self.assertIn("timestamp", evidence)
+        self.assertIn("data_ids", evidence)
+        self.assertEqual(evidence["real_trail_recall"], "n/a")
+        self.assertEqual(evidence["scope_exclusions"], ["real_trail_recall"])
+
     def test_injection_rejects_empty_malformed_or_nonfinite_metrics(self):
         header = "dashed\trecall\trecall5\n"
         for body in ("", "false\tnan\t1\n", "false\t1\tinf\n", "false\t1\n", "false\tbad\t1\n", "false\t2\t1\n"):
@@ -107,6 +126,9 @@ def test_gate_uses_fixture_paths_unless_data_directory_is_explicit(tmp_path, rel
         patch.object(scorer, "run_detector", return_value=np.zeros(data.shape, bool)),
     ):
         assert main(["--out", str(out), *(["--data-dir", str(data_dir)] if relocate else [])]) == 0
+    manifest = tmp_path / "test_outputs" / "harness" / "science-gate.json"
+    assert manifest.is_file()
+    assert json.loads(manifest.read_text())["scope_exclusions"] == ["real_trail_recall"]
     report = json.loads((out.parent / "trail_truth.score.json").read_text())
     assert report["totals"]["streaks"]["artefact_entries"] == 1
     assert not report["skipped"]
