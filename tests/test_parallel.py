@@ -203,6 +203,91 @@ class TestParallelEquivalence(unittest.TestCase):
             # len() on an already-closed fitsio handle.
             self.assertNotIn("NoneType", log)
 
+    def test_short_keepmap_mef_fails_loudly_instead_of_dropping_the_flags(self):
+        """A keep-map shorter than the science MEF must not degrade silently.
+
+        The keep-map carries the BAD flags the instrument already knew about.
+        With the keep-map dropped for the affected CCDs the run still reports
+        success, and the products look complete while ignoring every pixel
+        upstream had flagged.
+        """
+        with tempfile.TemporaryDirectory() as tmp:
+            sp = os.path.join(tmp, "sci.fits")
+            bp = os.path.join(tmp, "keep_one.fits")
+            shape = (48, 48)
+            _write_mef(sp, 3, shape=shape)
+            fitsio.write(bp, np.ones(shape, dtype=np.uint8), clobber=True)
+            paths = {
+                "out_map_path": os.path.join(tmp, "o.weight.fits"),
+                "out_mask_path": os.path.join(tmp, "o.mask.fits"),
+                "out_invvar_path": None,
+                "out_sky_path": None,
+                "out_weight_raw_path": None,
+                "individual_mask_paths": {},
+            }
+            args = Namespace(tile_size=1024, individual_masks=False, max_workers=1)
+            cfg = _load_cfg()
+            buf = io.StringIO()
+            with fitsio.FITS(sp) as hi, fitsio.FITS(bp) as hb:
+                with contextlib.redirect_stdout(buf):
+                    n = process_all_hdus(
+                        [1, 2, 3],
+                        hi,
+                        None,
+                        cfg,
+                        paths,
+                        args,
+                        input_path=sp,
+                        hdul_badpix=hb,
+                        badpix_path=bp,
+                    )
+            self.assertEqual(n, 0)
+            # Refusing to process must also refuse to publish: a partial
+            # product would look like a successful run of a shorter exposure.
+            self.assertFalse(os.path.exists(paths["out_map_path"]))
+            self.assertFalse(os.path.exists(paths["out_mask_path"]))
+            # Without this the test also passes when the keep-map check is gone
+            # entirely and some unrelated downstream error happens to fail the
+            # HDU, which is not the property being pinned.
+            self.assertIn("keep-map", buf.getvalue())
+
+    def test_short_keepmap_mef_reports_why(self):
+        """The keep-map failure must name the length mismatch."""
+        with tempfile.TemporaryDirectory() as tmp:
+            sp = os.path.join(tmp, "sci.fits")
+            bp = os.path.join(tmp, "keep_one.fits")
+            shape = (48, 48)
+            _write_mef(sp, 3, shape=shape)
+            fitsio.write(bp, np.ones(shape, dtype=np.uint8), clobber=True)
+            paths = {
+                "out_map_path": os.path.join(tmp, "o.weight.fits"),
+                "out_mask_path": os.path.join(tmp, "o.mask.fits"),
+                "out_invvar_path": None,
+                "out_sky_path": None,
+                "out_weight_raw_path": None,
+                "individual_mask_paths": {},
+            }
+            args = Namespace(tile_size=1024, individual_masks=False, max_workers=1)
+            cfg = _load_cfg()
+            buf = io.StringIO()
+            with fitsio.FITS(sp) as hi, fitsio.FITS(bp) as hb:
+                with contextlib.redirect_stdout(buf):
+                    process_all_hdus(
+                        [1, 2, 3],
+                        hi,
+                        None,
+                        cfg,
+                        paths,
+                        args,
+                        input_path=sp,
+                        hdul_badpix=hb,
+                        badpix_path=bp,
+                    )
+            log = buf.getvalue()
+            self.assertIn("keep-map", log)
+            self.assertIn("HDU(s), need index", log)
+            self.assertNotIn("NoneType", log)
+
     def test_short_dark_mef_warns_instead_of_silently_skipping(self):
         with tempfile.TemporaryDirectory() as tmp:
             sp = os.path.join(tmp, "sci.fits")
