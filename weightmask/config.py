@@ -388,28 +388,41 @@ CONFIG_SCHEMA = {
 }
 
 
+# One phrase per rule kind, so a missing value and a wrong-typed value are
+# described the same way. Falling back to the raw kind keeps an unknown rule
+# name reporting something rather than raising on the error path.
+_KIND_DESCRIPTIONS = {
+    "boolean": "a boolean",
+    "integer": "an integer",
+    "number": "a number",
+    "string": "a non-empty string",
+    "keywords": "a header keyword string or non-empty list of strings",
+}
+
+
 def _type_error(path, expected):
     return f"'{path}' must be {expected}."
 
 
 def _validate_rule(value, rule, path):
+    description = _KIND_DESCRIPTIONS.get(rule.kind, rule.kind)
     if value is None:
-        return [] if rule.nullable else [_type_error(path, rule.kind)]
+        return [] if rule.nullable else [_type_error(path, description)]
     if rule.kind == "boolean":
         if not isinstance(value, (bool, np.bool_)):
-            return [_type_error(path, "a boolean")]
+            return [_type_error(path, description)]
         return []
     if rule.kind == "integer":
         if isinstance(value, (bool, np.bool_)) or not isinstance(value, Integral):
-            return [_type_error(path, "an integer")]
+            return [_type_error(path, description)]
     elif rule.kind == "number":
         if isinstance(value, (bool, np.bool_)) or not isinstance(value, Real):
-            return [_type_error(path, "a number")]
+            return [_type_error(path, description)]
         if not np.isfinite(value):
             return [f"'{path}' must be finite."]
     elif rule.kind == "string":
         if not isinstance(value, str) or not value:
-            return [_type_error(path, "a non-empty string")]
+            return [_type_error(path, description)]
     elif rule.kind == "keywords":
         values = [value] if isinstance(value, str) else value
         if (
@@ -417,14 +430,18 @@ def _validate_rule(value, rule, path):
             or not values
             or not all(isinstance(item, str) and item for item in values)
         ):
-            return [_type_error(path, "a header keyword string or non-empty list of strings")]
+            return [_type_error(path, description)]
         return []
     else:
         return [f"Internal validation error for '{path}'."]
 
     compared = value.casefold() if rule.casefold and isinstance(value, str) else value
     if rule.choices is not None and compared not in rule.choices:
-        allowed = ", ".join(map(repr, sorted(rule.choices, key=str)))
+        try:
+            ordered = sorted(rule.choices)
+        except TypeError:  # heterogeneous choices have no natural order
+            ordered = sorted(rule.choices, key=str)
+        allowed = ", ".join(map(repr, ordered))
         return [f"'{path}' must be one of {allowed}."]
     if rule.minimum is not None:
         invalid = value <= rule.minimum if rule.exclusive_minimum else value < rule.minimum
