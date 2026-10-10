@@ -467,8 +467,16 @@ class TestCheckTaskIsWiredUp(unittest.TestCase):
         self.assertIn("release-check", tasks, "the workflow calls `pixi run release-check`")
 
     def test_the_check_runs_and_reports_on_this_tree(self):
-        """It must not crash. It is expected to refuse: the tree is dirty and
-        0.2.0 is already tagged, and a refusal is the correct answer here."""
+        """It must not crash and must end with one explicit verdict for this
+        tree's version. All three are legitimate depending on state: a dirty
+        tree is NOT RELEASABLE, a clean tree without a qualified evidence
+        manifest is an unqualified dry run, and a clean tree with matching
+        passed evidence is releasable. This ran green only while the tree was
+        dirty, so the unqualified verdict -- the state a clean release tree
+        reaches without evidence -- was never actually exercised."""
+        import tomllib
+
+        declared = tomllib.loads((REPO / "pyproject.toml").read_text())["project"]["version"]
         result = subprocess.run(
             [sys.executable, "benchmarks/release_check.py", "--skip-build"],
             cwd=REPO,
@@ -476,10 +484,13 @@ class TestCheckTaskIsWiredUp(unittest.TestCase):
             text=True,
         )
         self.assertIn(result.returncode, (0, 1), result.stdout + result.stderr)
+        verdict = re.search(r"^(releasable|unqualified dry run): (\S+)|^NOT RELEASABLE", result.stdout, re.M)
         self.assertTrue(
-            re.search(r"^(releasable: \S+|NOT RELEASABLE)", result.stdout, re.M),
+            verdict,
             "the script must end with an explicit verdict and version:\n" + result.stdout[-1500:],
         )
+        if verdict.group(2):
+            self.assertEqual(verdict.group(2), declared, "the verdict must name the version under check")
 
     def test_output_directory_does_not_delete_existing_files(self):
         with tempfile.TemporaryDirectory() as tmp:
