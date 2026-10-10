@@ -5,10 +5,12 @@ from contextlib import contextmanager
 from typing import Optional, Tuple
 
 import numpy as np
+from scipy.ndimage import gaussian_filter
 
 from . import MASK_BITS, MASK_DTYPE
 from .background import estimate_background
 from .bad import compute_flat_bad_mask, detect_non_illuminated
+from .config import CONFIG_SCHEMA, configuration_errors
 from .cosmics import detect_cosmic_rays
 from .objects import detect_objects
 from .satur import detect_saturated_pixels, grow_bleed_trails
@@ -27,161 +29,32 @@ def _timed(store: dict, key: str):
         store[key] = float(store.get(key, 0.0)) + (_time.perf_counter() - t0)
 
 
+def _format_sky_output(sky_map, output_params, mesh_box):
+    sky_cards = {}
+    if str((output_params or {}).get("sky_format", "full")).lower() != "mesh":
+        return sky_map, sky_cards
+    if mesh_box is None:
+        print("    WARNING: sky_format=mesh but no SEP box available; writing full sky map.")
+        return sky_map, sky_cards
+    from .background import sky_to_mesh
+
+    sky_out, sky_cards = sky_to_mesh(sky_map, mesh_box)
+    print(f"    Sky mesh product: {sky_out.shape} (box={mesh_box})")
+    return sky_out, sky_cards
+
+
 def validate_config(config: dict) -> bool:
-    """Validate configuration parameters."""
+    """Validate configuration parameters through the canonical nested schema."""
     if not isinstance(config, dict):
         print("ERROR: Configuration must be a dictionary.")
         return False
-    # These sections all have defaults, so a config omitting them still validates;
-    # they are flagged for visibility, not enforced.
-    optional_sections = [
-        "flat_masking",
-        "saturation",
-        "sep_background",
-        "cosmic_ray",
-        "sep_objects",
-        "streak_masking",
-        "variance",
-        "confidence_params",
-        "output_params",
-    ]
-    allowed_sections = set(optional_sections) | {"dark_masking"}
-    for section in optional_sections:
-        if section not in config:
+    errors = configuration_errors(config)
+    for section in CONFIG_SCHEMA:
+        if section != "dark_masking" and section not in config:
             print(f"WARNING: Configuration section '{section}' missing; defaults will be used.")
-
-    extra_sections = sorted(set(config) - allowed_sections, key=str)
-    if extra_sections:
-        print(f"ERROR: Unsupported top-level configuration sections: {', '.join(map(str, extra_sections))}")
-        return False
-
-    dict_sections = [
-        "flat_masking",
-        "saturation",
-        "sep_background",
-        "cosmic_ray",
-        "sep_objects",
-        "streak_masking",
-        "variance",
-        "confidence_params",
-        "output_params",
-        "dark_masking",
-    ]
-    for section in dict_sections:
-        if section in config and not isinstance(config[section], dict):
-            print(f"ERROR: '{section}' section must be a dictionary.")
-            return False
-
-    if "dark_masking" in config:
-        dark = config["dark_masking"]
-        unsupported = sorted(set(dark) - {"hot_sigma"}, key=str)
-        if unsupported:
-            print("ERROR: Unsupported dark_masking keys: " + ", ".join(map(str, unsupported)))
-            return False
-        try:
-            hot_sigma = float(dark.get("hot_sigma", 8.0))
-        except (TypeError, ValueError):
-            hot_sigma = np.nan
-        if isinstance(dark.get("hot_sigma"), bool) or not np.isfinite(hot_sigma) or hot_sigma <= 0:
-            print("ERROR: 'dark_masking.hot_sigma' must be finite and positive.")
-            return False
-
-    if "method" in config.get("saturation", {}):
-        print("ERROR: 'saturation.method' is unsupported; saturation uses the guarded histogram cascade.")
-        return False
-
-    if "variance" in config:
-        var_method = config["variance"].get("method", "theoretical")
-        if var_method not in ["theoretical", "rms_map", "empirical_fit"]:
-            print(f"ERROR: Invalid variance method '{var_method}'.")
-            return False
-        obsolete = sorted(_OBSOLETE_VARIANCE_KEYS & config["variance"].keys())
-        if obsolete:
-            print("ERROR: Unsupported variance keys: " + ", ".join(obsolete))
-            return False
-        for key, default, positive in (("default_gain", 1.0, True), ("default_rdnoise", 0.0, False)):
-            value = config["variance"].get(key, default)
-            try:
-                number = float(value)
-            except (TypeError, ValueError):
-                number = np.nan
-            if isinstance(value, bool) or not np.isfinite(number) or (number <= 0 if positive else number < 0):
-                print(f"ERROR: 'variance.{key}' must be finite and {'positive' if positive else 'non-negative'}.")
-                return False
-
-        misplaced_flat_keys = {
-            "local_filter_size",
-            "local_low_thresh",
-            "local_high_thresh",
-            "col_enable",
-            "col_deriv_sigma",
-            "col_dead_thresh",
-        }
-        wrong_place = sorted(misplaced_flat_keys & set(config["variance"]))
-        if wrong_place:
-            print(
-                "ERROR: Bad-pixel tuning keys must be under 'flat_masking', not 'variance': " + ", ".join(wrong_place)
-            )
-            return False
-
-    if "sep_background" in config:
-        background_method = config["sep_background"].get("method", "sep")
-        if background_method not in ["sep", "median_filter", "robust_median_fallback"]:
-            print(f"ERROR: Invalid background method '{background_method}'.")
-            return False
-
-    if "streak_masking" in config:
-        try:
-            _resolve_streak_mode(config["streak_masking"])
-        except ValueError as error:
-            print(f"ERROR: {error}")
-            return False
-    for _sec, _key in (
-        ("variance", "gain_keyword"),
-        ("variance", "rdnoise_keyword"),
-        ("saturation", "keyword"),
-    ):
-        _cfg_sec = config.get(_sec, {}) if isinstance(config.get(_sec, {}), dict) else {}
-        if _key in _cfg_sec:
-            _v = _cfg_sec[_key]
-            _ok = isinstance(_v, str) or (isinstance(_v, (list, tuple)) and all(isinstance(_k, str) for _k in _v))
-            if not _ok:
-                print(f"ERROR: '{_sec}.{_key}' must be a header keyword string or list of strings.")
-                return False
-    _op = config.get("output_params", {}) if isinstance(config.get("output_params", {}), dict) else {}
-    if _op.get("output_map_format", "weight") not in ("weight", "confidence"):
-        print("ERROR: 'output_params.output_map_format' must be 'weight' or 'confidence'.")
-        return False
-    if "mask_detected_in_weight" in _op and not isinstance(_op["mask_detected_in_weight"], bool):
-        print("ERROR: 'output_params.mask_detected_in_weight' must be a boolean.")
-        return False
-    if "mask_bitpix" in _op and _op["mask_bitpix"] not in (8, 16, 32, 64):
-        print("ERROR: 'output_params.mask_bitpix' must be one of 8/16/32/64.")
-        return False
-    if "ivar_bitpix" in _op and _op["ivar_bitpix"] not in (32, 64, -32, -64):
-        print("ERROR: 'output_params.ivar_bitpix' must be one of 32/64/-32/-64 (FITS has no float16 image type).")
-        return False
-    if "compress" in _op and not isinstance(_op["compress"], bool):
-        print("ERROR: 'output_params.compress' must be a boolean.")
-        return False
-    if "sky_format" in _op and str(_op["sky_format"]).lower() not in ("full", "mesh"):
-        print("ERROR: 'output_params.sky_format' must be 'full' or 'mesh'.")
-        return False
-    conf = config.get("confidence_params", {})
-    if conf.get("normalize_scope", "per_hdu") not in ("per_hdu", "per_exposure"):
-        print("ERROR: 'confidence_params.normalize_scope' must be 'per_hdu' or 'per_exposure'.")
-        return False
-    percentile = conf.get("normalize_percentile", 99.0)
-    if not isinstance(percentile, (int, float)) or isinstance(percentile, bool) or not 0 < percentile <= 100:
-        print("ERROR: 'confidence_params.normalize_percentile' must be in (0, 100].")
-        return False
-    if "scale_to_100" in conf and not isinstance(conf["scale_to_100"], bool):
-        print("ERROR: 'confidence_params.scale_to_100' must be a boolean.")
-        return False
-    if conf.get("dtype", "float32") not in ("float16", "float32", "float64"):
-        print("ERROR: 'confidence_params.dtype' must be 'float16', 'float32', or 'float64'.")
-        return False
-    return True
+    for error in errors:
+        print(f"ERROR: {error}")
+    return not errors
 
 
 def _first_present_keyword(header, key_cfg):
@@ -206,6 +79,34 @@ def _first_present_keyword(header, key_cfg):
         if v is not None:
             return k
     return None
+
+
+def _detection_background_views(sky_cal, rms_cal, candidate_mask, mesh_box):
+    """Build detector-only sky/RMS views from calibrated maps."""
+    sky_det = np.array(sky_cal, copy=True)
+    rms_det = np.array(rms_cal, copy=True)
+    support = np.asarray(candidate_mask, dtype=bool)
+    if not np.any(support):
+        return sky_det, rms_det
+    sigma = max(float(mesh_box), 1.0)
+    outside = (~support) & np.isfinite(sky_cal)
+    weights = gaussian_filter(outside.astype(np.float32), sigma=sigma, mode="nearest")
+    values = gaussian_filter(np.where(outside, sky_cal, 0.0).astype(np.float32), sigma=sigma, mode="nearest")
+    valid_weights = weights > 1e-6
+    interpolated = np.divide(values, weights, out=np.array(sky_cal, copy=True), where=valid_weights)
+    sky_det[support] = interpolated[support]
+    invalid_rms = support & (~np.isfinite(rms_cal) | (rms_cal <= 0))
+    if np.any(invalid_rms):
+        rms_outside = outside & np.isfinite(rms_cal) & (rms_cal > 0)
+        rms_weights = gaussian_filter(rms_outside.astype(np.float32), sigma=sigma, mode="nearest")
+        rms_values = gaussian_filter(
+            np.where(rms_outside, rms_cal, 0.0).astype(np.float32), sigma=sigma, mode="nearest"
+        )
+        rms_interpolated = np.divide(
+            rms_values, rms_weights, out=np.array(rms_cal, copy=True), where=rms_weights > 1e-6
+        )
+        rms_det[invalid_rms] = rms_interpolated[invalid_rms]
+    return sky_det, rms_det
 
 
 def _header_lookup(header, key_cfg, default):
@@ -262,6 +163,9 @@ def process_image(
     Optional[dict],
 ]:
     """Processes a single Science image to generate all mask and map products."""
+    config_errors = configuration_errors(config)
+    if config_errors:
+        raise ValueError("Invalid configuration: " + " ".join(config_errors))
     hdu_start_time = _time.time()
     variance_cfg = dict(config.get("variance", {}))
     obsolete = sorted(_OBSOLETE_VARIANCE_KEYS & variance_cfg.keys())
@@ -275,6 +179,11 @@ def process_image(
     saturation_data = sci_data_full
     sci_data_full = np.ascontiguousarray(sci_data_full, dtype=np.float32)
     sci_shape = sci_data_full.shape
+    detector_prior_array = None
+    if detector_prior is not None:
+        detector_prior_array = np.asarray(detector_prior, dtype=bool)
+        if detector_prior_array.shape != sci_shape:
+            raise ValueError("detector prior shape must match science data")
     using_unit_flat = True
     eff_tile = _effective_tile_size(tile_size, sci_shape)
     if flat_data_full is not None:
@@ -400,8 +309,10 @@ def process_image(
     print("  (3/7) Starting iterative Background/Object detection...")
     object_cfg = dict(config.get("sep_objects", {}))
     iterations = sep_bg_cfg.get("iterations", 2)
-    current_obj_mask = np.zeros(sci_shape, dtype=bool)
-    sky_only_mask = np.zeros(sci_shape, dtype=bool)
+    baseline_object_mask = np.zeros(sci_shape, dtype=bool)
+    elongated_fallback_mask = np.zeros(sci_shape, dtype=bool)
+    elongated_candidate_mask = np.zeros(sci_shape, dtype=bool)
+    handoff_enabled = bool(object_cfg.get("handoff_elongated_to_streak", True))
     bg_diag: dict = {}
     last_bg_mask = None
     last_bkg_map = None
@@ -409,7 +320,7 @@ def process_image(
     with _timed(timings, "bgobj_loop"):
         for i in range(iterations):
             print(f"    Iteration {i + 1}/{iterations}...")
-            total_mask_for_bg = interim_mask_bool | current_obj_mask | sky_only_mask
+            total_mask_for_bg = interim_mask_bool | baseline_object_mask
             with _timed(timings, f"bg_iter_{i}"):
                 # Reusing the preliminary background here would be wrong: it was
                 # estimated with the pre-bleed/pre-CR mask, and iteration 0 masks
@@ -424,21 +335,33 @@ def process_image(
                 new_obj_add_mask = detect_objects(data_sub, bkg_rms_map, total_mask_for_bg, object_cfg)
             last_bg_mask = total_mask_for_bg
             last_bkg_map, last_bkg_rms_map = bkg_map, bkg_rms_map
-            elongated = object_cfg.pop("_elongated_for_sky", None)
-            if isinstance(elongated, np.ndarray) and elongated.shape == sci_shape:
-                sky_only_mask |= elongated.astype(bool, copy=False)
+            fallback = object_cfg.pop("_elongated_fallback_mask", None)
+            candidate = object_cfg.pop("_elongated_candidate_mask", None)
+            if candidate is None:
+                candidate = object_cfg.pop("_elongated_for_sky", None)
+            else:
+                object_cfg.pop("_elongated_for_sky", None)
+            if handoff_enabled and isinstance(candidate, np.ndarray) and candidate.shape == sci_shape:
+                elongated_candidate_mask |= candidate.astype(bool, copy=False)
+            if isinstance(fallback, np.ndarray) and fallback.shape == sci_shape:
+                if handoff_enabled:
+                    elongated_fallback_mask |= fallback
+            baseline_object_mask |= new_obj_add_mask
+            if handoff_enabled and isinstance(fallback, np.ndarray) and fallback.shape == sci_shape:
+                baseline_object_mask |= fallback
             if np.count_nonzero(new_obj_add_mask) == 0 and i > 0:
                 print("      No new objects found, ending iteration.")
                 break
-            current_obj_mask |= new_obj_add_mask
 
-    obj_mask |= current_obj_mask
-    final_mask_int[current_obj_mask] |= MASK_BITS["DETECTED"]
-    print(f"      Masked {np.count_nonzero(current_obj_mask)} DETECTED pixels total.")
+    baseline_object_mask &= ~interim_mask_bool
+    elongated_fallback_mask &= baseline_object_mask & ~interim_mask_bool
+    elongated_candidate_mask &= elongated_fallback_mask
+    ordinary_object_mask = baseline_object_mask & ~elongated_fallback_mask
+    final_mask_int[baseline_object_mask] |= MASK_BITS["DETECTED"]
+    print(f"      Masked {np.count_nonzero(baseline_object_mask)} DETECTED pixels total.")
     # --- 4. Final Sky Maps and Object Mask ---
     print("  (4/7) Finalizing sky maps and object mask...")
-    final_obj_mask = current_obj_mask
-    final_full_mask = interim_mask_bool | final_obj_mask | sky_only_mask
+    final_full_mask = interim_mask_bool | baseline_object_mask
     with _timed(timings, "background_final"):
         if last_bg_mask is not None and np.array_equal(final_full_mask, last_bg_mask):
             print("  Reusing iteration background (mask unchanged)...")
@@ -475,19 +398,37 @@ def process_image(
     print("  (6/7) Detecting streaks...")
     with _timed(timings, "streaks"):
         if streak_cfg.get("enable", False):
-            data_sub = sci_data_full - sky_map
-            # Elongated pixels are in the sky mask only. Leaving them in the
-            # streak exclusion would punch the trail out of the detector.
-            streak_exclude = interim_mask_bool | final_obj_mask
-            if detector_prior is not None and np.shape(detector_prior) == sci_shape:
-                streak_exclude = streak_exclude | np.asarray(detector_prior, dtype=bool)
-            streak_add_mask = detect_streaks(data_sub, final_bkg_rms_map, streak_exclude, streak_cfg)
-            if detector_prior is not None and np.shape(detector_prior) == sci_shape:
-                streak_add_mask = streak_add_mask & ~np.asarray(detector_prior, dtype=bool)
+            sky_det = np.array(sky_map, copy=True)
+            rms_det = np.array(final_bkg_rms_map, copy=True)
+            effective_box = bg_diag.get("box_size")
+            if handoff_enabled and effective_box is not None:
+                sky_det, rms_det = _detection_background_views(
+                    sky_map, final_bkg_rms_map, elongated_candidate_mask, effective_box
+                )
+            data_sub = sci_data_full - sky_det
+            streak_exclude = interim_mask_bool | ordinary_object_mask
+            if handoff_enabled:
+                streak_exclude |= elongated_fallback_mask & ~elongated_candidate_mask
+            if detector_prior_array is not None:
+                streak_exclude = streak_exclude | detector_prior_array
+            streak_add_mask = detect_streaks(data_sub, rms_det, streak_exclude, streak_cfg)
+            if detector_prior_array is not None:
+                streak_add_mask = streak_add_mask & ~detector_prior_array
+            accepted = streak_add_mask & elongated_fallback_mask & ~ordinary_object_mask
+            if np.any(accepted):
+                detected_bit = np.asarray(
+                    ~int(MASK_BITS["DETECTED"]) & np.iinfo(final_mask_int.dtype).max, dtype=final_mask_int.dtype
+                )
+                final_mask_int[accepted] &= detected_bit
             streak_mask |= streak_add_mask
             final_mask_int[streak_add_mask] |= MASK_BITS["STREAK"]
             final_full_mask |= streak_add_mask
             print(f"      Masked {np.count_nonzero(streak_add_mask)} new STREAK pixels.")
+
+    accepted = streak_mask & elongated_fallback_mask & ~ordinary_object_mask
+    final_detected = ordinary_object_mask | (elongated_fallback_mask & ~accepted)
+    final_mask_int[final_detected] |= MASK_BITS["DETECTED"]
+    obj_mask |= final_detected
 
     # --- 7. Generate Final Weight and Confidence Maps ---
     print("  (7/7) Generating final weight and confidence maps...")
@@ -502,17 +443,7 @@ def process_image(
     sky_out = sky_map
     sky_cards: dict = {}
     with _timed(timings, "sky_mesh"):
-        if str(config.get("output_params", {}).get("sky_format", "full")).lower() == "mesh":
-            mesh_box = bg_diag.get("box_size")
-            if mesh_box is None:
-                print("    WARNING: sky_format=mesh but no SEP box available; writing full sky map.")
-            else:
-                from .background import sky_to_mesh
-
-                sky_out, sky_cards = sky_to_mesh(sky_map, mesh_box)
-                print(f"    Sky mesh product: {sky_out.shape} (box={mesh_box})")
-        else:
-            timings["sky_mesh"] = float(timings.get("sky_mesh", 0.0))
+        sky_out, sky_cards = _format_sky_output(sky_map, config.get("output_params", {}), bg_diag.get("box_size"))
     header_info["sky_cards"] = sky_cards
     header_info["contract_product"] = contract_product
 

@@ -3,6 +3,10 @@ import re
 
 import numpy as np
 
+from . import config as _config
+
+clean_config_dict = _config.clean_config_dict
+
 
 def paths_alias(first, second):
     """Whether filenames refer to the same destination, including links."""
@@ -117,66 +121,3 @@ def create_binary_mask(mask_data, bit_flag):
     # This avoids allocating unnecessary intermediate arrays and executes
     # significantly faster.
     return ((mask_data & bit_flag) > 0).astype(np.uint8)
-
-
-def _parse_config_value(val):
-    """
-    Parse a single configuration value, converting strings to
-    bool/int/float if applicable. Uses strict type inference to avoid
-    silently coercing malformed values into numbers.
-    """
-    if isinstance(val, (bytes, bytearray)):
-        try:
-            val = val.decode("utf-8")
-        except UnicodeDecodeError:
-            return val
-    if not isinstance(val, str):
-        return val
-
-    stripped = val.strip()
-    lowered = stripped.lower()
-    if lowered in ("true", "yes", "on"):
-        return True
-    elif lowered in ("false", "no", "off"):
-        return False
-
-    # Strict integer: at most one sign then digits. lstrip("+-") alone would
-    # accept "--5"/"++5"/"-+5" and then raise out of int(), aborting config
-    # loading with a traceback instead of passing the value through as a string.
-    digits = stripped[1:] if stripped[:1] in ("+", "-") else stripped
-    if stripped and digits.isdecimal():
-        return int(stripped)
-
-    # Strict float: only convert if it has a decimal point or exponent
-    if "e" in lowered or "." in lowered:
-        try:
-            return float(stripped)
-        except ValueError:
-            pass
-
-    return val
-
-
-def clean_config_dict(config: dict) -> dict:
-    """
-    Recursively clean a configuration dictionary, converting numeric strings
-    and boolean strings into their proper types.
-    """
-    clean_dict = {}
-    if not config:
-        return clean_dict
-
-    for k, v in config.items():
-        if isinstance(v, dict):
-            clean_dict[k] = clean_config_dict(v)
-        elif isinstance(v, list):
-            clean_list = []
-            for item in v:
-                if isinstance(item, dict):
-                    clean_list.append(clean_config_dict(item))
-                else:
-                    clean_list.append(_parse_config_value(item))
-            clean_dict[k] = clean_list
-        else:
-            clean_dict[k] = _parse_config_value(v)
-    return clean_dict

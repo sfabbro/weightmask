@@ -6,24 +6,30 @@ import argparse
 import concurrent.futures
 import os
 import threading
+import uuid
 from typing import Optional, Tuple
 
 import fitsio
 import numpy as np
+from astropy.wcs import WCS
+from scipy import ndimage
 
 from . import __version__
 from .bad import _get_global_median, compute_flat_bad_mask_cached, detect_dark_hot_pixels
 from .contract import (
     CONFIDENCE_SEMANTICS,
     CONFIDENCE_SEMANTICS_SCALED,
+    CONTRACT_VERSION,
     DEFAULT_ZERO_WEIGHT_BITS,
     INVERSE_VARIANCE_SEMANTICS,
     MASK_POLARITY,
     ArtifactMetadata,
     ProducerMetadata,
     QualityBit,
+    _BoundedPrioritySampler,
     build_weight_product,
 )
+from .errors import StageFailure
 from .process import _effective_tile_size, process_image
 
 
@@ -115,8 +121,8 @@ def line_geometry(ys, xs, shape):
     """CCD-local line of a streak: angle in degrees and offset from the chip centre.
 
     The normal is sign-canonicalised so two copies of the same column compare
-    equal. A sky line that crosses two chips lands at different CCD-local
-    offsets, so this is the same distinction as the curator's chip-replica test.
+    equal. Common-frame geometry must resolve whether equal local lines are a
+    sky-consistent trail or detector-fixed replicas.
     """
     ys = np.asarray(ys)
     xs = np.asarray(xs)
@@ -138,7 +144,12 @@ def line_geometry(ys, xs, shape):
     if normal[0] < 0.0 or (normal[0] == 0.0 and normal[1] < 0.0):
         offset = -offset
     angle = float(np.degrees(np.arctan2(direction[1], direction[0])) % 180.0)
-    return {"offset_px": offset, "angle_deg": angle}
+    return {
+        "offset_px": offset,
+        "angle_deg": angle,
+        "point": [mx, my],
+        "direction": direction.tolist(),
+    }
 
 
 def _angle_sep_deg(left, right):
@@ -163,6 +174,44 @@ def replica_indices(geometries, tol_px=25.0, tol_deg=1.5):
                 continue
             replicas.add(i)
             replicas.add(j)
+    return replicas
+
+
+def _replica_component_indices(catalogs, tol_px=25.0, tol_deg=1.5):
+    peers = [set() for _ in catalogs]
+    detector_fixed_edges = set()
+    for i in range(len(catalogs)):
+        left = catalogs[i]
+        left_local = left.get("local")
+        if left_local is None:
+            continue
+        for j in range(i + 1, len(catalogs)):
+            right = catalogs[j]
+            if left.get("hdu") == right.get("hdu"):
+                continue
+            right_local = right.get("local")
+            if right_local is None:
+                continue
+            if _angle_sep_deg(left_local["angle_deg"], right_local["angle_deg"]) > tol_deg:
+                continue
+            if abs(left_local["offset_px"] - right_local["offset_px"]) > tol_px:
+                continue
+            peers[i].add(j)
+            peers[j].add(i)
+            left_common = left.get("common")
+            right_common = right.get("common")
+            if left_common is None or right_common is None:
+                continue
+            if np.allclose(left_common["crval"], right_common["crval"], rtol=0.0, atol=1.0e-8):
+                common_angle = _angle_sep_deg(left_common["angle_deg"], right_common["angle_deg"])
+                scale = max(left_common["scale_deg_per_px"], right_common["scale_deg_per_px"])
+                common_offset = abs(left_common["offset_deg"] - right_common["offset_deg"])
+                if common_angle > tol_deg or common_offset > tol_px * scale:
+                    detector_fixed_edges.add((i, j))
+    replicas = set()
+    for i, j in detector_fixed_edges:
+        if peers[i] == {j} and peers[j] == {i}:
+            replicas.update((i, j))
     return replicas
 
 
@@ -199,32 +248,36 @@ def _store_individual_masks(
     output_data[i]["individual_masks"] = {
         "bad": {
             "data": bad_mask.astype(np.uint8),
-            "header": hdu_header,
+            "header": _header_with_contract_metadata(hdu_header, "bad_mask", mask=True, semantics="boolean_mask"),
             "name": f"BAD_{hdu_name}",
         },
         "sat": {
             "data": sat_mask.astype(np.uint8),
-            "header": hdu_header,
+            "header": _header_with_contract_metadata(
+                hdu_header, "saturation_mask", mask=True, semantics="boolean_mask"
+            ),
             "name": f"SAT_{hdu_name}",
         },
         "cr": {
             "data": cr_mask.astype(np.uint8),
-            "header": hdu_header,
+            "header": _header_with_contract_metadata(
+                hdu_header, "cosmic_ray_mask", mask=True, semantics="boolean_mask"
+            ),
             "name": f"CR_{hdu_name}",
         },
         "obj": {
             "data": obj_mask.astype(np.uint8),
-            "header": hdu_header,
+            "header": _header_with_contract_metadata(hdu_header, "object_mask", mask=True, semantics="boolean_mask"),
             "name": f"OBJ_{hdu_name}",
         },
         "streak": {
             "data": streak_mask.astype(np.uint8),
-            "header": hdu_header,
+            "header": _header_with_contract_metadata(hdu_header, "streak_mask", mask=True, semantics="boolean_mask"),
             "name": f"STREAK_{hdu_name}",
         },
         "nodata": {
             "data": nodata_mask.astype(np.uint8),
-            "header": hdu_header,
+            "header": _header_with_contract_metadata(hdu_header, "nodata_mask", mask=True, semantics="boolean_mask"),
             "name": f"NODATA_{hdu_name}",
         },
     }
@@ -363,8 +416,15 @@ def _store_output_maps(
             hdu_name,
         )
     if paths["out_sky_path"]:
+        sky_output_header = sky_header if sky_header is not None else hdu_header
+        sky_artifact = "sky_mesh" if (sky_header or {}).get("SKYMESH", False) else "sky"
         _assign_map_if_valid(
-            output_data, i, "sky", sky_map, sky_header if sky_header is not None else hdu_header, hdu_name
+            output_data,
+            i,
+            "sky",
+            sky_map,
+            _header_with_contract_metadata(sky_output_header, sky_artifact, semantics="background_adu"),
+            hdu_name,
         )
     if paths["out_weight_raw_path"] and weight_map is not None:
         if i not in output_data:
@@ -400,24 +460,25 @@ def _rescale_confidence_to_global(paths, writers, config):
         return True
     percentile = config.get("confidence_params", {}).get("normalize_percentile", 99.0)
     upper = 100.0 if (config or {}).get("confidence_params", {}).get("scale_to_100", False) else 1.0
+    entries = list(writer.positions.items())
+    writer_identities = getattr(writer, "identities", {})
+    identities = [str(writer_identities.get(hdu_index, f"HDU{hdu_index}")) for hdu_index, _pos in entries]
+    if len(set(identities)) != len(identities):
+        raise ValueError("duplicate HDU identity in exposure confidence normalization")
     try:
         with fitsio.FITS(map_path, "rw") as f:
-            samples = []
-            for pos in writer.positions.values():
+            sampler = _BoundedPrioritySampler()
+            for identity, (_hdu_index, pos) in zip(identities, entries):
                 data = f[pos].read()
-                positive = data[data > 0]
-                if positive.size:
-                    # ponytail: at most 20k samples per HDU; use a streaming
-                    # quantile if heterogeneous detector sizes require exact pooling.
-                    step = max(1, (positive.size + 19999) // 20000)
-                    samples.append(positive[::step])
-            if not samples:
+                sampler.update(identity, data)
+            sample = sampler.sample()
+            if not sample.size:
                 return True
-            normalization = float(np.percentile(np.concatenate(samples), percentile))
+            normalization = float(np.percentile(sample, percentile))
             if not np.isfinite(normalization) or normalization <= 0:
                 print(f"  ERROR: global confidence normalization is invalid ({normalization}).")
                 return False
-            for pos in writer.positions.values():
+            for _hdu_index, pos in entries:
                 data = f[pos].read()
                 confidence = np.clip(data / normalization, 0.0, 1.0) * upper
                 f[pos].write(confidence.astype(writer.dtype or np.float32, copy=False))
@@ -615,24 +676,137 @@ def _open_hdu_handles(
         return None, None, None, None, f"HDU{i}", (lambda: None), str(e)
 
 
-def _streak_catalog(hdu_index, mask_data):
-    """Pixel coordinates of the STREAK bit. Small enough to keep after the HDU is flushed."""
-    if mask_data is None:
+def _common_wcs_geometry(header):
+    if header is None:
         return None
-    ys, xs = np.nonzero((np.asarray(mask_data) & np.uint32(QualityBit.STREAK)) != 0)
-    if ys.size < 24:
+    try:
+        has_cd = all(header.get(name) is not None for name in ("CD1_1", "CD1_2", "CD2_1", "CD2_2"))
+        has_cdelt = all(header.get(name) is not None for name in ("CDELT1", "CDELT2"))
+        if not has_cd and not has_cdelt:
+            return None
+        cards = {}
+        for name in (
+            "CTYPE1",
+            "CTYPE2",
+            "CUNIT1",
+            "CUNIT2",
+            "CRVAL1",
+            "CRVAL2",
+            "CRPIX1",
+            "CRPIX2",
+            "CDELT1",
+            "CDELT2",
+            "CD1_1",
+            "CD1_2",
+            "CD2_1",
+            "CD2_2",
+            "PC1_1",
+            "PC1_2",
+            "PC2_1",
+            "PC2_2",
+        ):
+            value = header.get(name)
+            if value is not None:
+                cards[name] = value
+        wcs = WCS(cards, naxis=2)
+        if not wcs.has_celestial:
+            return None
+        celestial = wcs.celestial
+        ctypes = [str(value).upper() for value in celestial.wcs.ctype]
+        if len(ctypes) != 2 or any(not value.endswith("-TAN") for value in ctypes):
+            return None
+        celestial.wcs.set()
+        crval = np.asarray(celestial.wcs.crval, dtype=np.float64)
+        crpix = np.asarray(celestial.wcs.crpix, dtype=np.float64) - 1.0
+        cd = np.asarray(celestial.pixel_scale_matrix, dtype=np.float64)
+        probe = np.asarray(celestial.all_pix2world([[0.0, 0.0]], 0), dtype=np.float64)
+    except Exception:
+        return None
+    if crval.shape != (2,) or crpix.shape != (2,) or cd.shape != (2, 2):
+        return None
+    if not np.all(np.isfinite(crval)) or not np.all(np.isfinite(crpix)) or not np.all(np.isfinite(cd)):
+        return None
+    if probe.shape != (1, 2) or not np.all(np.isfinite(probe)):
+        return None
+    determinant = float(np.linalg.det(cd))
+    if not np.isfinite(determinant) or abs(determinant) <= np.finfo(np.float64).tiny:
         return None
     return {
-        "hdu": int(hdu_index),
-        "ys": np.asarray(ys, dtype=np.int32),
-        "xs": np.asarray(xs, dtype=np.int32),
-        "shape": tuple(np.shape(mask_data)),
+        "crval": crval,
+        "crpix": crpix,
+        "cd": cd,
+        "scale_deg_per_px": float(np.sqrt(abs(determinant))),
     }
+
+
+def _line_to_common_geometry(local, wcs):
+    if local is None or wcs is None:
+        return None
+    point = np.asarray(local["point"], dtype=np.float64)
+    direction = wcs["cd"] @ np.asarray(local["direction"], dtype=np.float64)
+    length = float(np.hypot(*direction))
+    if not np.isfinite(length) or length <= 0.0:
+        return None
+    direction /= length
+    normal = np.array([-direction[1], direction[0]], dtype=np.float64)
+    mosaic_point = wcs["cd"] @ (point - wcs["crpix"])
+    offset = float(np.dot(normal, mosaic_point))
+    if normal[0] < 0.0 or (normal[0] == 0.0 and normal[1] < 0.0):
+        normal = -normal
+        offset = -offset
+    return {
+        "angle_deg": float(np.degrees(np.arctan2(normal[1], normal[0])) % 180.0),
+        "normal": normal.tolist(),
+        "offset_deg": offset,
+        "scale_deg_per_px": wcs["scale_deg_per_px"],
+        "crval": wcs["crval"],
+    }
+
+
+def _streak_catalog(hdu_index, mask_data, header=None):
+    """Connected STREAK components and their detector/common-frame geometry."""
+    if mask_data is None:
+        return []
+    data = np.asarray(mask_data)
+    streak = (data & np.uint32(QualityBit.STREAK)) != 0
+    labels, count = ndimage.label(streak, structure=np.ones((3, 3), dtype=np.uint8))
+    if count == 0:
+        return []
+    shape = tuple(data.shape)
+    wcs = _common_wcs_geometry(header)
+    catalogs = []
+    for component, region in enumerate(ndimage.find_objects(labels), 1):
+        if region is None:
+            continue
+        ys, xs = np.nonzero(labels[region] == component)
+        if ys.size < 24:
+            continue
+        ys += region[0].start
+        xs += region[1].start
+        local = line_geometry(ys, xs, shape)
+        catalogs.append(
+            {
+                "hdu": int(hdu_index),
+                "component": int(component),
+                "ys": np.asarray(ys, dtype=np.int32),
+                "xs": np.asarray(xs, dtype=np.int32),
+                "shape": shape,
+                "local": local,
+                "common": _line_to_common_geometry(local, wcs),
+            }
+        )
+    return catalogs
 
 
 def _rewrite_hdu(fits_obj, pos, data):
     # Existing HDUs retain their compression; ImageHDU.write has no compress option.
     fits_obj[pos].write(np.ascontiguousarray(data))
+
+
+def _ensure_hdu_extname(fits_obj, pos, extname):
+    current = fits_obj[pos].read_header().get("EXTNAME")
+    if str(current or "").strip() != extname:
+        fits_obj[pos].write_key("EXTNAME", extname)
 
 
 def _clear_chip_replicas(catalogs, writers, config):
@@ -644,8 +818,7 @@ def _clear_chip_replicas(catalogs, writers, config):
     """
     if len(catalogs) < 2:
         return True
-    geoms = [line_geometry(cat["ys"], cat["xs"], cat["shape"]) for cat in catalogs]
-    cleared = replica_indices(geoms)
+    cleared = _replica_component_indices(catalogs)
     if not cleared:
         return True
     mask_writer = (writers or {}).get("mask")
@@ -679,6 +852,21 @@ def _clear_chip_replicas(catalogs, writers, config):
         fraw = _open(raw_writer)
         find = _open(ind_writer)
         handles.extend(handle for handle in (fmap, fivar, fraw, find) if handle is not None)
+        individual_positions = {}
+        if ind_writer is not None:
+            for index in sorted(cleared):
+                cat = catalogs[index]
+                hdu = cat["hdu"]
+                if hdu in individual_positions:
+                    continue
+                spos = ind_writer.positions.get(hdu)
+                if spos is None or find is None or spos >= len(find):
+                    print(f"  ERROR: chip-replica veto: missing individual STREAK position for HDU {hdu}.")
+                    return False
+                if np.shape(find[spos].read()) != cat["shape"]:
+                    print(f"  ERROR: chip-replica veto: individual STREAK shape mismatch for HDU {hdu}.")
+                    return False
+                individual_positions[hdu] = spos
         n_cleared = 0
         for index in sorted(cleared):
             cat = catalogs[index]
@@ -722,15 +910,13 @@ def _clear_chip_replicas(catalogs, writers, config):
                 _rewrite_hdu(handle, wpos, output.astype(writer.dtype or np.float32, copy=False))
             _rewrite_hdu(fmask, pos, data)
             if find is not None:
-                spos = ind_writer.positions.get(cat["hdu"])
-                if spos is not None and spos < len(find):
-                    ind = find[spos].read()
-                    if ind.shape == cat["shape"]:
-                        ind[ys, xs] = 0
-                        _rewrite_hdu(find, spos, ind.astype(np.uint8, copy=False))
+                spos = individual_positions[cat["hdu"]]
+                ind = find[spos].read()
+                ind[ys, xs] = 0
+                _rewrite_hdu(find, spos, ind.astype(np.uint8, copy=False))
             n_cleared += 1
         if n_cleared:
-            print(f"  Chip-replica veto cleared STREAK on {n_cleared} HDUs.")
+            print(f"  Chip-replica veto cleared {n_cleared} STREAK components.")
         return True
     except OSError as exc:
         print(f"  ERROR: chip-replica veto failed: {exc}")
@@ -743,7 +929,148 @@ def _clear_chip_replicas(catalogs, writers, config):
                 pass
 
 
-def process_all_hdus(
+_PRODUCT_PATH_KEYS = (
+    "out_map_path",
+    "out_mask_path",
+    "out_invvar_path",
+    "out_sky_path",
+    "out_weight_raw_path",
+)
+_INDIVIDUAL_MASK_KEYS = ("bad", "sat", "cr", "obj", "streak", "nodata")
+
+
+def _ordered_product_paths(paths):
+    products = [(key, paths.get(key)) for key in _PRODUCT_PATH_KEYS]
+    individual = paths.get("individual_mask_paths") or {}
+    products.extend((f"individual_mask_paths.{key}", individual.get(key)) for key in _INDIVIDUAL_MASK_KEYS)
+    return [(key, os.fspath(path)) for key, path in products if path]
+
+
+class _ProductPublication:
+    def __init__(self, paths):
+        self.generation_id = uuid.uuid4().hex
+        self._entries = []
+        self._committed = False
+        self._rollback_incomplete = False
+        temporary_paths = dict(paths)
+        temporary_paths["individual_mask_paths"] = dict(paths.get("individual_mask_paths") or {})
+        temporary_paths["_generation_id"] = self.generation_id
+        for key, final_path in _ordered_product_paths(paths):
+            directory = os.path.dirname(os.path.abspath(final_path))
+            basename = os.path.basename(final_path)
+            temporary = os.path.join(directory, f".{basename}.wm-tmp-{self.generation_id}")
+            backup = os.path.join(directory, f".{basename}.wm-bak-{self.generation_id}")
+            self._entries.append((final_path, temporary, backup))
+            if key.startswith("individual_mask_paths."):
+                temporary_paths["individual_mask_paths"][key.rsplit(".", 1)[1]] = temporary
+            else:
+                temporary_paths[key] = temporary
+        self.paths = temporary_paths
+
+    @property
+    def temporary_path(self):
+        if len(self._entries) != 1:
+            raise ValueError("temporary_path is only defined for a single-product publication")
+        return self._entries[0][1]
+
+    def validate(self, expected_hdus):
+        expected_count = len(expected_hdus)
+        reference_hdu_count = None
+        reference_shapes = None
+        reference_names = None
+        for _final, temporary, _backup in self._entries:
+            with fitsio.FITS(temporary, "r") as handle:
+                if reference_hdu_count is None:
+                    reference_hdu_count = len(handle)
+                elif len(handle) != reference_hdu_count:
+                    raise ValueError("output products have different HDU counts")
+                images = [
+                    item for item in handle if item.get_info().get("hdutype") == 0 and item.get_info().get("ndims") == 2
+                ]
+                if len(images) != expected_count:
+                    raise ValueError(f"output contains {len(images)} image HDUs; expected {expected_count}")
+                shapes = []
+                names = []
+                for item in images:
+                    header = item.read_header()
+                    generation = str(header.get("WMGENID", ""))
+                    if generation != self.generation_id:
+                        raise ValueError("output product generation ID is missing or inconsistent")
+                    if str(header.get("WMVERS", "")) != CONTRACT_VERSION or not header.get("WMART"):
+                        raise ValueError("output product contract metadata is missing or inconsistent")
+                    shape = tuple(item.get_dims())
+                    name = str(header.get("EXTNAME", "")).strip()
+                    if not name:
+                        raise ValueError("output product EXTNAME is missing")
+                    shapes.append(shape)
+                    names.append(name.split("_", 1)[-1])
+                if len(set(names)) != len(names):
+                    raise ValueError("output product EXTNAME values are not unique")
+                if reference_shapes is None:
+                    reference_shapes = shapes
+                    reference_names = names
+                elif shapes != reference_shapes or names != reference_names:
+                    raise ValueError("output product HDU shapes or EXTNAME values are not synchronized")
+
+    def promote(self):
+        moved = []
+        try:
+            for final, temporary, backup in self._entries:
+                had_original = os.path.exists(final)
+                if had_original:
+                    os.replace(final, backup)
+                moved.append((final, temporary, backup, had_original))
+                os.replace(temporary, final)
+        except OSError as promotion_error:
+            rollback_errors = []
+            for final, temporary, backup, had_original in reversed(moved):
+                try:
+                    if had_original:
+                        if not os.path.exists(backup):
+                            raise OSError(f"rollback backup is missing: {backup}")
+                        os.replace(backup, final)
+                    elif os.path.exists(final):
+                        try:
+                            os.replace(final, temporary)
+                        except OSError as quarantine_error:
+                            try:
+                                os.unlink(final)
+                            except OSError as unlink_error:
+                                raise OSError(
+                                    f"could not quarantine ({quarantine_error}) or remove new output: {unlink_error}"
+                                ) from quarantine_error
+                except OSError as exc:
+                    rollback_errors.append(exc)
+            if rollback_errors:
+                self._rollback_incomplete = True
+                raise OSError(
+                    f"publication failed ({promotion_error}) and rollback was incomplete: {rollback_errors[0]}"
+                ) from promotion_error
+            raise
+        self._committed = True
+
+    def cleanup(self):
+        pending = []
+        for _final, temporary, backup in self._entries:
+            paths = (temporary,) if self._rollback_incomplete else (temporary, backup)
+            for path in paths:
+                try:
+                    os.unlink(path)
+                except FileNotFoundError:
+                    pass
+                except OSError as exc:
+                    pending.append((path, backup, exc))
+        for path, backup, first_error in pending:
+            try:
+                os.unlink(path)
+            except FileNotFoundError:
+                pass
+            except OSError as exc:
+                kind = "post-commit backup" if self._committed and path == backup else "publication artifact"
+                print(f"  WARNING: Could not remove {kind} '{path}': {exc}; first attempt failed: {first_error}")
+
+
+def _process_all_hdus_to_paths(
     hdus_to_process: list,
     hdul_input,
     hdul_flat,
@@ -869,6 +1196,7 @@ def process_all_hdus(
 
     def _compute_one(i):
         pre = flat_bad_masks.get(i) if flat_bad_masks else None
+        close = None
 
         try:
             hdu_sci, hdu_flat_obj, hdu_badpix_obj, hdu_header_raw, hdu_name, close, err = _open_hdu_handles(
@@ -897,13 +1225,18 @@ def process_all_hdus(
                 detector_prior=prior,
             )
             return (i, result, hdu_header_raw, hdu_name)
+        except StageFailure as exc:
+            if exc.hdu_index is None:
+                exc.hdu_index = i
+            raise
         except Exception as e:
             import traceback
 
             print(f"FATAL ERROR processing HDU {i}: {e}\n{traceback.format_exc()}")
             return (i, (None, None, None, None, None, None), None, f"HDU{i}")
         finally:
-            close()
+            if close is not None:
+                close()
 
     streak_catalogs: list = []
 
@@ -918,9 +1251,7 @@ def process_all_hdus(
             bad_mask, sat_mask, cr_mask, obj_mask, streak_mask, nodata_mask = extract_individual_masks(
                 header_info, mask_data
             )
-            catalog = _streak_catalog(i, mask_data)
-            if catalog is not None:
-                streak_catalogs.append(catalog)
+            streak_catalogs.extend(_streak_catalog(i, mask_data, hdu_header_raw))
             hdu_name = hdu_name_raw
             hdu_header = hdu_header_raw
             if hdu_header is None:
@@ -987,6 +1318,10 @@ def process_all_hdus(
                     continue
                 try:
                     _i, _res, _hdr, _nm = fut.result()
+                except StageFailure:
+                    for pending in in_flight.values():
+                        pending.cancel()
+                    raise
                 except Exception as e:
                     import traceback
 
@@ -999,6 +1334,54 @@ def process_all_hdus(
     if conf_scope == "per_exposure" and not _rescale_confidence_to_global(paths, writers, config):
         return 0
     return process_success_count
+
+
+def process_all_hdus(
+    hdus_to_process: list,
+    hdul_input,
+    hdul_flat,
+    config: dict,
+    paths: dict,
+    args: argparse.Namespace,
+    flat_path: Optional[str] = None,
+    hdul_badpix=None,
+    hdul_dark=None,
+    max_workers: int | None = None,
+    input_path: Optional[str] = None,
+    badpix_path: Optional[str] = None,
+    dark_path: Optional[str] = None,
+    detector_priors: Optional[dict] = None,
+) -> int:
+    publication = _ProductPublication(paths)
+    try:
+        count = _process_all_hdus_to_paths(
+            hdus_to_process,
+            hdul_input,
+            hdul_flat,
+            config,
+            publication.paths,
+            args,
+            flat_path=flat_path,
+            hdul_badpix=hdul_badpix,
+            hdul_dark=hdul_dark,
+            max_workers=max_workers,
+            input_path=input_path,
+            badpix_path=badpix_path,
+            dark_path=dark_path,
+            detector_priors=detector_priors,
+        )
+        if count != len(hdus_to_process):
+            return count
+        publication.validate(hdus_to_process)
+        publication.promote()
+        return count
+    except StageFailure:
+        raise
+    except (OSError, ValueError) as exc:
+        print(f"  ERROR: product publication failed: {exc}")
+        return 0
+    finally:
+        publication.cleanup()
 
 
 class _StreamingMapWriter:
@@ -1015,15 +1398,27 @@ class _StreamingMapWriter:
       first, then every image is appended as an extension.
     """
 
-    def __init__(self, out_path: str, hdul_input, primary_header, compress: bool = False, dtype=None):
+    def __init__(
+        self,
+        out_path: str,
+        hdul_input,
+        primary_header,
+        compress: bool = False,
+        dtype=None,
+        generation_id: str | None = None,
+    ):
         self.out_path = out_path
         self.hdul_input = hdul_input
-        self.primary_header = primary_header
+        self.primary_header = dict(primary_header or {})
         self._opened = False
         self.positions: dict = {}
+        self.identities: dict = {}
         self._lock = threading.Lock()
         self.compress = bool(compress)
         self.dtype = np.dtype(dtype) if dtype is not None else None
+        self.generation_id = generation_id
+        if generation_id:
+            self.primary_header["WMGENID"] = generation_id
 
     def _prep(self, data):
         if data is None or self.dtype is None:
@@ -1035,10 +1430,15 @@ class _StreamingMapWriter:
 
     def write(self, hdu_index: int, data, header, extname: str) -> None:
         data = self._prep(data)
+        header = dict(header or {})
+        header["EXTNAME"] = extname
+        if self.generation_id:
+            header["WMGENID"] = self.generation_id
         # Only pass ``compress`` when compressing: fitsio warns about (and
         # ignores) a placeholder value such as "NOT_SET".
         kwargs = {"compress": "RICE_1"} if self.compress else {}
         with self._lock:
+            self.identities[hdu_index] = extname
             if not self._opened:
                 if hdu_index == 0:
                     primary_data = data
@@ -1049,13 +1449,17 @@ class _StreamingMapWriter:
                 fitsio.write(self.out_path, primary_data, header=primary_header, clobber=True, **kwargs)
                 self._opened = True
                 if hdu_index == 0:
-                    with fitsio.FITS(self.out_path, "r") as f_out:
+                    with fitsio.FITS(self.out_path, "rw") as f_out:
                         # Compressed primary images live at HDU 1, not HDU 0.
-                        self.positions[hdu_index] = len(f_out) - 1
+                        position = len(f_out) - 1
+                        _ensure_hdu_extname(f_out, position, extname)
+                        self.positions[hdu_index] = position
                     return
             with fitsio.FITS(self.out_path, "rw") as f_out:
                 f_out.write(data, header=header, extname=extname, **kwargs)
-                self.positions[hdu_index] = len(f_out) - 1
+                position = len(f_out) - 1
+                _ensure_hdu_extname(f_out, position, extname)
+                self.positions[hdu_index] = position
 
 
 def _wire_dtype(bitpix, *, is_mask: bool):
@@ -1087,6 +1491,7 @@ def _make_output_writers(paths: dict, hdul_input, config: dict | None = None) ->
     except (TypeError, ValueError):
         ivar_bp = 32
     compress = bool(op.get("compress", False))
+    generation_id = paths.get("_generation_id")
     mask_dt = _wire_dtype(mask_bp, is_mask=True)
     float_dt = _wire_dtype(ivar_bp, is_mask=False)
     writers: dict = {}
@@ -1100,12 +1505,24 @@ def _make_output_writers(paths: dict, hdul_input, config: dict | None = None) ->
         out_path = paths.get(path_key)
         if out_path:
             dt = mask_dt if key == "mask" else float_dt
-            writers[key] = _StreamingMapWriter(out_path, hdul_input, primary_header, compress=compress, dtype=dt)
+            writers[key] = _StreamingMapWriter(
+                out_path,
+                hdul_input,
+                primary_header,
+                compress=compress,
+                dtype=dt,
+                generation_id=generation_id,
+            )
     for mask_type in ("bad", "sat", "cr", "obj", "streak", "nodata"):
         out_path = (paths.get("individual_mask_paths") or {}).get(mask_type)
         if out_path:
             writers[f"ind_{mask_type}"] = _StreamingMapWriter(
-                out_path, hdul_input, primary_header, compress=compress, dtype=np.uint8
+                out_path,
+                hdul_input,
+                primary_header,
+                compress=compress,
+                dtype=np.uint8,
+                generation_id=generation_id,
             )
     return writers
 

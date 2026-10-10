@@ -14,10 +14,12 @@ import numpy as np
 import yaml
 
 from . import __version__
+from .config import clean_config_dict
+from .errors import StageFailure
 from .mef import process_all_hdus
 from .process import validate_config
-from .streaks import persistent_axis_mask
-from .utils import clean_config_dict, extract_hdu_spec, paths_alias
+from .streaks import PersistenceProfileAccumulator
+from .utils import extract_hdu_spec, paths_alias
 
 
 def validate_fits_file(file_path: str) -> bool:
@@ -52,8 +54,8 @@ def parse_arguments(argv=None) -> argparse.Namespace:
             "--output_invvar invvar.fits\n"
             "  weightmask-reconstruct-sky sky_mesh.fits -o sky_full.fits\n"
             "\n"
-            "Config keys: weightmask.yml (copy into the working directory; not installed "
-            "with the package). Usage: docs/usage.md\n"
+            "Config keys: weightmask.yml is bundled; copy it with "
+            "weightmask.config.copy_default_config. Usage: docs/usage.md\n"
             "Mesh skies: weightmask-reconstruct-sky."
         ),
         formatter_class=argparse.RawDescriptionHelpFormatter,
@@ -67,7 +69,7 @@ def parse_arguments(argv=None) -> argparse.Namespace:
         "--config",
         type=str,
         default=None,
-        help="YAML config. If omitted, looks for weightmask.yml in the current directory. Not bundled in the wheel.",
+        help="YAML config. If omitted, looks for a copied weightmask.yml in the current directory.",
     )
     inputs.add_argument(
         "--flat_image",
@@ -276,7 +278,9 @@ def build_persistence_priors(science_path, hdus, other_paths, min_other=2):
     # Stream each other file once, dispatching extensions to the matching CCD
     # name. Each (name, file) pair contributes at most one frame: the first
     # name-matching extension with a compatible shape.
-    frames_by_name = {name: [] for name in by_name}
+    accumulators = {
+        name: PersistenceProfileAccumulator(shape, min_other=min_other) for name, shape in name_shape.items()
+    }
     distinct_paths = []
     for path in other_paths:
         if paths_alias(path, science_path) or any(paths_alias(path, previous) for previous in distinct_paths):
@@ -299,16 +303,19 @@ def build_persistence_priors(science_path, hdus, other_paths, min_other=2):
                 except (OSError, TypeError, ValueError) as exc:
                     print(f"  WARNING: cannot read persistence HDU {ext} from '{path}': {exc}")
                     continue
-                if data.shape == name_shape[name]:
-                    seen.add(name)
-                    frames_by_name[name].append(data)
+                if data.shape != name_shape[name]:
+                    del data
+                    continue
+                seen.add(name)
+                accumulators[name].add(data)
+                del data
 
     priors = {}
     for name, indexes in by_name.items():
-        frames = frames_by_name[name]
-        if len(frames) < int(min_other):
+        accumulator = accumulators[name]
+        if accumulator.frame_count < int(min_other):
             continue
-        mask = persistent_axis_mask(frames, min_other=min_other)
+        mask = accumulator.mask()
         for index in indexes:
             if shapes[index] == mask.shape:
                 priors[index] = mask
@@ -502,11 +509,11 @@ def run_pipeline(argv=None) -> int:
     print("Starting WeightMask Pipeline...")
     start_pipeline_time = time.time()
 
-    if not validate_input_files(args):
-        return 1
-
     config = load_configuration(args.config)
     if config is None:
+        return 1
+
+    if not validate_input_files(args):
         return 1
 
     input_path, input_hdu = extract_hdu_spec(args.input_file)
@@ -567,22 +574,26 @@ def run_pipeline(argv=None) -> int:
         if persistence:
             detector_priors = build_persistence_priors(input_path, hdus_to_process, persistence)
             print(f"Persistence prior for {len(detector_priors)} HDU(s) from {len(persistence)} other exposure(s).")
-        process_success_count = process_all_hdus(
-            hdus_to_process,
-            hdul_input,
-            hdul_flat,
-            config,
-            paths,
-            args,
-            flat_path=flat_path,
-            hdul_badpix=hdul_badpix,
-            hdul_dark=hdul_dark,
-            max_workers=getattr(args, "max_workers", None),
-            input_path=input_path,
-            badpix_path=badpix_path,
-            dark_path=dark_path,
-            detector_priors=detector_priors,
-        )
+        try:
+            process_success_count = process_all_hdus(
+                hdus_to_process,
+                hdul_input,
+                hdul_flat,
+                config,
+                paths,
+                args,
+                flat_path=flat_path,
+                hdul_badpix=hdul_badpix,
+                hdul_dark=hdul_dark,
+                max_workers=getattr(args, "max_workers", None),
+                input_path=input_path,
+                badpix_path=badpix_path,
+                dark_path=dark_path,
+                detector_priors=detector_priors,
+            )
+        except StageFailure as exc:
+            print(f"ERROR: {exc}")
+            return 1
     finally:
         _cleanup_hdul(hdul_input, hdul_flat, hdul_badpix, hdul_dark)
 
@@ -592,19 +603,14 @@ def run_pipeline(argv=None) -> int:
     warnings.filterwarnings("default", category=RuntimeWarning)
 
     if process_success_count == 0:
-        print("\nNo HDUs processed and written successfully. Output files may be incomplete.")
+        print("\nNo HDUs processed and published successfully. Existing outputs were preserved.")
         return 1
 
     if process_success_count != len(hdus_to_process):
-        # A partial run is not a successful run. The products are written, but
-        # a CCD is missing, so pairing them by position against the science MEF
-        # is wrong from the first skipped HDU onward. Fail the exit code and
-        # say so; the EXTNAMEs remain the authoritative source index.
         print(
             f"\nERROR: only {process_success_count} of {len(hdus_to_process)} HDUs were "
-            f"processed and written successfully. The output products are incomplete "
-            f"and may have different extension counts. Use EXTNAME to "
-            f"identify a product's source HDU, or fix the failing HDU and re-run."
+            f"processed successfully. No new product set was published; existing outputs, "
+            f"if any, were preserved. Fix the failing HDU and re-run."
         )
         return 1
 

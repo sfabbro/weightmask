@@ -7,6 +7,7 @@ implements :class:`ArrayHeaderIO`.
 
 from __future__ import annotations
 
+import hashlib
 import json
 import warnings
 from dataclasses import dataclass, field
@@ -26,6 +27,7 @@ CONFIDENCE_SEMANTICS = "normalized_weight_0_to_1"
 # written, so the card must describe the range the file actually holds.
 CONFIDENCE_SEMANTICS_SCALED = "normalized_weight_0_to_100"
 MAX_CONFIDENCE_SAMPLES = 100_000
+_CONFIDENCE_SAMPLE_CHUNK_SIZE = 65_536
 _FITS_HEADER_VALUE_CHARS = 60
 
 
@@ -278,8 +280,8 @@ class WeightMaskProduct:
         ):
             if np.shape(arr) != shape:
                 raise ValueError(f"WeightMaskProduct {name} shape {np.shape(arr)} != quality_mask shape {shape}")
-        if not np.issubdtype(self.quality_mask.dtype, np.integer):
-            raise TypeError("WeightMaskProduct quality_mask must have an integer dtype")
+        if not isinstance(self.quality_mask, np.ndarray) or self.quality_mask.dtype != np.dtype(np.uint32):
+            raise TypeError("WeightMaskProduct quality_mask must be a numpy ndarray with dtype uint32")
         if not np.issubdtype(self.inverse_variance.dtype, np.floating):
             raise TypeError("WeightMaskProduct inverse_variance must have a float dtype")
         if not np.issubdtype(self.weight.dtype, np.floating):
@@ -312,15 +314,14 @@ def canonical_quality_mask(mask: np.ndarray, shape: tuple[int, ...]) -> np.ndarr
     array = np.asarray(mask)
     if array.shape != shape:
         raise ValueError(f"quality mask shape {array.shape} does not match data shape {shape}")
-    if not np.issubdtype(array.dtype, np.integer):
+    if array.dtype.kind not in "iu":
         raise TypeError("quality mask must have an integer dtype")
-    if array.dtype.itemsize > 4:
-        # astype would wrap modulo 2**32, silently dropping any flag at bit 32
-        # or above -- so that pixel would lose its quality bits and be given
-        # full weight. Refuse rather than launder the caller's mask.
+    if np.issubdtype(array.dtype, np.signedinteger) and np.any(array < 0):
+        raise ValueError("quality mask values must be non-negative")
+    if np.any(array > np.iinfo(np.uint32).max):
         raise ValueError(
-            f"quality mask dtype {array.dtype} is wider than uint32; bits at 32 and above "
-            f"would be silently discarded by the uint32 contract representation"
+            "quality mask values must fit within uint32; values wider than uint32 "
+            "would be silently discarded by the contract representation"
         )
     return array.astype(np.uint32, copy=True)
 
@@ -348,12 +349,85 @@ def quality_bits_from_names(names: list[str] | tuple[str, ...] | set[str]) -> Qu
     return value
 
 
+def _validate_confidence_percentile(percentile):
+    if isinstance(percentile, (bool, np.bool_)) or not 0 < percentile <= 100:
+        raise ValueError("confidence_percentile must be in (0, 100]")
+
+
+def _priority_keys(identity, pixel_indices):
+    encoded = str(identity).encode("utf-8", errors="surrogatepass")
+    seed = np.uint64(int.from_bytes(hashlib.blake2b(encoded, digest_size=8, person=b"wm-conf").digest(), "little"))
+    with np.errstate(over="ignore"):
+        keys = pixel_indices.astype(np.uint64, copy=False) + seed + np.uint64(0x9E3779B97F4A7C15)
+        keys = (keys ^ (keys >> np.uint64(30))) * np.uint64(0xBF58476D1CE4E5B9)
+        keys = (keys ^ (keys >> np.uint64(27))) * np.uint64(0x94D049BB133111EB)
+    return keys ^ (keys >> np.uint64(31))
+
+
+class _BoundedPrioritySampler:
+    def __init__(self, max_samples: int = MAX_CONFIDENCE_SAMPLES):
+        if isinstance(max_samples, (bool, np.bool_)) or max_samples <= 0:
+            raise ValueError("max_samples must be positive")
+        self.max_samples = int(max_samples)
+        self._priorities = np.empty(0, dtype=np.uint64)
+        self._identity_labels = np.empty(0, dtype=object)
+        self._pixel_indices = np.empty(0, dtype=np.uint64)
+        self._values = np.empty(0, dtype=np.float64)
+        self._offsets = {}
+
+    def update(self, identity, values):
+        identity_label = str(identity)
+        array = np.asarray(values)
+        flat = array.flat
+        stream_offset = self._offsets.get(identity_label, 0)
+        for start in range(0, array.size, _CONFIDENCE_SAMPLE_CHUNK_SIZE):
+            chunk = np.asarray(flat[start : start + _CONFIDENCE_SAMPLE_CHUNK_SIZE])
+            offsets = np.flatnonzero(np.isfinite(chunk) & (chunk > 0))
+            if not offsets.size:
+                continue
+            candidate_values = chunk[offsets]
+            candidate_pixels = offsets.astype(np.uint64) + np.uint64(stream_offset + start)
+            candidate_priorities = _priority_keys(identity_label, candidate_pixels)
+            candidate_identities = np.full(offsets.size, identity_label, dtype=object)
+            priorities = np.concatenate((self._priorities, candidate_priorities))
+            identity_labels = np.concatenate((self._identity_labels, candidate_identities))
+            pixel_indices = np.concatenate((self._pixel_indices, candidate_pixels))
+            sample_values = np.concatenate((self._values, candidate_values))
+            if priorities.size > self.max_samples:
+                cutoff = np.partition(priorities, self.max_samples - 1)[self.max_samples - 1]
+                below = np.flatnonzero(priorities < cutoff)
+                tied = np.flatnonzero(priorities == cutoff)
+                needed = self.max_samples - below.size
+                if tied.size > needed:
+                    tie_order = np.lexsort((pixel_indices[tied], identity_labels[tied]))
+                    tied = tied[tie_order[:needed]]
+                keep = np.concatenate((below, tied))
+                priorities = priorities[keep]
+                identity_labels = identity_labels[keep]
+                pixel_indices = pixel_indices[keep]
+                sample_values = sample_values[keep]
+            self._priorities = priorities
+            self._identity_labels = identity_labels
+            self._pixel_indices = pixel_indices
+            self._values = sample_values
+        self._offsets[identity_label] = stream_offset + array.size
+
+    def sample(self):
+        if not self._priorities.size:
+            return self._values
+        order = np.lexsort((self._pixel_indices, self._identity_labels, self._priorities))
+        return self._values[order]
+
+
 def _bounded_percentile(values: np.ndarray, percentile: float) -> float:
     """Calculate a deterministic percentile without survey-scale global work."""
-    # Regular striding caps percentile memory/work at 100k values;
-    # upgrade to a streaming quantile estimator only if this ceiling is insufficient.
-    step = max(1, (values.size + MAX_CONFIDENCE_SAMPLES - 1) // MAX_CONFIDENCE_SAMPLES)
-    return float(np.percentile(values[::step], percentile))
+    _validate_confidence_percentile(percentile)
+    sampler = _BoundedPrioritySampler()
+    sampler.update("weight", values)
+    sample = sampler.sample()
+    if not sample.size:
+        return float("nan")
+    return float(np.percentile(sample, percentile))
 
 
 def build_weight_product(
@@ -374,8 +448,7 @@ def build_weight_product(
     inverse_variance = np.asarray(inverse_variance)
     if inverse_variance.ndim == 0:
         raise ValueError("inverse variance must be an array")
-    if not 0 < confidence_percentile <= 100:
-        raise ValueError("confidence_percentile must be in (0, 100]")
+    _validate_confidence_percentile(confidence_percentile)
 
     raw_mask = np.zeros(inverse_variance.shape, dtype=np.uint32) if quality_mask is None else quality_mask
     mask = canonical_quality_mask(raw_mask, inverse_variance.shape)
@@ -397,15 +470,9 @@ def build_weight_product(
     weight[usable] = ivar[usable]
 
     confidence = np.zeros_like(weight)
-    positive = weight[weight > 0]
-    if positive.size:
-        normalization = _bounded_percentile(positive, confidence_percentile)
-        if np.isfinite(normalization) and normalization > 0:
-            confidence = np.clip(weight / normalization, 0.0, 1.0).astype(np.float32, copy=False)
-        else:
-            print(
-                f"  WARNING: confidence normalization failed (percentile={normalization}); confidence map is all-zero."
-            )
+    normalization = _bounded_percentile(weight, confidence_percentile)
+    if np.isfinite(normalization) and normalization > 0:
+        confidence = np.clip(weight / normalization, 0.0, 1.0).astype(np.float32, copy=False)
 
     producer = producer or ProducerMetadata()
     provenance = dict(provenance or {})

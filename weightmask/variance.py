@@ -221,9 +221,10 @@ def _calculate_inverse_variance_theoretical(sky_map, flat_map, gain, read_noise_
 
         ivar = g² F² / (S g F + r²)
 
-    ``flat_rel_noise`` is an optional extra term ``(S g · rel)²`` in the
-    electron denominator, with ``rel`` boosted where the flat is below its
-    median. Zero disables it.
+    ``flat_rel_noise`` is the dimensionless fractional flat uncertainty. It
+    adds ``(S g F · rel)²`` to the pre-division electron variance, equivalent
+    to ``(S · rel)²`` in calibrated ADU². ``rel`` is boosted where the flat is
+    below its median. Zero disables it.
 
     """
     valid_flat_mask = flat_map > epsilon
@@ -236,7 +237,7 @@ def _calculate_inverse_variance_theoretical(sky_map, flat_map, gain, read_noise_
     if flat_rel_noise > 0:
         med_flat = float(np.median(safe_flat[valid_flat_mask])) if np.any(valid_flat_mask) else 1.0
         rel_map = flat_rel_noise / np.sqrt(np.clip(safe_flat / max(med_flat, epsilon), 0.1, None))
-        sky_e = safe_sky * gain
+        sky_e = safe_sky * gain * safe_flat
         denom = denom + (sky_e * rel_map) ** 2
     inv_variance = np.zeros_like(denom)
 

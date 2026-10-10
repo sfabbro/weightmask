@@ -6,6 +6,13 @@ from astropy.stats import mad_std
 from scipy import linalg
 from scipy.ndimage import distance_transform_edt, gaussian_filter, median_filter
 
+__all__ = [
+    "sky_to_mesh",
+    "reconstruct_sky_mesh",
+    "parse_sky_mesh_header",
+    "reconstruct_sky_from_header",
+]
+
 
 def _estimate_global_sep(sci_data, mask):
     """Estimate a single global background using a single SEP box."""
@@ -197,11 +204,45 @@ def _auto_box_size(sci_data_shape, mask_fraction, config):
     return max(16, min(auto, cfg_box))
 
 
-def _as_box(box, default=128):
+def _positive_int(value, name):
+    if isinstance(value, (bool, np.bool_)) or not isinstance(value, (int, np.integer)):
+        raise ValueError(f"{name} must be a positive integer")
+    value = int(value)
+    if value <= 0:
+        raise ValueError(f"{name} must be a positive integer")
+    return value
+
+
+def _sky_mesh_shape(shape, box):
     try:
-        return max(1, int(box))
-    except (TypeError, ValueError):
-        return default
+        dimensions = tuple(shape)
+    except TypeError as exc:
+        raise ValueError("Sky output shape must contain exactly two positive integers") from exc
+    if len(dimensions) != 2:
+        raise ValueError("Sky output shape must contain exactly two positive integers")
+    h = _positive_int(dimensions[0], "Sky output height")
+    w = _positive_int(dimensions[1], "Sky output width")
+    box = _positive_int(box, "Sky mesh box size")
+    return (h, w), ((h - 1) // box + 1, (w - 1) // box + 1), box
+
+
+def _validated_sky_mesh(mesh, shape, box):
+    shape, expected_shape, box = _sky_mesh_shape(shape, box)
+    try:
+        data = np.asarray(mesh)
+    except (TypeError, ValueError) as exc:
+        raise ValueError("Sky mesh data must be a finite two-dimensional numeric array") from exc
+    if data.ndim != 2:
+        raise ValueError(f"Sky mesh data must be two-dimensional, got rank {data.ndim}")
+    try:
+        data = np.ascontiguousarray(data, dtype=np.float64)
+    except (TypeError, ValueError) as exc:
+        raise ValueError("Sky mesh data must be numeric") from exc
+    if not np.all(np.isfinite(data)):
+        raise ValueError("Sky mesh data must contain only finite values")
+    if data.shape != expected_shape:
+        raise ValueError(f"Sky mesh shape {data.shape} does not match expected shape {expected_shape}")
+    return data, shape, box
 
 
 def _mesh_node_coords(n, size, box):
@@ -217,14 +258,22 @@ def sky_to_mesh(sky_map, box):
     ``n = (size - 1) // box + 1`` nodes at clipped ``(k + 0.5) * box``.
     Returns ``(mesh_float32, cards_dict)``.
     """
-    box = _as_box(box)
-    arr = np.ascontiguousarray(sky_map, dtype=np.float32)
-    h, w = arr.shape
-    ny = max(1, (h - 1) // box + 1) if h > 0 else 1
-    nx = max(1, (w - 1) // box + 1) if w > 0 else 1
+    try:
+        source = np.asarray(sky_map)
+    except (TypeError, ValueError) as exc:
+        raise ValueError("Sky map must be a finite two-dimensional numeric array") from exc
+    if source.ndim != 2:
+        raise ValueError(f"Sky map must be two-dimensional, got rank {source.ndim}")
+    try:
+        arr = np.ascontiguousarray(source, dtype=np.float32)
+    except (TypeError, ValueError) as exc:
+        raise ValueError("Sky map must be numeric") from exc
+    if not np.all(np.isfinite(arr)):
+        raise ValueError("Sky map must contain only finite values")
+    (h, w), (ny, nx), box = _sky_mesh_shape(arr.shape, box)
     yi = _mesh_node_coords(ny, h, box).astype(np.intp)
     xi = _mesh_node_coords(nx, w, box).astype(np.intp)
-    mesh = arr[np.ix_(yi, xi)] if h > 0 and w > 0 else np.zeros((ny, nx), dtype=np.float32)
+    mesh = arr[np.ix_(yi, xi)]
     cards = {"SKYMESH": True, "MESHBW": box, "MESHBH": box, "SKYH": h, "SKYW": w}
     return np.ascontiguousarray(mesh, dtype=np.float32), cards
 
@@ -235,11 +284,7 @@ def reconstruct_sky_mesh(mesh, shape, box):
     # Swap back to a SEP port if bit-identical back() is ever required.
     from scipy.interpolate import CubicSpline
 
-    box = _as_box(box)
-    m = np.atleast_2d(np.asarray(mesh, dtype=np.float64))
-    h, w = int(shape[0]), int(shape[1])
-    if m.size == 0 or h <= 0 or w <= 0:
-        return np.zeros((max(h, 0), max(w, 0)), dtype=np.float32)
+    m, (h, w), box = _validated_sky_mesh(mesh, shape, box)
     ny, nx = m.shape
     if ny == 1 and nx == 1:
         return np.full((h, w), float(m[0, 0]), dtype=np.float32)
@@ -272,13 +317,15 @@ def parse_sky_mesh_header(header):
     if skymesh is not True and str(skymesh).strip().upper() not in ("T", "TRUE", "1"):
         raise ValueError("Header is missing SKYMESH=T (not a sky mesh product)")
     try:
-        h, w = int(header["SKYH"]), int(header["SKYW"])
-        box = int(header["MESHBW"] if "MESHBW" in header else header["MESHBH"])
+        h = _positive_int(header["SKYH"], "SKYH")
+        w = _positive_int(header["SKYW"], "SKYW")
+        box_w = _positive_int(header["MESHBW"], "MESHBW")
+        box_h = _positive_int(header["MESHBH"], "MESHBH")
     except Exception as e:
-        raise ValueError("SKYMESH header requires SKYH, SKYW, and MESHBW/MESHBH") from e
-    if h <= 0 or w <= 0:
-        raise ValueError(f"Invalid SKYH/SKYW shape ({h}, {w})")
-    return (h, w), max(1, box)
+        raise ValueError("SKYMESH header requires positive integer SKYH, SKYW, MESHBW, and MESHBH") from e
+    if box_w != box_h:
+        raise ValueError(f"SKYMESH MESHBW and MESHBH must match, got {box_w} and {box_h}")
+    return (h, w), box_w
 
 
 def reconstruct_sky_from_header(mesh, header):

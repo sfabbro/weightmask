@@ -1,8 +1,7 @@
-import warnings
-
 import numpy as np
 from scipy.ndimage import convolve
 
+from .errors import StageFailure
 from .utils import rms_or_robust, rms_valid_mask, robust_rms
 
 try:
@@ -24,28 +23,6 @@ def _get_psf_peakiness(fwhm):
     kernel /= kernel.sum()
     # Peakiness is the central value
     return kernel[1, 1]
-
-
-def _adjust_dynamic_sigclip(config, bkg_rms_map, default_sigclip):
-    """Dynamically adjust sigclip based on background noise."""
-    sigclip = default_sigclip
-    if not config.get("dynamic_sigclip", True) or bkg_rms_map is None:
-        return sigclip
-
-    try:
-        # Only measured pixels: the ``inf`` sentinel is not a noisy measurement,
-        # and including it would let a mostly-unmeasured chip pose as noiseless.
-        valid_rms = bkg_rms_map[rms_valid_mask(bkg_rms_map)]
-        step = max(1, len(valid_rms) // 100000)
-        median_rms = np.median(valid_rms[::step]) if len(valid_rms) > 0 else 0.0
-        if np.isfinite(median_rms) and median_rms > 0.1:
-            dynamic_clip = 4.5 * (10.0 / (median_rms + 1.0))
-            sigclip = np.clip(dynamic_clip, 3.0, 8.0)
-            print(f"    Dynamically adjusted sigclip to {sigclip:.2f} based on background RMS of {median_rms:.2f}")
-    except Exception as e:
-        warnings.warn(f"Dynamic sigclip adjustment failed: {e}", RuntimeWarning)
-
-    return float(sigclip)
 
 
 def _adjust_dynamic_objlim(config, existing_mask, default_objlim):
@@ -314,28 +291,27 @@ def detect_cosmic_rays(
         gain (float): Gain value in e-/ADU
         read_noise (float): Read noise in electrons
         config (dict): Configuration dictionary for cosmic ray detection
-        bkg_rms_map (ndarray, optional): Background RMS map for dynamic sigclip.
+        bkg_rms_map (ndarray, optional): Background RMS map for post-detection gates.
         sky_map (ndarray, optional): Sky map used by the residual faint-CR path.
         header (dict, optional): FITS header forwarded to PSF protection.
 
     Returns:
         ndarray: Boolean mask of newly detected cosmic ray pixels
     """
-    if detect_cosmics is None:
-        print("  Astroscrappy is unavailable; returning empty cosmic-ray mask.")
-        return np.zeros(sci_data.shape, dtype=bool)
-
-    sigclip = _adjust_dynamic_sigclip(config, bkg_rms_map, default_sigclip=config.get("sigclip", 4.5))
+    sigclip = float(config.get("sigclip", 4.5))
     objlim = _adjust_dynamic_objlim(config, existing_mask, default_objlim=config.get("objlim", 5.0))
 
     faint_cfg = config.get("faint_cr", {})
+    primary_niter = int(config.get("niter", 4))
+    faint_niter = int(faint_cfg.get("niter", 1))
+    faint_active = bool(faint_cfg.get("enable", False)) and faint_niter > 0
     # One-pass mode: the loose thresholds that used to justify a second full
     # L.A.Cosmic run are applied to the primary pass, and the morphology gate
     # (elongated, high-contrast components only) does the discrimination the
     # second pass used to do. Costs one pass instead of two; whether the
     # completeness/false-positive trade is acceptable is decided by
     # ``benchmarks/cr_faint_curves.py``, not here.
-    single_pass = bool(config.get("single_pass", False)) and faint_cfg.get("enable", False)
+    single_pass = primary_niter > 0 and bool(config.get("single_pass", False)) and faint_active
     if single_pass:
         sigclip = float(faint_cfg.get("sigclip", sigclip))
         objlim = objlim * float(faint_cfg.get("objlim_boost", 1.5))
@@ -347,64 +323,70 @@ def detect_cosmic_rays(
     if enhancement not in ("lacosmic", "residual"):
         raise ValueError(f"Unknown faint-CR enhancement mode: {enhancement}")
 
-    try:
-        # Use astroscrappy (L.A.Cosmic) to detect cosmic rays. The dominant
-        # cost knob is ``niter``: every iteration re-runs the median/Laplacian
-        # filters over the whole CCD, and the later iterations only add the
-        # faintest marginal detections. The remaining knobs are forwarded so
-        # callers can tune the speed/quality tradeoff without code changes.
-        crmask_bool, _ = detect_cosmics(
-            sci_data,
-            inmask=existing_mask,
-            satlevel=saturation_level,
-            gain=gain,
-            readnoise=read_noise,
-            sigclip=sigclip,
-            objlim=objlim,
-            niter=int(config.get("niter", 4)),
-            sepmed=bool(config.get("sepmed", True)),
-            cleantype=config.get("cleantype", "meanmask"),
-            fsmode=config.get("fsmode", "median"),
-            psffwhm=float(config.get("psffwhm", 2.5)),
-            psfsize=int(config.get("psfsize", 7)),
-            verbose=False,
-        )
-    except Exception as e:
-        print(f"  ERROR: astroscrappy failed on primary CR pass: {e}")
-        return np.zeros(sci_data.shape, dtype=bool)
+    needs_astroscrappy = primary_niter > 0 or (faint_active and enhancement == "lacosmic" and not single_pass)
+    if needs_astroscrappy and detect_cosmics is None:
+        stage = "cosmic_ray.primary" if primary_niter > 0 else "cosmic_ray.faint"
+        raise StageFailure(stage, "astroscrappy backend is unavailable")
 
-    if single_pass:
-        # The morphology gate subsumes both the PSF protection (a star is
-        # round, so it fails min_elongation) and the component post-filter,
-        # which is exactly why one pass can replace two.
-        crmask_bool = _filter_faint_components(
-            np.ascontiguousarray(crmask_bool.astype(bool)), sci_data, bkg_rms_map, faint_cfg, sky_map=sky_map
-        )
-    else:
-        crmask_bool = _apply_psf_protection(
-            crmask_bool, sci_data, config, gain, read_noise, bkg_rms_map, sky_map=sky_map, header=header
-        )
-        crmask_bool = _post_filter_components(crmask_bool.astype(bool), sci_data, bkg_rms_map, config, sky_map=sky_map)
-
-    crmask_bool = _apply_morphological_dilation(crmask_bool, config)
-
-    if faint_cfg.get("enable", False) and not single_pass:
-        if enhancement == "residual":
-            print("    Running residual faint-CR enhancement...")
-            faint_kept = _detect_residual_faint_components(
+    crmask_bool = np.zeros(sci_data.shape, dtype=bool)
+    if primary_niter > 0:
+        try:
+            crmask_bool, _ = detect_cosmics(
                 sci_data,
-                existing_mask | crmask_bool,
-                sky_map,
-                bkg_rms_map,
-                faint_cfg.get("residual", {}),
+                inmask=existing_mask,
+                satlevel=saturation_level,
                 gain=gain,
-                read_noise=read_noise,
-                header=header,
-                psf_aware=bool(config.get("psf_aware", True)),
+                readnoise=read_noise,
+                sigclip=sigclip,
+                objlim=objlim,
+                niter=primary_niter,
+                sepmed=bool(config.get("sepmed", True)),
+                cleantype=config.get("cleantype", "meanmask"),
+                fsmode=config.get("fsmode", "median"),
+                psffwhm=float(config.get("psffwhm", 2.5)),
+                psfsize=int(config.get("psfsize", 7)),
+                verbose=False,
             )
-        elif enhancement == "lacosmic":
-            print("    Running faint-CR pass (configured sigclip + morphology gate)...")
-            try:
+        except Exception as exc:
+            raise StageFailure("cosmic_ray.primary", exc) from exc
+
+        try:
+            if single_pass:
+                crmask_bool = _filter_faint_components(
+                    np.ascontiguousarray(crmask_bool.astype(bool)),
+                    sci_data,
+                    bkg_rms_map,
+                    faint_cfg,
+                    sky_map=sky_map,
+                )
+            else:
+                crmask_bool = _apply_psf_protection(
+                    crmask_bool, sci_data, config, gain, read_noise, bkg_rms_map, sky_map=sky_map, header=header
+                )
+                crmask_bool = _post_filter_components(
+                    crmask_bool.astype(bool), sci_data, bkg_rms_map, config, sky_map=sky_map
+                )
+            crmask_bool = _apply_morphological_dilation(crmask_bool, config)
+        except Exception as exc:
+            raise StageFailure("cosmic_ray.postprocess", exc) from exc
+
+    if faint_active and not single_pass:
+        try:
+            if enhancement == "residual":
+                print("    Running residual faint-CR enhancement...")
+                faint_kept = _detect_residual_faint_components(
+                    sci_data,
+                    existing_mask | crmask_bool,
+                    sky_map,
+                    bkg_rms_map,
+                    faint_cfg.get("residual", {}),
+                    gain=gain,
+                    read_noise=read_noise,
+                    header=header,
+                    psf_aware=bool(config.get("psf_aware", True)),
+                )
+            else:
+                print("    Running faint-CR pass (configured sigclip + morphology gate)...")
                 faint_raw, _ = detect_cosmics(
                     sci_data,
                     inmask=(existing_mask | crmask_bool),
@@ -413,7 +395,7 @@ def detect_cosmic_rays(
                     readnoise=read_noise,
                     sigclip=float(faint_cfg.get("sigclip", 5.0)),
                     objlim=objlim * float(faint_cfg.get("objlim_boost", 1.5)),
-                    niter=int(faint_cfg.get("niter", 1)),
+                    niter=faint_niter,
                     sepmed=bool(config.get("sepmed", True)),
                     cleantype=config.get("cleantype", "meanmask"),
                     fsmode=config.get("fsmode", "median"),
@@ -421,12 +403,11 @@ def detect_cosmic_rays(
                     psfsize=int(config.get("psfsize", 7)),
                     verbose=False,
                 )
-            except Exception as e:
-                print(f"  ERROR: astroscrappy failed on faint CR pass: {e}")
-                faint_raw = np.zeros(sci_data.shape, dtype=bool)
-            faint_kept = _filter_faint_components(
-                np.ascontiguousarray(faint_raw.astype(bool)), sci_data, bkg_rms_map, faint_cfg, sky_map=sky_map
-            )
+                faint_kept = _filter_faint_components(
+                    np.ascontiguousarray(faint_raw.astype(bool)), sci_data, bkg_rms_map, faint_cfg, sky_map=sky_map
+                )
+        except Exception as exc:
+            raise StageFailure("cosmic_ray.faint", exc) from exc
         n_faint = int(np.count_nonzero(faint_kept))
         if n_faint:
             print(f"    Faint-CR pass kept {n_faint} pixels.")

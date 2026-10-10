@@ -12,6 +12,8 @@ from typing import Any, Mapping
 
 import numpy as np
 
+__all__ = ["TorchfitsArrayHeaderIO", "TorchfitsUnavailableError", "torchfits_available"]
+
 
 class TorchfitsUnavailableError(ImportError):
     """Raised when the optional torchfits adapter is requested but unavailable."""

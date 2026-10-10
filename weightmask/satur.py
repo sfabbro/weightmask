@@ -2,6 +2,8 @@ import numpy as np
 import scipy.ndimage
 from scipy.signal import find_peaks
 
+_MIN_CLUMP_PIXELS = 20
+
 
 def _tail_histogram(values, edges):
     """Counts per bin, identical to ``np.histogram(values, bins=edges)``.
@@ -93,7 +95,7 @@ def estimate_saturation_robust_clump(data, min_adu=None, max_adu=None, finite_da
         counts, bin_edges = _tail_histogram(finite_data, bins)
         bin_centers = (bin_edges[:-1] + bin_edges[1:]) / 2
 
-        if np.sum(counts) < 20:
+        if np.sum(counts) < _MIN_CLUMP_PIXELS:
             print("  Robust Clump: Not enough pixels in extreme tail (empty field). No saturation detected.")
             return None
 
@@ -190,32 +192,41 @@ def _estimate_effective_full_scale(sci_data, sci_hdr, config, header_keyword, fi
 
 
 def _estimate_plateau_tail(sci_data, effective_full_scale, config, finite_data=None):
-    """Estimate saturation from an upper-tail plateau when histogram clumps are ambiguous."""
+    """Return the highest qualifying repeated upper-tail level and its multiplicity."""
+    hist_params = config.get("histogram_params", {})
+    min_tail_pixels = hist_params.get("min_tail_pixels", 8)
+    if (
+        isinstance(min_tail_pixels, (bool, np.bool_))
+        or not isinstance(min_tail_pixels, (int, np.integer))
+        or min_tail_pixels <= 0
+    ):
+        raise ValueError("saturation.histogram_params.min_tail_pixels must be a positive integer")
+    min_tail_pixels = int(min_tail_pixels)
+
     if finite_data is None:
         finite_data = sci_data[np.isfinite(sci_data)]
     if finite_data.size == 0:
-        return None
+        return None, 0
 
-    hist_params = config.get("histogram_params", {})
-    plateau_percentile = float(hist_params.get("plateau_percentile", 99.8))
     guard_fraction = float(hist_params.get("guard_fraction", 0.75))
-    min_tail_pixels = int(hist_params.get("min_tail_pixels", 8))
     lower_guard = guard_fraction * effective_full_scale
 
     if np.max(finite_data) < lower_guard:
-        return None
+        return None, 0
 
     tail = finite_data[finite_data >= lower_guard]
     if tail.size < min_tail_pixels:
-        return None
+        return None, 0
 
-    estimate = float(np.percentile(tail, plateau_percentile))
-    if not np.isfinite(estimate) or estimate < lower_guard:
-        return None
-    return estimate
+    levels, counts = np.unique(tail, return_counts=True)
+    qualifying = np.flatnonzero(counts >= min_tail_pixels)
+    if qualifying.size == 0:
+        return None, 0
+    plateau_index = int(qualifying[-1])
+    return float(levels[plateau_index]), int(counts[plateau_index])
 
 
-def _choose_saturation_level(hist_level, plateau_level, effective_full_scale, advisory, config):
+def _choose_saturation_level(hist_level, plateau_level, plateau_support, effective_full_scale, advisory, config):
     """Pick the final saturation level using guarded histogram logic."""
     hist_params = config.get("histogram_params", {})
     guard_fraction = float(hist_params.get("guard_fraction", 0.75))
@@ -226,11 +237,18 @@ def _choose_saturation_level(hist_level, plateau_level, effective_full_scale, ad
     if hist_level is not None and lower_guard <= hist_level <= upper_guard:
         return float(hist_level), "histogram (guarded)"
 
-    if plateau_level is not None and lower_guard <= plateau_level <= upper_guard:
+    if (
+        plateau_level is not None
+        and plateau_support >= _MIN_CLUMP_PIXELS
+        and lower_guard <= plateau_level <= upper_guard
+    ):
         return float(plateau_level), "plateau-tail fallback"
 
     if advisory is not None and lower_guard <= advisory <= upper_guard:
         return float(advisory), "header advisory fallback"
+
+    if plateau_level is not None and lower_guard <= plateau_level <= upper_guard:
+        return float(plateau_level), "plateau-tail fallback"
 
     return float(effective_full_scale), "default guarded fallback"
 
@@ -244,8 +262,10 @@ def _saturation_for_region(sci_data, config, effective_full_scale, advisory, fin
         max_adu=hist_params.get("hist_max_adu"),
         finite_data=finite_data,
     )
-    plateau_level = _estimate_plateau_tail(sci_data, effective_full_scale, config, finite_data=finite_data)
-    return _choose_saturation_level(hist_level, plateau_level, effective_full_scale, advisory, config)
+    plateau_level, plateau_support = _estimate_plateau_tail(
+        sci_data, effective_full_scale, config, finite_data=finite_data
+    )
+    return _choose_saturation_level(hist_level, plateau_level, plateau_support, effective_full_scale, advisory, config)
 
 
 def detect_saturated_pixels(sci_data, sci_hdr, config):

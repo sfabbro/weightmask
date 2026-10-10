@@ -13,11 +13,59 @@ from .utils import rms_or_robust, rms_valid_mask, robust_rms
 
 def _profile_outliers(profile, sigma):
     """True where a 1-D profile exceeds ``sigma`` robust standard deviations."""
-    med = float(np.median(profile))
-    mad = 1.4826 * float(np.median(np.abs(profile - med)))
+    profile = np.asarray(profile, dtype=np.float64)
+    finite = np.isfinite(profile)
+    outliers = np.zeros(profile.shape, dtype=bool)
+    if not np.any(finite):
+        return outliers
+    values = profile[finite]
+    med = float(np.median(values))
+    mad = 1.4826 * float(np.median(np.abs(values - med)))
     if not np.isfinite(mad) or mad <= 1e-12:
         mad = 1e-12
-    return np.asarray(profile) > med + float(sigma) * mad
+    outliers[finite] = values > med + float(sigma) * mad
+    return outliers
+
+
+def _finite_axis_profiles(frame):
+    if np.all(np.isfinite(frame)):
+        return np.median(frame, axis=0), np.median(frame, axis=1)
+    values = frame.copy()
+    values[~np.isfinite(values)] = np.nan
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore", category=RuntimeWarning)
+        return np.nanmedian(values, axis=0), np.nanmedian(values, axis=1)
+
+
+class PersistenceProfileAccumulator:
+    def __init__(self, shape, min_other=2, sigma=3.0):
+        if len(shape) != 2:
+            raise ValueError("persistent_axis_mask frames must be 2-D")
+        self.shape = tuple(shape)
+        self.min_other = int(min_other)
+        self.sigma = float(sigma)
+        self.frame_count = 0
+        self.col_hits = np.zeros(self.shape[1], dtype=np.intp)
+        self.row_hits = np.zeros(self.shape[0], dtype=np.intp)
+
+    def add(self, frame):
+        frame = np.asarray(frame, dtype=np.float64)
+        if frame.shape != self.shape:
+            raise ValueError("persistent_axis_mask frames must share a shape")
+        col_profile, row_profile = _finite_axis_profiles(frame)
+        self.col_hits += _profile_outliers(col_profile, self.sigma)
+        self.row_hits += _profile_outliers(row_profile, self.sigma)
+        self.frame_count += 1
+
+    def mask(self):
+        mask = np.zeros(self.shape, dtype=bool)
+        hot_cols = np.nonzero(self.col_hits >= self.min_other)[0]
+        hot_rows = np.nonzero(self.row_hits >= self.min_other)[0]
+        if hot_cols.size:
+            mask[:, hot_cols] = True
+        if hot_rows.size:
+            mask[hot_rows, :] = True
+        return mask
 
 
 def persistent_axis_mask(frames, min_other=2, sigma=3.0):
@@ -28,27 +76,16 @@ def persistent_axis_mask(frames, min_other=2, sigma=3.0):
     frames — the same count the trail curator requires of other epochs. A trail
     that exists in only one exposure does not qualify.
     """
-    arrays = [np.asarray(frame, dtype=np.float64) for frame in frames]
-    if not arrays:
+    accumulator = None
+    for frame in frames:
+        array = np.asarray(frame, dtype=np.float64)
+        if accumulator is None:
+            accumulator = PersistenceProfileAccumulator(array.shape, min_other=min_other, sigma=sigma)
+        accumulator.add(array)
+        del array, frame
+    if accumulator is None:
         raise ValueError("persistent_axis_mask needs at least one frame")
-    shape = arrays[0].shape
-    if any(frame.shape != shape for frame in arrays):
-        raise ValueError("persistent_axis_mask frames must share a shape")
-    if len(shape) != 2:
-        raise ValueError("persistent_axis_mask frames must be 2-D")
-    col_hits = np.zeros(shape[1], dtype=np.int16)
-    row_hits = np.zeros(shape[0], dtype=np.int16)
-    for frame in arrays:
-        col_hits += _profile_outliers(np.median(frame, axis=0), sigma).astype(np.int16)
-        row_hits += _profile_outliers(np.median(frame, axis=1), sigma).astype(np.int16)
-    mask = np.zeros(shape, dtype=bool)
-    hot_cols = np.nonzero(col_hits >= int(min_other))[0]
-    hot_rows = np.nonzero(row_hits >= int(min_other))[0]
-    if hot_cols.size:
-        mask[:, hot_cols] = True
-    if hot_rows.size:
-        mask[hot_rows, :] = True
-    return mask
+    return accumulator.mask()
 
 
 def _normalize_angle_deg(angle_deg):
@@ -514,15 +551,35 @@ def _refine_trail_mask(data_sub, bkg_rms_map, candidate, mask_cfg, existing_mask
                         continue
                     fsmp = fs["sampled"]
                     fins = fs["inside"]
+                    fbackground = fsmp[:, sideband]
+                    fbg_values = fbackground[np.isfinite(fbackground)]
+                    if fbg_values.size < 50:
+                        continue
+                    fbg_med = np.median(fbg_values)
+                    fbg_std = mad_std(fbg_values, ignore_nan=True)
+                    if not np.isfinite(fbg_std) or fbg_std <= 1e-6:
+                        fbg_std = np.std(fbg_values)
+                    if not np.isfinite(fbg_std) or fbg_std <= 1e-6:
+                        fbg_std = np.nanstd(fsmp)
+                    if not np.isfinite(fbg_std) or fbg_std <= 1e-6:
+                        fbg_std = 1e-3
                     with warnings.catch_warnings():
                         warnings.simplefilter("ignore", category=RuntimeWarning)
-                        frbg = np.nanmedian(fsmp[:, sideband], axis=1)
-                    frbg = np.where(np.isfinite(frbg), frbg, bg_med)
+                        frbg = np.nanmedian(fbackground, axis=1)
+                    frbg = np.where(np.isfinite(frbg), frbg, fbg_med)
                     fcen = fsmp - frbg[:, np.newaxis]
-                    wfan = _support_count(fcen, fins, bg_std)
+                    wfan = _support_count(fcen, fins, fbg_std)
                     if _better(wfan, best_w):
                         best_w = wfan
-                        strip, sampled, inside, row_bg, centered = fs, fsmp, fins, frbg, fcen
+                        strip, sampled, inside, bg_med, bg_std, row_bg, centered = (
+                            fs,
+                            fsmp,
+                            fins,
+                            fbg_med,
+                            fbg_std,
+                            frbg,
+                            fcen,
+                        )
 
     with warnings.catch_warnings():
         warnings.simplefilter("ignore", category=RuntimeWarning)
@@ -982,7 +1039,7 @@ def _drop_bright_components(mask, data_sub, bkg_rms_map, max_sigma, min_pixels=2
 
     | feature | p90 of the component |
     |---|---|
-    | satellite trail (996195p HDU 35/36) | 3.0 / 3.2 sigma |
+    | unconfirmed linear feature (996195p HDU 35/36) | 3.0 / 3.2 sigma |
     | bright star arm (1013721p HDU 33) | 155 sigma |
     | near-saturated column group (1013719p/1013720p HDU 5) | 1138 / 1345 sigma |
 
@@ -1148,8 +1205,8 @@ def detect_streaks(data_sub, bkg_rms_map, existing_mask, config):
     )
     # The Radon rescue used to sit here as the *sensitive* stage -- the thing that
     # finds what the cheap prescreen misses. It is gone. Measured on 83 real amps
-    # it accepted on 3, all three false positives, while houghpeaks explained all
-    # 23,035 px of the real detections. On injected trails at 4/6/8/12 sigma over
+    # it accepted on 3, all three false positives, while houghpeaks explained the
+    # historical real detections. On injected trails at 4/6/8/12 sigma over
     # two lengths and two seeds it changed recall_line by +0.000 in 8 of 8 cells.
     # It cost 121.7 s/amp of a 125.7 s/amp stage. See benchmarks/streak_recall_floor.py
     # and benchmarks/streak_stage_sweep.py; both must be re-run, not assumed, if
