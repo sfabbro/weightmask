@@ -6,8 +6,8 @@ from astropy.io import fits
 
 REPO_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, REPO_ROOT)  # noqa: E402
+from weightmask.config import clean_config_dict  # noqa: E402
 from weightmask.process import process_image  # noqa: E402
-from weightmask.utils import clean_config_dict  # noqa: E402
 
 
 def evaluate_real_mef():

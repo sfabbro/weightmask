@@ -12,11 +12,12 @@
 > Its latency tables and "identical products" claims describe that code, not the
 > current one. For what ships today see [usage.md](usage.md) for the
 > configuration surface, [algorithms.md](algorithms.md) for the method, and
-> `CHANGELOG.md` for what changed and why. Re-derive any number here with
-> `pixi run streak-sweep` rather than quoting it.
+> `CHANGELOG.md` for what changed and why. Treat the tables here as frozen
+> historical evidence; current benchmark commands use later protocols and are
+> not reproductions of these figures.
 >
 > One correction that survived into other documents: this audit credits the
-> binned Hough-peak stage (`houghpeaks`) with the real detections, and that is
+> binned Hough-peak stage (`houghpeaks`) with the unconfirmed linear-feature detections, and that is
 > correct -- isolating the stages on 996195p HDU 35 leaves 0 px with Hough
 > disabled. An intermediate claim that the contour stage found them was wrong.
 
@@ -127,22 +128,26 @@ padding sets the sampling grid). The angle-binned variant that would cut it to
 ~9 s changes the sinogram, so it needs the injection-recall suite before it can
 ship — see follow-ups.
 
-What ships instead is `mrt_rescue_params.enable` (default `true`, so behaviour is
-unchanged), so a survey that knows its fields carry no intermittent trails can
-skip a 35 s/350 MB stage per CCD.
+At the time of this historical audit, `mrt_rescue_params.enable` (default
+`true`) made the Radon stage optional, so a survey that knew its fields carried
+no intermittent trails could skip a 35 s/350 MB stage per CCD. That parameter is
+removed from the current configuration.
 
 ### `bad.compute_flat_bad_mask` — recomputed per exposure (fixed)
 
-Each flat HDU's mask costs 21.6 s, depends only on that flat HDU, the tile size
-and the `flat_masking` settings, and was recomputed for every exposure sharing
-the flat: 36 HDUs x 10 exposures x 21.6 s of redundant work per survey run.
+At the time of this audit, each flat HDU's mask cost 21.6 s, depended on that
+flat HDU, the tile size and the `flat_masking` settings, and was recomputed for
+every exposure sharing the flat: 36 HDUs x 10 exposures x 21.6 s of redundant
+work per survey run.
 
 `compute_flat_bad_mask_cached` stores it as `.npy` next to the flat (or in
 `flat_masking.bad_mask_cache_dir`), keyed on the flat's absolute path, byte size,
-nanosecond mtime, HDU index, shape, tile size and every `flat_masking` setting.
-A replaced flat or retuned masking therefore cannot read a stale mask; a
-corrupt, partial, missing or unwritable entry falls back to the plain
-computation, so products never depend on the cache. Set
+nanosecond mtime, HDU index, shape and every `flat_masking` setting. WM-06 cache
+version 4 removed tile size from the identity after halo filtering and full-HDU
+column statistics made the result tile-size independent; the version excludes
+older tile-dependent entries. A replaced flat or retuned masking therefore
+cannot read a stale mask; a corrupt, partial, missing or unwritable entry falls
+back to the plain computation, so products never depend on the cache. Set
 `flat_masking.bad_mask_cache: false` to disable it.
 
 ### `mef.process_all_hdus` — whole-MEF retention (fixed)
@@ -282,15 +287,15 @@ The full-resolution multi-scale Canny/Hough sweep (`satdet`) was measured over
 | cost | 1,543 s over the sweep, 27.5 s/amp |
 
 It is not a tuning problem. `confidence_threshold` swept from 0.22 down to 0.02
-gave zero acceptances, including on the amps carrying known real trails, and the
+gave zero acceptances, including on the amps carrying known unconfirmed linear features, and the
 Canny pair swept from 0.06/0.22 to 0.60/1.30 also stayed at zero. Internally the
 stage is not idle: it produces ~131,000 Hough segments and ~5,300 clusters on a
 9.8 Mpix amp, of which 16 survive its own gates, and the closest survivor is
-**1,357 px from the known satellite trail**. The trail is not in the stage's own
+**1,357 px from the known unconfirmed linear feature**. The feature is not in the stage's own
 candidate list at any setting. Its `min_cluster_segments` gate was also
 undocumented -- the config's `min_segment_accept` gates a different, later check.
 
-All four real detections in 996195p are bit-identical before and after removal
+All four unconfirmed linear-feature detections in 996195p are bit-identical before and after removal
 (1286, 584, 12001, 11034 px).
 
 The gate that decided whether the sweep ran, and which also gated the Radon
@@ -302,7 +307,7 @@ handled the frame.
 
 | amp | before | after |
 |---|---|---|
-| 996195p HDU 35 (real trail, prescreen succeeds) | 37 s | **1.2 s** |
+| 996195p HDU 35 (unconfirmed linear feature, prescreen succeeds) | 37 s | **1.2 s** |
 | 996195p HDU 1 (nothing found, rescue runs) | 37 s | **31.5 s** |
 
 ### `streaks` pre-masked veto (`mask_params.max_premasked_fraction`, default 0.25)
@@ -314,14 +319,14 @@ the two classes separate cleanly:
 | class | pre-masked fraction | median `data_sub` (sky ~150 e-) | across-MAD | shape |
 |---|---|---|---|---|
 | saturated-star bleed | **0.45** | 1,675-1,983 e- | 1.13-1.16 px | hairline, 1-row step where the wing brightens |
-| satellite trail | **0.02** | 45-50 e- | 4.45 px | constant-width band, tapers along its length |
+| unconfirmed linear feature | **0.02** | 45-50 e- | 4.45 px | constant-width band, tapers along its length |
 
 The pre-masked fraction is the cheapest of the four discriminators: a factor of 22
 apart, and both masks are already in hand at that point in the pipeline. Applied
 per component, so a stage returning both a bleed and a trail keeps the trail.
 
 On 996195p the veto removes both false positives (HDUs 1 and 16) and leaves both
-real trails untouched at 12,001 and 11,034 px.
+unconfirmed linear features untouched at 12,001 and 11,034 px.
 
 ### `cosmics` single pass (`cosmic_ray.single_pass`, default false)
 
@@ -338,6 +343,32 @@ The two-pass arrangement earns its 2.8 s: multi-pixel worm recall more than trip
 cleaner but cannot see single-pixel hits at all, because the morphology gate requires
 3-12 px elongated components — which is the reason the second pass exists. Shipped gated
 off, with the numbers.
+
+### `cosmics` significance scaling (`cosmic_ray.sigclip`)
+
+`pixi run python benchmarks/cr_faint_curves.py --normalized-residuals` reads
+`cosmic_ray.sigclip` from canonical `weightmask.yml` (or the file supplied with
+`--config`) and holds the same 1,000,000 standard-normal noise residuals and
+10,000 injected positive residuals from 3 to 12 sigma fixed while representing
+them at three ADU RMS scales:
+
+| rule | RMS (ADU) | `sigclip` | recall | false-positive rate |
+|---|---:|---:|---:|---:|
+| fixed dimensionless | 1 | 8.5 | 0.3897 | 0 |
+| fixed dimensionless | 10 | 8.5 | 0.3897 | 0 |
+| fixed dimensionless | 100 | 8.5 | 0.3897 | 0 |
+| former ADU-RMS rule | 1 | 8.0 | 0.4460 | 0 |
+| former ADU-RMS rule | 10 | 4.0909 | 0.8820 | 0.000024 |
+| former ADU-RMS rule | 100 | 3.0 | 1.0000 | 0.001338 |
+
+The former rule changed a dimensionless significance threshold as a function of
+a dimensional ADU quantity. A pure unit-scale change therefore lowered the
+threshold and raised both recall and false positives. The rule and its config key
+were removed; the canonical 8.5 is retained exactly as the historical shipped
+conservative value and is mutation-pinned to this record. This comparison does
+not establish how 8.5 was originally selected or that it is optimal. It supports
+dimensional invariance and removal of the ADU rule only; no adaptive replacement
+was introduced without a benchmarked dimensionless predictor.
 
 ### Background RMS sentinel
 

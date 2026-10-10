@@ -1,8 +1,9 @@
 # Installation
 
-weightmask needs Python 3.10 or newer. CI tests 3.13 on linux-64. Runtime
-dependencies: numpy, astropy, fitsio, scipy, scikit-image, sep, PyYAML,
-astroscrappy.
+weightmask supports Python 3.10 or newer on Linux. CI runs the package smoke
+test on Python 3.10 through 3.13 and the full test suite on Linux with Python
+3.13. Runtime dependency floors are numpy 1.25, astropy 5.0, fitsio 1.3.0,
+scipy 1.9, scikit-image 0.20, sep 1.2, PyYAML 6.0, and astroscrappy 1.2.
 
 ## pip (PyPI)
 
@@ -11,8 +12,21 @@ pip install weightmask
 weightmask --help
 ```
 
-Copy [`weightmask.yml`](../weightmask.yml) from the source tree; it is not
-installed with the package.
+The optional torchfits adapter can be installed with:
+
+```bash
+pip install "weightmask[torchfits]"
+```
+
+The default configuration is included in the package. Copy it into a working
+directory without depending on the source tree:
+
+```bash
+python -c "from weightmask.config import copy_default_config; copy_default_config('weightmask.yml')"
+```
+
+The same resource is available to Python callers as
+`weightmask.config.default_config_resource()`.
 
 ## Pixi (development)
 

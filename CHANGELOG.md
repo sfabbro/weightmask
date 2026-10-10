@@ -1,6 +1,6 @@
 # Changelog
 
-## 0.2.1 - 2026-10-05
+## 0.2.1 (unreleased)
 
 Correctness, I/O safety, and release validation fixes. Masks, skies, weights,
 and confidence maps can change from 0.2.0.
@@ -12,8 +12,10 @@ and confidence maps can change from 0.2.0.
 - Streak refits retain coherent along-trail support instead of choosing a narrow
   fragment and rejecting the whole trail. Hough support can bridge short gaps
   from star masks without treating missing samples as empty sky; minimum run
-  length is enforced for isolated runs too. The two real-trail regressions now
-  produce 17,321 and 10,041 pixels, unchanged by the brightness-veto setting.
+  length is enforced for isolated runs too. The two linear-feature regressions
+  are now pinned by centerline coverage, recovered span, corridor purity, and
+  area bounds; those geometry invariants are unchanged by the brightness-veto
+  setting.
 - A primary streak no longer suppresses the residual RANSAC search for another
   trail. Its sigma threshold uses the measured RMS directly, so changing ADU
   units does not change which residual pixels qualify.
@@ -112,22 +114,33 @@ and confidence maps can change from 0.2.0.
   approximate for differently sized detectors. Dark hot-pixel detection assumes
   a mostly healthy HDU with a uniform pedestal; structured darks need calibrated
   per-amplifier/local baselines.
+- This release does not claim validated real-trail recall. The local MegaCam
+  label set has no independently confirmed trail, so that recall is `n/a`.
+- The full synthetic suite is not a pass. `pixi run benchmark-synthetic` on
+  this tree reports average streak F1 0.149, below the unchanged 0.200 gate.
+  The CI-sized sparse case passes its own gates. The MegaCam science gate on
+  this tree also failed; see Qualification.
 - Full science benchmarks are opt-in. Historical scores under 0.2.0 used the
-  earlier generator and recall metric. The corrected compact MegaCam release
-  gate passes; broad multi-seed/angular sweeps and other instrument campaigns
-  remain unqualified. Stage diagnostics with a global sky and empty initial
-  mask do not establish production-pipeline quality.
+  earlier generator and recall metric. Broad multi-seed/angular sweeps and
+  other instrument campaigns remain unqualified. Stage diagnostics with a
+  global sky and empty initial mask do not establish production-pipeline quality.
 
 ### Qualification
 
-- The MegaCam release gate scores all 89 annotated HDUs: zero false positives
-  on 241 labelled artefacts. Injected continuous-trail mean recall is 0.753
-  exact and 0.903 within five pixels; the faint dashed case remains undetected.
-  Two-pass cosmic-ray mean recall is 0.322 for worms and 0.167 for single pixels.
-  The selected two-HDU production/timing run completes successfully.
-- The local suite passes 524 tests, including both real satellite-trail
-  regressions. One optional torchfits test skips. A clean export passes lint,
-  516 tests with nine expected data/optional skips, and entry-point smoke.
+`pixi run science-gate` on this tree **failed**. Do not treat the 2026-10-06
+figures (continuous recall 0.753 / 0.903, worm 0.322, single-pixel 0.167) as
+the candidate result.
+
+- Artefact false positives on 89 annotated HDUs and 241 labelled artefacts are
+  still 0 (rate 0.000) with persistence on. Real-trail recall is `n/a`.
+- Injected continuous-trail mean recall on `1013719p` HDU 1 is 0.720 exact and
+  0.800 within five pixels, below 0.75 and 0.90.
+- Two-pass cosmic-ray recall is 0.207 for worms and 0.054 for single pixels,
+  below the worm drop limit and the 0.15 single-pixel floor.
+- The two-HDU timing run completed. It is not a speedup claim.
+- The local suite covers both geometry-guarded linear-feature regressions. One
+  optional torchfits test skips. A clean export passes lint, expected data/optional
+  skips, and entry-point smoke.
 
 ## 0.2.0 - 2026-10-02
 
@@ -150,12 +163,12 @@ change.
 
 ### Unchanged, and now pinned
 
-- Both real satellite trails are still found: 996195p HDU 35 and 36, byte-identical
-  at 12,001 and 11,034 px. `tests/test_brightness_veto.py` asserts this at the
-  shipped default, with the brightness veto off, and with it wide open. A stage
-  deletion that dropped one of them to zero passed the suite green before that
-  test existed.
-- Zero of ~1,100 stars fall inside the mask on the two real-trail chips.
+- The two unconfirmed linear features in 996195p HDUs 35 and 36 still satisfy
+  the geometry-based corridor invariants at the shipped default, with the
+  brightness veto off, and with it wide open. `tests/test_brightness_veto.py`
+  asserts those invariants directly. A stage deletion that dropped one of them
+  to zero passed the suite green before that test existed.
+- Zero of ~1,100 stars fall inside the mask on the two unconfirmed-linear-feature chips.
 
 ### Changed
 
@@ -182,7 +195,7 @@ change.
 ### Known limitations
 
 - The detector's angular response is limited. On injected trials it recovers
-  near-horizontal trails and misses 25-160 degrees. Both real trails are at
+   near-horizontal trails and misses 25-160 degrees. Both unconfirmed linear features are at
   ~1 degree, so the local corpus does not expose this. The response may be
   telescope-specific and was not investigated further.
 - `max_component_sigma: 20` is a 6x margin above a sample of two trails. It is
@@ -190,6 +203,12 @@ change.
   anything local revealing it.
 - `synthetic_v2` fails its quality gate at F1 0.159 against a 0.200 threshold.
   This predates the work in this release and is unchanged by it.
+
+### Historical engineering record (not current release evidence)
+
+The following measurements document superseded MRT/Radon and detector-stage
+chronology. They are retained for reproducibility and are not claims about the
+current shipped detector or release qualification.
 
 ### Per-stage findings behind the release
 
@@ -265,11 +284,11 @@ multi-scale Canny + probabilistic Hough + segment clustering -- **ran on 56 of
 mask: 1,543 s across the sweep, 27.5 s per amp.**
 
 It is not mis-tuned. Sweeping `confidence_threshold` from 0.22 down to 0.02
-produced zero acceptances on six amps including both known real trails. Sweeping
+produced zero acceptances on six amps including both known unconfirmed linear features. Sweeping
 the Canny thresholds from 0.06/0.22 up to 0.60/1.30 left acceptance at zero
 too. Internally the stage is not idle -- it produces ~131,000 Hough segments and
 ~5,300 clusters on a 9.8 Mpix amp -- but only 16 clusters survive its own gates
-and **the closest survivor is 1,357 px from the known satellite trail**, so the
+and **the closest survivor is 1,357 px from the known unconfirmed linear feature**, so the
 trail is not in the stage's own candidate list at any setting. Its
 `min_cluster_segments` gate is also undocumented: the config's `min_segment_
 accept` gates a different, later check.
@@ -279,7 +298,7 @@ Removed: `_detect_streaks_satdet` and 13 helpers only it called, plus
 `_refine_trail_mask`, `_sample_trail_strip` and the rest of the strip machinery
 survive -- houghpeaks, contours and the rescue all use them.
 
-**All four real detections in 996195p are bit-identical before and after** (1286,
+**All four unconfirmed linear-feature detections in 996195p are bit-identical before and after** (1286,
 584, 12001, 11034 px), so nothing was lost. HDU 35's streak stage went 37 s ->
 1.2 s, because the prescreen's own detection is now enough to skip the rescue;
 HDU 1 is 37 s -> 31.5 s, where the rescue still runs.
@@ -293,10 +312,10 @@ the prescreen has already masked enough to have handled the frame.
 **Pre-masked veto.** A component lying mostly inside the mask the pipeline already
 carries is not a new finding. The dominant false positive on real amps is a
 saturated star's bleed: 45% of its pixels are already flagged, against **2%** for
-a real satellite trail -- a factor of 22, and free to compute because both masks
+an unconfirmed linear feature -- a factor of 22, and free to compute because both masks
 are already in hand. Applied per component so a stage returning both a bleed and
 a trail keeps the trail, and to all four stages. On 996195p this removes the two
-false positives (HDUs 1 and 16) and leaves both real trails untouched.
+false positives (HDUs 1 and 16) and leaves both unconfirmed linear features untouched.
 
 **Who owns the survivors?** Bit attribution in the final mask says 97% of the
 dead-column pixels carry `STREAK` and nothing else, so this is not a duplicate
@@ -312,18 +331,18 @@ multiple of the local background RMS at p90, measured on real amps:
 
 | feature | p90 |
 |---|---|
-| satellite trail (996195p HDU 35/36) | 3.0 / 3.2 sigma |
+| unconfirmed linear feature (996195p HDU 35/36) | 3.0 / 3.2 sigma |
 | saturated-star bleed | 1138 / 1345 sigma |
 | bright star arm | 155 sigma |
 | near-saturated column group | ~2000 sigma |
 
 **Optional and uncalibrated at the high end.** `max_component_sigma: null`
-disables the veto. Setting it that way leaves both real trails byte-identical
+disables the veto. Setting it that way leaves both unconfirmed linear features byte-identical
 (12,001 and 11,034 px) and lets two artefacts back in: the column group
 (10,734 px) and the star arm (4,385 px), both of which sit below
 `max_premasked_fraction` so the pre-masked veto cannot take them. The column is
 alternatively catchable by persistence -- it is static, so it holds at 0.90
-across epochs of the same field against 0.02 for a trail -- via the CLI's
+across epochs of the same field against 0.02 for an unconfirmed linear feature -- via the CLI's
 `--persistence`; the star arm holds at 0.41 and is not reliably caught that way.
 
 The threshold itself is a 6x margin above a sample of **two** trails. That is a
@@ -331,7 +350,7 @@ provisional setting rather than a measured constant, and it would suppress a
 bright satellite constellation without anything local showing it. Pinned by
 `tests/test_brightness_veto.py`.
 
-Both real trails survive **byte-identically** (12,001 and 11,034 px). The
+Both unconfirmed linear features survive **byte-identically** (12,001 and 11,034 px). The
 column components fall 10,773 -> 7,182 and 9,256 -> 5,785: the veto removes the
 saturated core but not the ~3-sigma halo around it, so it is a partial fix for
 that class. This is a stopgap; a pixel at 99% of `SATURATE` arguably belongs to
@@ -339,7 +358,7 @@ the saturation stage, which is a wider change than this stage should make on
 its own.
 
 **No confirmed satellite trail exists locally, and an attempt to build one
-failed.** The two faint linear features in `996195p` HDUs 35/36 are real
+failed.** The two faint linear features in `996195p` HDUs 35/36 are unconfirmed
 (60-90 sigma after line integration, row median 34 e- against 40 e- noise,
 i.e. genuinely marginal) but nothing confirms either as a satellite: their
 fitted sky position angles differ by 1.74 deg once the 0.15 deg chip rotation is
@@ -349,10 +368,10 @@ persistence against. A first attempt at a stability fixture was discarded
 because its independent line-integration fit reported the feature 66 px from
 where the detector puts it; the cause was a scoring bug in the fit, which
 rewarded raw line sums so a few bright pixels at y=3220 (row median 0.49 e-
-outlived the genuine trail at y=3180, row median 34 e-). The detector was right.
+outlived the unconfirmed linear feature at y=3180, row median 34 e-). The detector was right.
 
-Consequence: **the repository still cannot measure real-data trail recall.**
-The veto thresholds are currently justified by one confirmed-by-eye feature and a
+Consequence: **the repository still cannot measure confirmed real-data trail recall.**
+The veto thresholds are currently justified by one unconfirmed linear feature and a
 0.25 pre-masked fraction, not by a recall measurement. That is the honest state.
 
 ### Streak benchmarks were scoring a code path production never runs

@@ -6,7 +6,7 @@ per-pixel weight. Use that weight for stacking or for single-exposure work
 Processing is per HDU, in this order: bad pixels, saturation cores, a
 preliminary sky (for bleed and CRs), bleed grow, cosmic rays, iterative sky and
 objects, inverse variance, streaks, then weight and confidence. Config keys
-live in [`weightmask.yml`](../weightmask.yml).
+live in the canonical [`weightmask.yml`](../weightmask.yml).
 
 Quality bits use `set_means_flagged` polarity. `DETECTED` is informational by
 default and does not zero weight. `BAD`, `SAT`, `CR`, `STREAK`,
@@ -62,7 +62,9 @@ detection, and the Poisson term in the weight. Optional compact mesh for
 archive storage.
 
 **Method.** Default is SEP's SExtractor-style mesh background
-(`sep.Background`) with iterative object masking (`sep_background.iterations`).
+(`sep.Background`) with iterative object masking (`sep_background.iterations`);
+zero skips the object-mask refinement while retaining preliminary and final sky
+estimation.
 The explicit median-filter method fills excluded pixels from their nearest
 valid neighbors before filtering. Fallbacks when SEP cannot run: crowded frames (`mask_threshold` is a masked
 *fraction*, not an object cut) switch to global SEP; failed mesh retries go
@@ -85,7 +87,12 @@ matches SEP's node phase, not SEP's C bicubic interpolant.
 **Method.** [L.A.Cosmic](#references) Laplacian detection via astroscrappy,
 with a PSF-peakiness gate so stellar cores are not taken as CRs, a size and
 contrast cut on connected components measured above the sky, and an optional fainter second pass
-that keeps only elongated multi-pixel “worms”.
+that keeps only elongated multi-pixel “worms”. `sigclip` is a dimensionless
+standardized-residual threshold and remains fixed when image units or the ADU
+background RMS change. The former raw-ADU RMS adjustment was removed because it
+made the threshold more permissive under a pure unit rescaling. The canonical
+8.5 is the historical shipped conservative setting; the scale-control evidence
+establishes dimensional consistency, not that 8.5 is an optimized threshold.
 
 **Config.** `cosmic_ray`.
 
@@ -129,15 +136,22 @@ known limitation.
 
 Residual RANSAC searches continue after rejected clutter models. Only accepted
 trails count toward `sparse_ransac_params.max_trails`, and consumed inliers are
-removed before the next search.
+removed before the next search. The supplied 128-pixel minimum length rejects a
+persistent 116-pixel detector feature measured at the same coordinates in three
+epochs; the two curated long linear features and the focused synthetic sparse
+case are unchanged relative to the former 100-pixel floor.
 
-Two further extractors were removed after measurement, not preference. A
+The following removal record is historical engineering evidence, not current
+release qualification. Two further extractors were removed after measurement,
+not preference. A
 multi-scale Canny/Hough stage accepted nothing on 56 of 56 real amps. An
 angle-binned Radon rescue accepted on 3 of 83, all false positives, and changed
 `recall_line` by +0.000 across 8 of 8 injected-trail cells spanning 4-12 sigma,
 two lengths and two seeds, while costing 121.7 s/amp of a 125.7 s/amp stage.
-Those measurements predate the 0.2.1 object-mask fixes. Re-derive with
-`pixi run streak-sweep` and `pixi run streak-recall-floor`.
+Those measurements predate the 0.2.1 object-mask fixes. The frozen figures are
+retained in [`detector_audit.md`](detector_audit.md) and the corresponding
+historical changelog section; current benchmark commands are not reproductions
+of that chronology.
 
 Frangi-ridge comparison code is not in the package; it lives in
 `benchmarks/frangi_legacy.py`.
@@ -161,11 +175,12 @@ The sky term is `S g F` because a star sitting on a spatially varying flat
 (`tests/test_photometry_bias.py`) shifts the weighted aperture by more than
 that fixture's read-noise floor. At `F = 1` the two denominators agree.
 That expression is the core plane. Canonical `weightmask.yml` then adds
-`flat_rel_noise` (`(S g · rel)²` in the electron denominator, with `rel`
-increased where the flat is below its median) and `rescale_variance` (scale
-so background SNR has robust standard deviation 1). Omit those keys and the
-in-code fallbacks leave both off. All three variance methods estimate
-background-only variance.
+`flat_rel_noise`, the dimensionless fractional flat uncertainty. It contributes
+`(S g F · rel)²` before flat division, or `(S · rel)²` to the calibrated ADU²
+variance, with `rel` increased where the flat is below its median.
+`rescale_variance` then scales the plane so background SNR has robust standard
+deviation 1. Omit those keys and the in-code fallbacks leave both off. All three
+variance methods estimate background-only variance.
 
 Weight is masked inverse variance. Confidence is that weight divided by its
 configured percentile (default 99th), clipped to `[0, 1]` unless

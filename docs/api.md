@@ -1,10 +1,47 @@
 # API
 
-Supported public surface: package `__all__`, `weightmask.contract`,
-`weightmask.process`, `weightmask.reconstruct_sky`, and the two console scripts.
-Other modules are callable internals, not a stability promise. Science methods
-are in [algorithms.md](algorithms.md). Config keys are in
-[`weightmask.yml`](../weightmask.yml).
+Supported Python imports are the package root names in `weightmask.__all__`,
+the names listed below in `weightmask.process`, `weightmask.contract`,
+`weightmask.config`, `weightmask.background`, `weightmask.reconstruct_sky`, and
+`weightmask.torchfits_adapter`. Other modules and names are callable internals,
+not a stability promise. Science methods are in [algorithms.md](algorithms.md).
+Config keys are in the canonical [`weightmask.yml`](../weightmask.yml).
+
+## `weightmask.config`
+
+The canonical YAML is packaged with wheel and sdist artifacts. Use the resource
+directly or copy it to a writable working directory:
+
+```python
+from weightmask.config import (
+    clean_config_dict,
+    copy_default_config,
+    default_config_bytes,
+    default_config_path,
+    default_config_resource,
+    default_config_sha256,
+    default_config_text,
+)
+
+resource = default_config_resource()
+copy_default_config("weightmask.yml")
+config = clean_config_dict({"output_params": {"compress": "true"}})
+```
+
+`default_config_resource()` returns an `importlib.resources.abc.Traversable`.
+`default_config_path()` is a context manager for a temporary filesystem path
+when the package is stored in an archive. `copy_default_config()` uses exclusive
+creation by default, rejects existing or dangling symlinks, and never follows a
+target symlink. With `overwrite=True`, an existing regular file is replaced
+atomically; symlink targets are still rejected.
+`default_config_bytes()`, `default_config_text()`, and
+`default_config_sha256()` expose the packaged bytes, UTF-8 text, and digest.
+`clean_config_dict()` converts YAML scalar strings to their typed values before
+validation.
+
+The reconstruction and torchfits names are module imports, not package-root
+re-exports. In particular, `weightmask.sky_to_mesh` and
+`weightmask.TorchfitsArrayHeaderIO` are not supported paths.
 
 ## `weightmask.process`
 
@@ -13,9 +50,7 @@ from weightmask.process import process_image, validate_config
 
 if not validate_config(config):
     raise ValueError("Invalid weightmask configuration")
-mask, ivar, weight, confidence, sky, header_info = process_image(
-    data, hdr, flat_data, config, tile_size=1024
-)
+mask, ivar, weight, confidence, sky, header_info = process_image(data, hdr, flat_data, config, tile_size=1024)
 ```
 
 Single-array entry: no dark, keep-map, or MEF dead-CCD veto. Pass a real flat
@@ -89,9 +124,22 @@ reports an unknown producer.
 `CONTRACT_VERSION` (`"1.0"`) is the array-schema version; the package version
 is `weightmask.__version__` (`0.2.1`).
 
-`ArrayHeaderIO` is an optional read/write protocol. `TorchfitsArrayHeaderIO`
-implements it when torchfits is installed; torchfits is not a required
-dependency.
+`ArrayHeaderIO` is an optional read/write protocol at
+`weightmask.contract.ArrayHeaderIO`. The optional adapter is exposed at
+`weightmask.torchfits_adapter`:
+
+```python
+from weightmask.torchfits_adapter import (
+    TorchfitsArrayHeaderIO,
+    TorchfitsUnavailableError,
+    torchfits_available,
+)
+```
+
+`TorchfitsArrayHeaderIO` implements `ArrayHeaderIO` when torchfits and torch
+are installed; neither is a required dependency. `torchfits_available()` is
+the supported availability probe, and constructing or using the adapter raises
+`TorchfitsUnavailableError` when the optional dependencies are unavailable.
 
 ## `weightmask.reconstruct_sky`
 
@@ -99,13 +147,24 @@ Module and CLI for compact sky meshes (`output_params.sky_format: mesh`).
 
 ```python
 from weightmask.reconstruct_sky import reconstruct_sky_fits
-from weightmask.background import reconstruct_sky_mesh, reconstruct_sky_from_header
+from weightmask.background import (
+    parse_sky_mesh_header,
+    reconstruct_sky_from_header,
+    reconstruct_sky_mesh,
+    sky_to_mesh,
+)
 ```
 
 `reconstruct_sky_fits(input_path, output_path, hdu=None)` rebuilds a FITS file
 and returns an exit code. Input/output aliases are rejected. Node layout: `n = (size - 1) // box + 1` at
 `clip(rint((k + 0.5) * box), 0, size - 1)`; reconstruction is a natural cubic spline. See
 [algorithms.md](algorithms.md).
+
+`sky_to_mesh`, `reconstruct_sky_mesh`, `parse_sky_mesh_header`, and
+`reconstruct_sky_from_header` are the supported array/header helpers in
+`weightmask.background`. The CLI entry point is
+`weightmask.reconstruct_sky.main`, installed as
+`weightmask-reconstruct-sky`.
 
 ## Console scripts
 

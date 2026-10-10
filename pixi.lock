@@ -8289,12 +8289,13 @@ packages:
 - pypi: ./
   name: weightmask
   requires_dist:
-  - numpy
-  - astropy
-  - fitsio
-  - scipy
-  - scikit-image
-  - sep
-  - pyyaml
-  - astroscrappy
+  - numpy>=1.25
+  - astropy>=5.0
+  - fitsio>=1.3.0
+  - scipy>=1.9
+  - scikit-image>=0.20
+  - sep>=1.2
+  - pyyaml>=6.0
+  - astroscrappy>=1.2
+  - torchfits>=1.1.3 ; extra == 'torchfits'
   requires_python: '>=3.10'

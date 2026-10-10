@@ -20,30 +20,36 @@ classifiers = [
     "Programming Language :: Python :: 3.11",
     "Programming Language :: Python :: 3.12",
     "Programming Language :: Python :: 3.13",
-    "Operating System :: OS Independent",
+    "Operating System :: POSIX :: Linux",
     "Topic :: Scientific/Engineering :: Astronomy",
 ]
 dependencies = [
-    "numpy",
-    "astropy",
-    "fitsio",
-    "scipy",
-    "scikit-image",
-    "sep",
-    "PyYAML",
-    "astroscrappy",
+    "numpy>=1.25",
+    "astropy>=5.0",
+    "fitsio>=1.3.0",
+    "scipy>=1.9",
+    "scikit-image>=0.20",
+    "sep>=1.2",
+    "PyYAML>=6.0",
+    "astroscrappy>=1.2",
 ]
+
+[project.optional-dependencies]
+torchfits = ["torchfits>=1.1.3"]
 
 [project.urls]
 Homepage = "https://github.com/astroai/weightmask"
 Issues = "https://github.com/astroai/weightmask/issues"
-Changelog = "https://github.com/astroai/weightmask/blob/main/CHANGELOG.md"
+Changelog = "https://github.com/astroai/weightmask/blob/v0.2.1/CHANGELOG.md"
 Source = "https://github.com/astroai/weightmask"
 PyPI = "https://pypi.org/project/weightmask/"
 
 [tool.setuptools.packages.find]
 include = ["weightmask"]
 exclude = ["sandbox*", "tests*", "examples*", "benchmarks*"]
+
+[tool.setuptools.package-data]
+weightmask = ["weightmask.yml"]
 
 # --- This section creates the command-line script ---
 [project.scripts]
