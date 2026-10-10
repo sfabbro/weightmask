@@ -15,6 +15,7 @@ Usage:
   pixi run python benchmarks/perf_megacam.py --resolve-only
   pixi run python benchmarks/perf_megacam.py --workers 1
   pixi run python benchmarks/perf_megacam.py --exposure-file /path/to/science.fits.fz --hdu-limit 2 --no-cprofile
+  pixi run python benchmarks/perf_megacam.py --repeats 5 --seed 0 --no-cprofile
 """
 
 from __future__ import annotations
@@ -23,16 +24,21 @@ import argparse
 import cProfile
 import io
 import json
+import os
 import platform
 import pstats
+import shutil
 import sys
 import threading
 import time
+import statistics
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
+
+from benchmarks import perf_protocol
 PERF_DATA_DIR = ROOT / "benchmark_data" / "megacam" / "perf"
 OUT_DIR = ROOT / "test_outputs" / "perf"
 EXPOSURES_JSON = OUT_DIR / "exposures.json"
@@ -429,6 +435,8 @@ def _process_one_exposure(
     workers: int,
     out_suffix: str = "",
     *,
+    output_dir: Path | None = None,
+    include_worker_tag: bool = True,
     flat: str | None = None,
     write_mask: bool = False,
     file_tag: str = "",
@@ -472,16 +480,19 @@ def _process_one_exposure(
     except OSError:
         file_bytes = 0
 
-    tag = f"{safe}{out_suffix}{file_tag}.w{workers}"
+    worker_tag = f".w{workers}" if include_worker_tag else ""
+    tag = f"{safe}{out_suffix}{file_tag}{worker_tag}"
     if flat:
         tag += ".flat"
+    output_dir = Path(output_dir or OUT_DIR)
+    output_dir.mkdir(parents=True, exist_ok=True)
     write_all = bool(all_products)
     args = _ap.Namespace(
-        output_map=str(OUT_DIR / f"{tag}.weight.fits"),
-        output_mask=str(OUT_DIR / f"{tag}.mask.fits") if (write_mask or write_all) else None,
-        output_invvar=str(OUT_DIR / f"{tag}.ivar.fits") if write_all else None,
-        output_sky=str(OUT_DIR / f"{tag}.sky.fits") if write_all else None,
-        output_weight_raw=str(OUT_DIR / f"{tag}.weight_raw.fits") if write_all else None,
+        output_map=str(output_dir / f"{tag}.weight.fits"),
+        output_mask=str(output_dir / f"{tag}.mask.fits") if (write_mask or write_all) else None,
+        output_invvar=str(output_dir / f"{tag}.ivar.fits") if write_all else None,
+        output_sky=str(output_dir / f"{tag}.sky.fits") if write_all else None,
+        output_weight_raw=str(output_dir / f"{tag}.weight_raw.fits") if write_all else None,
         individual_masks=write_all,
         max_workers=workers,
         tile_size=1024,
@@ -641,6 +652,180 @@ def _aggregate_report(per_exp: list[dict], total_wall: float, *, extra_header: d
     }
 
 
+def _provenance(records: list[dict], config_overrides: dict, flat: str | None, thread_env: dict[str, str]) -> dict:
+    inputs = []
+    for record in records:
+        path = ROOT / record["file"] if not Path(record["file"]).is_absolute() else Path(record["file"])
+        if path.exists():
+            inputs.append({"path": str(path), "sha256": perf_protocol.sha256_path(path)})
+    configuration = [{"path": str(CONFIG_PATH), "sha256": perf_protocol.sha256_path(CONFIG_PATH)}]
+    if flat and Path(flat).exists():
+        configuration.append({"path": str(Path(flat)), "sha256": perf_protocol.sha256_path(flat)})
+    return {
+        "input_hashes": inputs,
+        "configuration_hashes": configuration,
+        "config_overrides": config_overrides,
+        "thread_environment": thread_env,
+    }
+
+
+def _protocol_overrides(config_overrides: dict, cache_dir: Path) -> dict:
+    import copy
+
+    overrides = copy.deepcopy(config_overrides)
+    _set_dotted(overrides, "flat_masking.bad_mask_cache_dir", str(cache_dir))
+    return overrides
+
+
+def _run_protocol(
+    records: list[dict],
+    workers: int,
+    *,
+    treatment_workers: int | None = None,
+    repeats: int,
+    seed: int,
+    flat: str | None,
+    write_mask: bool,
+    config_overrides: dict,
+    hdu_limit: int,
+    all_products: bool,
+) -> dict:
+    repeats = perf_protocol.validate_repeats(repeats)
+    treatment_workers = workers if treatment_workers is None else treatment_workers
+    schedule = perf_protocol.interleaved_schedule(
+        repeats,
+        seed=seed,
+        arms=("baseline", "treatment"),
+        cold_repetitions=1,
+    )
+    protocol_root = OUT_DIR / "protocol" / f"workers-{workers}-vs-{treatment_workers}"
+    runs: list[dict] = []
+    samples = {"cold": {"baseline": [], "treatment": []}, "warm": {"baseline": [], "treatment": []}}
+    for arm in ("baseline", "treatment"):
+        arm_workers = workers if arm == "baseline" else treatment_workers
+        warm_cache = perf_protocol.cache_directory(protocol_root / "cache", "warm", arm, 0)
+        prewarm_dir = protocol_root / f"prewarm-{arm}"
+        for record in records:
+            _process_one_exposure(
+                record,
+                arm_workers,
+                output_dir=prewarm_dir,
+                include_worker_tag=False,
+                flat=flat,
+                write_mask=write_mask,
+                config_overrides=_protocol_overrides(config_overrides, warm_cache),
+                hdu_limit=hdu_limit,
+                all_products=all_products,
+            )
+        shutil.rmtree(prewarm_dir, ignore_errors=True)
+    for repetition, arm in schedule:
+        cache = "cold" if not any(run["arm"] == arm for run in runs) else "warm"
+        cache_dir = perf_protocol.cache_directory(protocol_root / "cache", cache, arm, repetition)
+        run_dir = protocol_root / f"run-{repetition}-{arm}"
+        started = time.perf_counter()
+        try:
+            arm_workers = workers if arm == "baseline" else treatment_workers
+            per_exposure = [
+                _process_one_exposure(
+                    record,
+                    arm_workers,
+                    output_dir=run_dir,
+                    include_worker_tag=False,
+                    flat=flat,
+                    write_mask=write_mask,
+                    config_overrides=_protocol_overrides(config_overrides, cache_dir),
+                    hdu_limit=hdu_limit,
+                    all_products=all_products,
+                )
+                for record in records
+            ]
+        finally:
+            if cache == "cold":
+                perf_protocol.cleanup_cache_directory(cache_dir)
+        elapsed = time.perf_counter() - started
+        samples[cache][arm].append(elapsed)
+        runs.append(
+            {
+                "arm": arm,
+                "cache": cache,
+                "repetition": repetition,
+                "elapsed_s": float(elapsed),
+                "output_dir": str(run_dir),
+                "per_exposure": per_exposure,
+            }
+        )
+
+    correctness = True
+    for repetition in range(repeats):
+        arms = [run for run in runs if run["repetition"] == repetition]
+        if len(arms) != 2:
+            correctness = False
+            continue
+        left, right = arms
+        expected = _expected_product_names(
+            records,
+            workers=workers,
+            flat=flat,
+            write_mask=write_mask,
+            all_products=all_products,
+            include_worker_tag=False,
+        )
+        comparison = _compare_products(
+            Path(left["output_dir"]),
+            Path(right["output_dir"]),
+            expected_files=expected,
+        )
+        correctness = correctness and bool(comparison["ok"])
+    for arm in ("baseline", "treatment"):
+        arm_runs = [run for run in runs if run["arm"] == arm]
+        if arm_runs:
+            reference = Path(arm_runs[0]["output_dir"])
+            correctness = correctness and all(
+                _compare_products(
+                    Path(run["output_dir"]),
+                    reference,
+                    expected_files=_expected_product_names(
+                        records,
+                        workers=workers,
+                        flat=flat,
+                        write_mask=write_mask,
+                        all_products=all_products,
+                        include_worker_tag=False,
+                    ),
+                )["ok"]
+                for run in arm_runs[1:]
+            )
+    perf_protocol.require_correctness_equivalence({"baseline": correctness, "treatment": correctness})
+    warm_treatment = [run for run in runs if run["arm"] == "treatment" and run["cache"] == "warm"]
+    target = statistics.median(run["elapsed_s"] for run in warm_treatment)
+    selected = min(warm_treatment, key=lambda run: abs(run["elapsed_s"] - target))
+    return {
+        "protocol": {
+            "repeats": repeats,
+            "seed": seed,
+            "schedule": [[int(repetition), arm] for repetition, arm in schedule],
+            "arms": {
+                "baseline": {"workers": workers},
+                "treatment": {"workers": treatment_workers},
+            },
+            "distinct_arms": workers != treatment_workers,
+            "descriptive": workers == treatment_workers,
+            "prewarmed": True,
+            "cold_repetitions": 1,
+            "cache_states": ["cold", "warm"],
+            "cache_definition": "cold runs use a private cache directory per sample and a fresh run; warm runs reuse one directory per arm",
+            "results": {
+                cache: {arm: perf_protocol.summarize(values) for arm, values in arms.items()}
+                for cache, arms in samples.items()
+            },
+            "correctness_equivalent": True,
+            "selected": {"arm": "treatment", "cache": "warm", "repetition": selected["repetition"]},
+        },
+        "representative": selected["per_exposure"],
+        "total_wall_s": float(selected["elapsed_s"]),
+    }
+
+
 def _write_markdown(report: dict, sweep: dict, cprofile_note: str, *, out_md=None) -> None:
     hdr = report["header"]
     mpix_per_s = report.get("mpix_per_s")
@@ -652,8 +837,15 @@ def _write_markdown(report: dict, sweep: dict, cprofile_note: str, *, out_md=Non
         f"exposures={hdr.get('n_exposures')} hdus={hdr.get('n_hdus')} "
         f"total_wall={report['total_wall_s']:.1f}s hdu_wall={report['hdu_wall_s']:.1f}s "
         f"mpix={report['mpix_total']:.1f} mpix/s={throughput}",
+        f"thread_environment={hdr.get('thread_environment')}",
         "",
     ]
+    descriptive = report.get("sequential_descriptive")
+    if descriptive:
+        lines.append(
+            f"sequential_descriptive.speedup_eligible={str(descriptive.get('speedup_eligible', False)).lower()} "
+            f"wall_s={descriptive.get('wall_s', report['total_wall_s']):.1f}"
+        )
     for warning in report.get("warnings") or []:
         lines += [f"> **WARNING:** {warning}", ""]
     lines += [
@@ -680,6 +872,22 @@ def _write_markdown(report: dict, sweep: dict, cprofile_note: str, *, out_md=Non
             lines.append(f"| {w} | {sweep[w]:.1f} |")
     else:
         lines.append("n/a")
+    if report.get("protocol_reports"):
+        lines += ["", "## Interleaved timing protocol", ""]
+        for name, protocol in report["protocol_reports"].items():
+            warm = protocol["results"]["warm"]
+            lines.append(
+                f"{name}: baseline median={warm['baseline']['median']:.3f}s "
+                f"IQR={warm['baseline']['iqr']:.3f}s MAD={warm['baseline']['mad']:.3f}s; "
+                f"treatment median={warm['treatment']['median']:.3f}s "
+                f"IQR={warm['treatment']['iqr']:.3f}s MAD={warm['treatment']['mad']:.3f}s"
+            )
+    lines += [
+        "",
+        "## Release eligibility",
+        "",
+        f"release_evidence_eligible={str(report.get('timing_protocol', {}).get('release_evidence_eligible', False)).lower()}",
+    ]
     lines += ["", "## cProfile", "", cprofile_note or "n/a", ""]
     (out_md or PERF_MD).write_text("\n".join(lines) + "\n")
 
@@ -733,72 +941,368 @@ def _run_cprofile_first_hdu(
     )
 
 
-def _compare_products(
-    this_dir: Path, baseline_dir: Path, *, since: float | None = None, ignore_extname: bool = False
-) -> dict:
-    """Compare the product files this run wrote against a baseline directory.
+_PRODUCT_TOLERANCE_POLICY = {
+    "inverse_variance": {"relative_floor": 2e-6, "absolute_floor": 1e-7, "ulp_factor": 8},
+    "normalized_weight": {"relative_floor": 2e-6, "absolute_floor": 1e-6, "ulp_factor": 8},
+    "weight": {"relative_floor": 2e-6, "absolute_floor": 1e-6, "ulp_factor": 8},
+    "confidence": {"relative_floor": 2e-6, "absolute_floor": 1e-6, "ulp_factor": 8},
+    "sky": {"relative_floor": 2e-6, "absolute_floor": 1e-4, "ulp_factor": 8},
+}
+_HEADER_IGNORED = {"CHECKSUM", "DATASUM", "DATE", "WMGENID", "EXTNAME", "COMMENT", "HISTORY", "EXTEND"}
+_COMPRESSION_HEADER_KEYS = {
+    "ZIMAGE",
+    "ZSIMPLE",
+    "ZTENSION",
+    "ZBITPIX",
+    "ZNAXIS",
+    "ZPCOUNT",
+    "ZGCOUNT",
+    "ZCMPTYPE",
+    "ZQUANTIZ",
+    "ZDITHER0",
+}
+_COMPRESSION_HEADER_PREFIXES = ("ZNAXIS", "ZTILE", "ZNAME", "ZVAL")
+_STRUCTURAL_HEADER_KEYS = {
+    "SIMPLE",
+    "XTENSION",
+    "BITPIX",
+    "NAXIS",
+    "PCOUNT",
+    "GCOUNT",
+    "TFIELDS",
+}
 
-    A golden-oracle check: every product written under ``this_dir`` during the
-    run must match the same-named file in ``baseline_dir`` HDU by HDU
-    (EXTNAME, shape, dtype and raw data values). Whole-file bytes are not
-    compared because the FITS headers embed provenance cards that are stable
-    but not byte-order stable.
+
+def _numeric_tolerances(kind: str, dtype) -> tuple[float, float]:
+    """Return dtype-aware limits for reproducible floating-point products.
+
+    Floors cover the documented product quantisation; the ULP term covers the
+    rounding incurred when a product is written at the compared dtype.
     """
+    import numpy as np
+
+    policy = _PRODUCT_TOLERANCE_POLICY[kind]
+    dtype = np.dtype(dtype)
+    if not np.issubdtype(dtype, np.floating):
+        raise TypeError(f"numeric tolerance requires a floating dtype, got {dtype}")
+    epsilon = np.finfo(dtype).eps
+    return (
+        max(float(policy["relative_floor"]), float(policy["ulp_factor"]) * epsilon),
+        max(float(policy["absolute_floor"]), float(policy["ulp_factor"]) * epsilon),
+    )
+
+
+def _expected_product_names(
+    records: list[dict],
+    *,
+    workers: int,
+    flat: str | None,
+    write_mask: bool,
+    all_products: bool,
+    out_suffix: str = "",
+    file_tag: str = "",
+    include_worker_tag: bool = True,
+) -> set[str]:
+    names = set()
+    for record in records:
+        worker_tag = f".w{workers}" if include_worker_tag else ""
+        tag = f"{record['safe_id']}{out_suffix}{file_tag}{worker_tag}"
+        if flat:
+            tag += ".flat"
+        suffixes = [".weight.fits"]
+        if write_mask or all_products:
+            suffixes.append(".mask.fits")
+        if all_products:
+            suffixes.extend(
+                [
+                    ".ivar.fits",
+                    ".sky.fits",
+                    ".weight_raw.fits",
+                    ".weight.bad.fits",
+                    ".weight.sat.fits",
+                    ".weight.cr.fits",
+                    ".weight.obj.fits",
+                    ".weight.streak.fits",
+                    ".weight.nodata.fits",
+                ]
+            )
+        names.update(f"{tag}{suffix}" for suffix in suffixes)
+    return names
+
+
+def _product_files(directory: Path, since: float | None) -> dict[str, Path]:
+    files = {}
+    for path in sorted(Path(directory).glob("*")):
+        if not path.is_file() or not path.name.endswith((".fits", ".fits.fz")):
+            continue
+        if since is not None:
+            try:
+                if path.stat().st_mtime < since - 1.0:
+                    continue
+            except OSError:
+                continue
+        files[path.name] = path
+    return files
+
+
+def _header_value(value):
+    if isinstance(value, bytes):
+        return value.decode("utf-8", errors="replace").strip()
+    return value.strip() if isinstance(value, str) else value
+
+
+def _hdu_identity(header, index: int, *, ignore_extname: bool = False):
+    extname = _header_value(header.get("EXTNAME"))
+    ccd = None
+    for key in ("CCDNAME", "CCDNAM", "CCDID", "CHIPID"):
+        value = _header_value(header.get(key))
+        if value not in (None, ""):
+            ccd = str(value).upper()
+            break
+    if ignore_extname:
+        extname = None
+    if extname not in (None, ""):
+        return ("EXTNAME", str(extname).upper())
+    if ccd not in (None, ""):
+        return ("CCD", ccd)
+    return None
+
+
+def _header_metadata(header):
+    result = {}
+    for key in header.keys():
+        key = str(key).upper()
+        if (
+            key in _HEADER_IGNORED
+            or key in _STRUCTURAL_HEADER_KEYS
+            or key in _COMPRESSION_HEADER_KEYS
+            or key.startswith("NAXIS")
+            or key.startswith(_COMPRESSION_HEADER_PREFIXES)
+        ):
+            continue
+        if key.startswith(("TTYPE", "TUNIT", "TFORM")):
+            continue
+        result[key] = _header_value(header[key])
+    return result
+
+
+def _product_kind(path: Path, header) -> str:
+    filename = path.name.lower()
+    artifact = str(_header_value(header.get("WMART")) or "").lower()
+    if artifact == "quality_mask" or ".mask." in filename or any(
+        token in filename
+        for token in (
+            ".bad.",
+            ".sat.",
+            ".cr.",
+            ".obj.",
+            ".streak.",
+            ".nodata.",
+            "_bad_",
+            "_sat_",
+            "_cr_",
+            "_obj_",
+            "_streak_",
+            "_nodata_",
+        )
+    ):
+        return "mask"
+    if artifact == "inverse_variance" or ".ivar." in filename:
+        return "inverse_variance"
+    if artifact == "confidence" or "confidence" in filename:
+        return "confidence"
+    if artifact == "sky" or artifact == "sky_mesh" or ".sky." in filename:
+        return "sky"
+    if artifact == "weight" and ".weight_raw." in filename:
+        return "weight"
+    return "normalized_weight"
+
+
+def _semantic_problem(path: Path, header, kind: str) -> str | None:
+    artifact = _header_value(header.get("WMART"))
+    semantics = _header_value(header.get("WMSEM"))
+    if artifact is None or semantics is None:
+        return f"{path.name} is missing WMART/WMSEM contract metadata for {kind}"
+    artifact = str(artifact or "").lower()
+    semantics = str(semantics or "")
+    allowed = {
+        "mask": {
+            ("quality_mask", "named_quality_bits"),
+            ("bad_mask", "boolean_mask"),
+            ("saturation_mask", "boolean_mask"),
+            ("cosmic_ray_mask", "boolean_mask"),
+            ("object_mask", "boolean_mask"),
+            ("streak_mask", "boolean_mask"),
+            ("nodata_mask", "boolean_mask"),
+        },
+        "inverse_variance": {("inverse_variance", "inverse_variance_adu^-2")},
+        "normalized_weight": {("weight", "masked_inverse_variance"), ("weight", "inverse_variance_adu^-2")},
+        "weight": {("weight", "masked_inverse_variance"), ("weight", "inverse_variance_adu^-2")},
+        "confidence": {
+            ("confidence", "normalized_weight_0_to_1"),
+            ("confidence", "normalized_weight_0_to_100"),
+        },
+        "sky": {("sky", "background_adu"), ("sky_mesh", "background_adu")},
+    }
+    if (artifact, semantics) not in allowed[kind]:
+        return f"{path.name} declares incompatible {artifact}/{semantics} metadata for {kind}"
+    return None
+
+
+def _read_product_records(handle, *, ignore_extname: bool):
+    records = []
+    primary_metadata = {}
+    for index, hdu in enumerate(handle):
+        header = hdu.read_header()
+        info = hdu.get_info()
+        dims = tuple(info.get("dims") or ())
+        if index == 0 and not dims and header.get("XTENSION") is None:
+            primary_metadata = _header_metadata(header)
+            continue
+        identity = _hdu_identity(header, index, ignore_extname=ignore_extname)
+        if identity is None:
+            raise ValueError(f"HDU {index} has no authoritative EXTNAME or CCD identity")
+        records.append(
+            {
+                "index": index,
+                "header": header,
+                "dims": dims,
+                "identity": identity,
+            }
+        )
+    if not records:
+        raise ValueError("product file contains no nonempty authoritative HDUs")
+    return records, primary_metadata
+
+
+def _identity_map(records, side: str):
+    result = {}
+    for record in records:
+        identity = record["identity"]
+        if identity in result:
+            raise ValueError(f"duplicate HDU identity {identity} in {side}")
+        result[identity] = record
+    return result
+
+
+def _compare_product_file(path: Path, base: Path, *, ignore_extname: bool) -> list[str]:
     import fitsio
     import numpy as np
 
-    report: dict = {"file_count": 0, "identical": 0, "different": 0, "missing": [], "details": []}
-    for path in sorted(Path(this_dir).glob("*")):
-        if not path.is_file() or not path.name.endswith((".fits", ".fits.fz")):
-            continue
-        try:
-            if since is not None and path.stat().st_mtime < since - 1.0:
+    with fitsio.FITS(str(path)) as f_new, fitsio.FITS(str(base)) as f_base:
+        new_records, new_primary_metadata = _read_product_records(f_new, ignore_extname=ignore_extname)
+        base_records, base_primary_metadata = _read_product_records(f_base, ignore_extname=ignore_extname)
+        problems = []
+        if new_primary_metadata != base_primary_metadata:
+            changed = sorted(set(new_primary_metadata) | set(base_primary_metadata))
+            changed = [key for key in changed if new_primary_metadata.get(key) != base_primary_metadata.get(key)]
+            problems.append(f"primary metadata differs: {', '.join(changed)}")
+        if len(new_records) != len(base_records):
+            problems.append(f"hdu count {len(new_records)} != {len(base_records)}")
+        new_order = [record["identity"] for record in new_records]
+        base_order = [record["identity"] for record in base_records]
+        if new_order != base_order:
+            problems.append(f"HDU ordering differs: {new_order} vs {base_order}")
+        new_by_identity = _identity_map(new_records, "current")
+        base_by_identity = _identity_map(base_records, "baseline")
+        for identity in sorted(set(new_by_identity) | set(base_by_identity), key=str):
+            new = new_by_identity.get(identity)
+            old = base_by_identity.get(identity)
+            if new is None or old is None:
+                problems.append(f"HDU identity missing: {identity}")
                 continue
-        except OSError:
-            continue
-        report["file_count"] += 1
-        base = Path(baseline_dir) / path.name
-        if not base.exists():
-            report["missing"].append(path.name)
-            continue
-        problems: list[str] = []
+            if new["dims"] != old["dims"]:
+                problems.append(f"HDU {identity} shape {new['dims']} vs {old['dims']}")
+                continue
+            kind = _product_kind(path, new["header"])
+            semantic_problem = _semantic_problem(path, new["header"], kind)
+            if semantic_problem:
+                problems.append(semantic_problem)
+            baseline_semantic_problem = _semantic_problem(base, old["header"], _product_kind(base, old["header"]))
+            if baseline_semantic_problem:
+                problems.append(baseline_semantic_problem)
+            metadata_new = _header_metadata(new["header"])
+            metadata_old = _header_metadata(old["header"])
+            if metadata_new != metadata_old:
+                changed = sorted(set(metadata_new) | set(metadata_old))
+                changed = [key for key in changed if metadata_new.get(key) != metadata_old.get(key)]
+                problems.append(f"HDU {identity} metadata differs: {', '.join(changed)}")
+            if not new["dims"]:
+                continue
+            data_new = f_new[new["index"]].read()
+            data_old = f_base[old["index"]].read()
+            if kind == "mask":
+                if data_new.dtype != data_old.dtype:
+                    problems.append(f"HDU {identity} dtype {data_new.dtype} vs {data_old.dtype}")
+                    continue
+                equal = np.array_equal(data_new, data_old)
+            else:
+                if not np.issubdtype(data_new.dtype, np.floating) or not np.issubdtype(data_old.dtype, np.floating):
+                    problems.append(f"HDU {identity} requires floating dtype, got {data_new.dtype} vs {data_old.dtype}")
+                    continue
+                if data_new.dtype != data_old.dtype:
+                    problems.append(f"HDU {identity} dtype {data_new.dtype} vs {data_old.dtype}")
+                    continue
+                rtol, atol = _numeric_tolerances(kind, data_new.dtype)
+                equal = np.allclose(data_new, data_old, rtol=rtol, atol=atol, equal_nan=True)
+            if not equal:
+                if kind == "mask":
+                    differing = int(np.count_nonzero(data_new != data_old))
+                else:
+                    differing = int(
+                        np.count_nonzero(~np.isclose(data_new, data_old, rtol=rtol, atol=atol, equal_nan=True))
+                    )
+                problems.append(f"HDU {identity} {kind} differs at {differing} pixel(s)")
+    return problems
+
+
+def _compare_products(
+    this_dir: Path,
+    baseline_dir: Path,
+    *,
+    expected_files: list[str] | set[str] | None = None,
+    since: float | None = None,
+    ignore_extname: bool = False,
+) -> dict:
+    current = _product_files(Path(this_dir), since)
+    baseline = _product_files(Path(baseline_dir), None)
+    current_names = set(current)
+    baseline_names = set(baseline)
+    expected = set(expected_files) if expected_files is not None else current_names | baseline_names
+    missing_in_current = expected - current_names
+    missing_in_baseline = expected - baseline_names
+    unexpected_in_this = current_names - expected
+    unexpected_in_baseline = baseline_names - expected
+    report: dict = {
+        "expected_file_count": len(expected),
+        "file_count": len(current_names & expected),
+        "identical": 0,
+        "different": 0,
+        "missing": sorted(missing_in_baseline),
+        "missing_in_baseline": sorted(missing_in_baseline),
+        "missing_in_this": sorted(missing_in_current),
+        "unexpected_in_this": sorted(unexpected_in_this),
+        "unexpected_in_baseline": sorted(unexpected_in_baseline),
+        "details": [],
+    }
+    for name in sorted(expected & current_names & baseline_names):
         try:
-            with fitsio.FITS(str(path)) as f_new, fitsio.FITS(str(base)) as f_base:
-                if len(f_new) != len(f_base):
-                    problems.append(f"hdu count {len(f_new)} != {len(f_base)}")
-                for idx in range(min(len(f_new), len(f_base))):
-                    hdu_new, hdu_base = f_new[idx], f_base[idx]
-                    info_new = hdu_new.get_info()
-                    info_base = hdu_base.get_info()
-                    dims_new = tuple(info_new.get("dims") or ())
-                    dims_base = tuple(info_base.get("dims") or ())
-                    name_new = hdu_new.read_header().get("EXTNAME")
-                    name_base = hdu_base.read_header().get("EXTNAME")
-                    if dims_new != dims_base or (name_new != name_base and not ignore_extname):
-                        problems.append(f"hdu{idx}: {name_new}{dims_new} vs {name_base}{dims_base}")
-                        continue
-                    if not dims_new:
-                        continue  # header-only HDU
-                    data_new, data_base = hdu_new.read(), hdu_base.read()
-                    if data_new.dtype != data_base.dtype:
-                        problems.append(f"hdu{idx} ({name_new}) dtype {data_new.dtype} vs {data_base.dtype}")
-                        continue
-                    if np.array_equal(data_new, data_base):
-                        continue
-                    try:
-                        equal = bool(np.array_equal(data_new, data_base, equal_nan=True))
-                    except TypeError:
-                        equal = False
-                    if not equal:
-                        differing = int(np.count_nonzero(data_new != data_base))
-                        problems.append(f"hdu{idx} ({name_new}) data differs at {differing} pixel(s)")
-        except Exception as exc:  # pragma: no cover - corrupt baseline file
-            problems.append(f"read failed: {exc}")
+            problems = _compare_product_file(current[name], baseline[name], ignore_extname=ignore_extname)
+        except Exception as exc:
+            problems = [f"read failed: {exc}"]
         if problems:
             report["different"] += 1
-            report["details"].append({"file": path.name, "problems": problems})
+            report["details"].append({"file": name, "problems": problems})
         else:
             report["identical"] += 1
+    report["ok"] = not (
+        report["different"]
+        or report["missing_in_baseline"]
+        or report["missing_in_this"]
+        or report["unexpected_in_this"]
+        or report["unexpected_in_baseline"]
+        or not report["expected_file_count"]
+    )
     return report
 
 
@@ -806,6 +1310,8 @@ def main(argv=None) -> int:
     ap = argparse.ArgumentParser(description="MegaCam 10-exposure perf harness.")
     ap.add_argument("--resolve-only", action="store_true")
     ap.add_argument("--workers", type=int, default=None)
+    ap.add_argument("--repeats", type=int, default=1, help="protocol repetitions; use at least 5 for release timing")
+    ap.add_argument("--seed", type=int, default=0, help="seed for the deterministic A/B protocol schedule")
     ap.add_argument("--force-resolve", action="store_true")
     ap.add_argument(
         "--out-dir",
@@ -864,6 +1370,10 @@ def main(argv=None) -> int:
         help="Repeatable config override (values YAML-parsed, deep-merged over weightmask.yml).",
     )
     args = ap.parse_args(argv)
+    thread_env = perf_protocol.thread_environment(os.environ)
+    os.environ.update(thread_env)
+    if 1 < args.repeats < perf_protocol.MIN_REPEATS:
+        ap.error(f"--repeats must be 1 or at least {perf_protocol.MIN_REPEATS}")
     if args.workers is not None and args.workers < 1:
         ap.error("--workers must be positive")
     if args.hdu_limit < 0:
@@ -938,8 +1448,6 @@ def main(argv=None) -> int:
         valid, reason = validate_case_file({"expected_instrument": "MegaPrime", "expected_detector": "MegaCam"}, flat)
         if not valid:
             raise SystemExit(f"--flat validation failed: {reason}")
-        import os
-
         (OUT_DIR / "flats.json").write_text(json.dumps({"file": os.path.relpath(flat, ROOT)}, indent=2) + "\n")
     # (a) sequential pass over all resolved exposures x all HDUs.
     variant = f"with-flats ({flat})" if flat else "no-flat"
@@ -1005,6 +1513,7 @@ def main(argv=None) -> int:
                 eff,
                 out_suffix=f".sweep{w}",
                 flat=flat,
+                write_mask=args.masks,
                 config_overrides=config_overrides,
                 hdu_limit=args.hdu_limit,
                 all_products=args.all_products,
@@ -1021,38 +1530,7 @@ def main(argv=None) -> int:
             first, flat=flat, out_txt=cprofile_txt, config_overrides=config_overrides, hdu_limit=args.hdu_limit
         )
 
-    extra = {
-        "variant": ("with-flats" if flat else "no-flat"),
-        "tag": args.tag or "baseline",
-        "config_overrides": config_overrides,
-    }
-    if flat:
-        extra["flat_file"] = str(Path(flat).relative_to(ROOT)) if str(flat).startswith(str(ROOT)) else str(flat)
-    report = _aggregate_report(per_exp, total_wall, extra_header=extra)
-    report["sweep_workers"] = {k: float(v) for k, v in sweep.items()}
     exit_code = int(any(e["nhdus_processed"] != e["nhdus_expected"] for e in per_exp))
-    if compare_dir is not None:
-        print(f"--- comparing products against baseline {compare_dir} ---")
-        comparison = _compare_products(
-            OUT_DIR, compare_dir, since=run_started, ignore_extname=args.compare_ignore_extname
-        )
-        report["baseline_comparison"] = comparison
-        for detail in comparison["details"][:10]:
-            print(f"  {detail['file']}: {'; '.join(detail['problems'][:3])}")
-        if comparison["missing"]:
-            print(f"  missing in baseline: {comparison['missing'][:5]}")
-        if not comparison["file_count"] or comparison["different"] or comparison["missing"]:
-            print(f"BASELINE MISMATCH: {comparison['different']} differing / {comparison['file_count']} product files")
-            exit_code = 1
-        else:
-            print(f"Baseline OK: {comparison['identical']}/{comparison['file_count']} product files identical.")
-    perf_json.write_text(json.dumps(report, indent=2) + "\n")
-    _write_markdown(report, sweep, note, out_md=perf_md)
-    print(f"Wrote {perf_json} and {perf_md}")
-
-    # Optional extra pass at a requested worker count (Step 5 comparison).
-    # CANFAR jobs consume this sidecar (wall/peak/CPU/stages of the parallel
-    # pass); per-exposure rusage is exact because the backend is threaded.
     if args.workers is not None and int(args.workers) != 1:
         print(f"Running extra full pass at workers={args.workers}...")
         t1 = time.perf_counter()
@@ -1101,6 +1579,157 @@ def main(argv=None) -> int:
         sidecar_path = OUT_DIR / f"megacam_pass{suffix}.w{args.workers}.json"
         sidecar_path.write_text(json.dumps(sidecar, indent=2) + "\n")
         print(f"Wrote {sidecar_path}")
+
+    protocol_reports: dict[str, dict] = {}
+    if args.repeats >= perf_protocol.MIN_REPEATS:
+        if not args.tag:
+            for w in (2, 4, 8):
+                eff = _resolve_max_workers(w, n_first)
+                protocol = _run_protocol(
+                    [first],
+                    1,
+                    treatment_workers=eff,
+                    repeats=args.repeats,
+                    seed=args.seed + w,
+                    flat=flat,
+                    write_mask=args.masks,
+                    config_overrides=config_overrides,
+                    hdu_limit=args.hdu_limit,
+                    all_products=args.all_products,
+                )
+                protocol_reports[f"workers_{w}"] = protocol
+                sweep[str(w)] = protocol["protocol"]["results"]["warm"]["treatment"]["median"]
+
+    extra = {
+        "variant": ("with-flats" if flat else "no-flat"),
+        "tag": args.tag or "baseline",
+        "config_overrides": config_overrides,
+    }
+    extra.update(_provenance(records, config_overrides, flat, thread_env))
+    if flat:
+        extra["flat_file"] = str(Path(flat).relative_to(ROOT)) if str(flat).startswith(str(ROOT)) else str(flat)
+    report = _aggregate_report(per_exp, total_wall, extra_header=extra)
+    report["sequential_descriptive"] = {
+        "wall_s": float(total_wall),
+        "workers": 1,
+        "speedup_eligible": False,
+        "reason": "single treatment measurement; no baseline/treatment protocol",
+    }
+    report["sweep_workers"] = {k: float(v) for k, v in sweep.items()}
+    report["timing_protocol"] = {
+        "repeats": args.repeats,
+        "seed": args.seed,
+        "correctness_equivalent": bool(protocol_reports) and all(
+            protocol["protocol"]["correctness_equivalent"] for protocol in protocol_reports.values()
+        ),
+        "distinct_arms": bool(protocol_reports) and any(
+            protocol["protocol"]["distinct_arms"] for protocol in protocol_reports.values()
+        ),
+        "full_products": bool(args.all_products),
+        "release_evidence_eligible": False,
+        "reason": "at least five interleaved repetitions and product equivalence are required",
+    }
+    report["timing_protocol"]["eligibility"] = perf_protocol.protocols_release_eligibility(
+        [protocol["protocol"] for protocol in protocol_reports.values()],
+        args.repeats,
+        False,
+        full_products=report["timing_protocol"]["full_products"],
+    )
+    report["protocol_reports"] = {}
+    for name, protocol in protocol_reports.items():
+        protocol["protocol"]["eligibility"] = perf_protocol.release_eligibility(
+            args.repeats,
+            protocol["protocol"]["correctness_equivalent"],
+            False,
+            full_products=args.all_products,
+            distinct_arms=protocol["protocol"]["distinct_arms"],
+        )
+        report["protocol_reports"][name] = protocol["protocol"]
+    if compare_dir is not None:
+        print(f"--- comparing products against baseline {compare_dir} ---")
+        expected_files = _expected_product_names(
+            records,
+            workers=1,
+            flat=flat,
+            write_mask=args.masks,
+            all_products=args.all_products,
+            file_tag=(f".{args.tag}" if args.tag else ""),
+        )
+        if not args.tag:
+            for w in (2, 4, 8):
+                eff = _resolve_max_workers(w, n_first)
+                expected_files.update(
+                    _expected_product_names(
+                        [first],
+                        workers=eff,
+                        flat=flat,
+                        write_mask=args.masks,
+                        all_products=args.all_products,
+                        out_suffix=f".sweep{w}",
+                    )
+                )
+        if args.workers is not None and int(args.workers) != 1:
+            expected_files.update(
+                _expected_product_names(
+                    records,
+                    workers=int(args.workers),
+                    flat=flat,
+                    write_mask=args.masks,
+                    all_products=args.all_products,
+                    out_suffix=f".w{args.workers}",
+                    file_tag=(f".{args.tag}" if args.tag else ""),
+                )
+            )
+        comparison = _compare_products(
+            OUT_DIR,
+            compare_dir,
+            expected_files=expected_files,
+            since=run_started,
+            ignore_extname=args.compare_ignore_extname,
+        )
+        report["baseline_comparison"] = comparison
+        report["timing_protocol"] = {
+            "repeats": args.repeats,
+            "seed": args.seed,
+            "correctness_equivalent": bool(report["timing_protocol"]["correctness_equivalent"]),
+            "distinct_arms": bool(report["timing_protocol"]["distinct_arms"]),
+            "full_products": bool(args.all_products),
+            "release_evidence_eligible": False,
+            "reason": "product comparison completed",
+        }
+        report["timing_protocol"]["eligibility"] = perf_protocol.protocols_release_eligibility(
+            [protocol for protocol in report["protocol_reports"].values()],
+            args.repeats,
+            bool(comparison["ok"]),
+            full_products=args.all_products,
+        )
+        report["timing_protocol"]["release_evidence_eligible"] = report["timing_protocol"]["eligibility"]["eligible"]
+        for protocol in report["protocol_reports"].values():
+            protocol["eligibility"] = perf_protocol.release_eligibility(
+                args.repeats,
+                protocol["correctness_equivalent"],
+                bool(comparison["ok"]),
+                full_products=args.all_products,
+                distinct_arms=protocol["distinct_arms"],
+            )
+        for detail in comparison["details"][:10]:
+            print(f"  {detail['file']}: {'; '.join(detail['problems'][:3])}")
+        if comparison["missing"]:
+            print(f"  missing in baseline: {comparison['missing'][:5]}")
+        if comparison["missing_in_this"]:
+            print(f"  missing in current run: {comparison['missing_in_this'][:5]}")
+        if comparison["unexpected_in_this"]:
+            print(f"  unexpected in current run: {comparison['unexpected_in_this'][:5]}")
+        if comparison["unexpected_in_baseline"]:
+            print(f"  unexpected in baseline: {comparison['unexpected_in_baseline'][:5]}")
+        if not comparison["ok"]:
+            print(f"BASELINE MISMATCH: {comparison['different']} differing / {comparison['file_count']} product files")
+            exit_code = 1
+        else:
+            print(f"Baseline OK: {comparison['identical']}/{comparison['file_count']} product files identical.")
+    perf_json.write_text(json.dumps(report, indent=2) + "\n")
+    _write_markdown(report, sweep, note, out_md=perf_md)
+    print(f"Wrote {perf_json} and {perf_md}")
     return exit_code
 
 

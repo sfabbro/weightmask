@@ -1,4 +1,14 @@
 {
+  "status": "historical",
+  "historical": true,
+  "pinned": true,
+  "historical_note": "Retained for reproducibility; do not submit as a current campaign without resolving inputs and reviewing the recorded checkout.",
+  "runner": {
+    "version": "wm27-provenance-v2",
+    "ref": "main",
+    "sha256": "519895014164ed3a67af30b7fbc062c26e69cf84232d6699198e7388dea07b00",
+    "validator_sha256": "ba5bd984a61a5768d394b766f497764151305e7ade7d7ff9ab05646756858d5a"
+  },
   "branch": {
     "E2": "wip/exp-E2 (SHA in E2.checkout)",
     "E3": "none \u2014 pure config-set, verified S4"

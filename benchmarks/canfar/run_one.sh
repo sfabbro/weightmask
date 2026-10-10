@@ -1,4 +1,6 @@
 #!/bin/bash
+RUN_ONE_VERSION="wm27-provenance-v2"
+export RUN_ONE_VERSION
 # CANFAR headless measurement wrapper for one experiment job.
 #
 # Invoked INSIDE the container with a plain argv (no shell metachars at the
@@ -31,6 +33,18 @@ WORK_ROOT="$PROJECT_MOUNT/weightmask-perf"
 PIXI_CACHE_DIR="${PIXI_CACHE_DIR:-$WORK_ROOT/pixi-cache}"
 KEEP_ALL="${KEEP_ALL:-0}"
 RESULTS_DIR="$WORK_ROOT/results/$EXP_ID-$JOB_TAG"
+RUNNER_PATH="$(cd "$(dirname "$0")" && pwd)/$(basename "$0")"
+if [ -n "${RUNNER_VERSION:-}" ] && [ "$RUNNER_VERSION" != "$RUN_ONE_VERSION" ]; then
+    echo "runner version mismatch: env=$RUNNER_VERSION script=$RUN_ONE_VERSION" >&2
+    exit 1
+fi
+if [ -n "${RUNNER_SHA256:-}" ]; then
+    ACTUAL_RUNNER_SHA256="$(python3 -c "import hashlib; print(hashlib.sha256(open('$RUNNER_PATH','rb').read()).hexdigest())")"
+    if [ "$RUNNER_SHA256" != "$ACTUAL_RUNNER_SHA256" ]; then
+        echo "runner SHA mismatch: env=$RUNNER_SHA256 script=$ACTUAL_RUNNER_SHA256" >&2
+        exit 1
+    fi
+fi
 
 if [ -d /scratch ]; then SCR_BASE=/scratch; else SCR_BASE=/tmp; fi
 JOB_DIR="$SCR_BASE/wm-$EXP_ID-$JOB_TAG-$$"
@@ -38,7 +52,7 @@ REPO_DIR="$JOB_DIR/repo"
 DATA_NOTE=""
 
 echo "== run_one $EXP_ID/$JOB_TAG =="
-echo "bootstrap=$BOOTSTRAP sha=$MANIFEST_SHA checkout=$CHECKOUT_REF scratch=$SCR_BASE keep_all=$KEEP_ALL"
+echo "bootstrap=$BOOTSTRAP code_sha=$MANIFEST_SHA checkout_ref=$CHECKOUT_REF scratch=$SCR_BASE keep_all=$KEEP_ALL"
 mkdir -p "$JOB_DIR" "$RESULTS_DIR"
 # Job-local pixi cache (forced: images may export a read-only shared one;
 # a shared cache also deadlocks across containers via stale locks).
@@ -47,7 +61,28 @@ mkdir -p "$PIXI_CACHE_DIR"
 export PYTHONUNBUFFERED=1
 # Ignore image defaults; explicit manifest settings are restored below.
 unset OMP_NUM_THREADS MKL_NUM_THREADS
-MANIFEST="$BOOTSTRAP/benchmarks/canfar_experiments/manifest.json"
+MANIFEST="${MANIFEST_PATH:-$BOOTSTRAP/benchmarks/canfar_experiments/manifest.json}"
+VALIDATOR_PATH="$BOOTSTRAP/benchmarks/canfar/manifest.py"
+if [ -n "${VALIDATOR_SHA256:-}" ]; then
+    ACTUAL_VALIDATOR_SHA256="$(python3 -c "import hashlib; print(hashlib.sha256(open('$VALIDATOR_PATH','rb').read()).hexdigest())")"
+    if [ "$VALIDATOR_SHA256" != "$ACTUAL_VALIDATOR_SHA256" ]; then
+        echo "validator SHA mismatch: env=$VALIDATOR_SHA256 script=$ACTUAL_VALIDATOR_SHA256" >&2
+        exit 1
+    fi
+fi
+python3 "$VALIDATOR_PATH" "$MANIFEST" "$EXP_ID"
+MANIFEST_CODE_SHA="$(python3 -c "import json; print(json.load(open('$MANIFEST'))['code']['pinned_sha'])")"
+if [ "$MANIFEST_SHA" != "$MANIFEST_CODE_SHA" ]; then
+    echo "manifest code SHA mismatch: env=$MANIFEST_SHA manifest=$MANIFEST_CODE_SHA" >&2
+    exit 1
+fi
+EXPECTED_MANIFEST_FILE_SHA="${MANIFEST_FILE_SHA:-}"
+MANIFEST_FILE_SHA="$(python3 -c "import hashlib; print(hashlib.sha256(open('$MANIFEST','rb').read()).hexdigest())")"
+if [ -n "$EXPECTED_MANIFEST_FILE_SHA" ] && [ "$EXPECTED_MANIFEST_FILE_SHA" != "$MANIFEST_FILE_SHA" ]; then
+    echo "manifest file SHA mismatch: env=$EXPECTED_MANIFEST_FILE_SHA manifest=$MANIFEST_FILE_SHA" >&2
+    exit 1
+fi
+echo "manifest_sha256=$MANIFEST_FILE_SHA"
 GROUP_JSON="$JOB_DIR/group.json"
 # Prefer a modern system pixi (needs >= 0.44 for `[workspace]`); otherwise
 # install a job-local one. The skaha fallback path predates workspace.
@@ -70,10 +105,16 @@ g = next(x for x in m["groups"] if x["exp_id"] == exp_id)
 job = next(j for j in g["jobs"] if j["tag"] == job_tag)
 if not g["safe_ids"] or "TBD" in g["safe_ids"]:
     raise ValueError("experiment exposure IDs are not resolved; fill winner inputs before submitting")
+for ids_key, publisher_key in (("safe_ids", "publisherIDs"), ("flat_safe_ids", "flat_publisherIDs")):
+    if len(g.get(ids_key, [])) != len(g.get(publisher_key, [])):
+        raise ValueError(f"{exp_id} {ids_key}/{publisher_key} cardinality mismatch")
 if len(g.get("flat_safe_ids", [])) > 1:
     raise ValueError("multiple flats require an explicit per-exposure mapping; this wrapper accepts one flat")
-json.dump({"group": g, "job": job, "image": m["defaults"]["image"]}, open(out, "w"), indent=2)
-print("group:", exp_id, "exposures:", g["safe_ids"], "workers:", job["workers"])
+json.dump({"group": g, "job": job, "image": m["defaults"]["image"],
+           "manifest_sha256": __import__("hashlib").sha256(open(manifest_path, "rb").read()).hexdigest(),
+           "manifest_status": m.get("status", "current"),
+           "code_pinned_sha": m["code"]["pinned_sha"]}, open(out, "w"), indent=2)
+print("group:", exp_id, "exposures:", g["safe_ids"], "workers:", job["workers"], "manifest_status:", m.get("status", "current"))
 EOF
 
 while IFS= read -r kv; do export "$kv"; done < <(python3 - "$GROUP_JSON" <<'EOF'
@@ -89,7 +130,14 @@ EOF
 
 git clone "$REPO_URL" "$REPO_DIR"
 git -C "$REPO_DIR" checkout "$CHECKOUT_REF"
-git -C "$REPO_DIR" rev-parse HEAD
+CHECKOUT_SHA="$(git -C "$REPO_DIR" rev-parse HEAD)"
+CHECKOUT_EXPECTED_SHA="$(git -C "$REPO_DIR" rev-parse "$CHECKOUT_REF^{commit}")"
+if [ "$CHECKOUT_SHA" != "$CHECKOUT_EXPECTED_SHA" ]; then
+    echo "checkout SHA mismatch: ref=$CHECKOUT_REF actual=$CHECKOUT_SHA expected=$CHECKOUT_EXPECTED_SHA" >&2
+    exit 1
+fi
+export CHECKOUT_SHA
+echo "checkout_sha=$CHECKOUT_SHA"
 cd "$REPO_DIR"
 if [ ! -x "$PIXI" ]; then
     export PIXI_HOME="$JOB_DIR/pixi-home"
@@ -124,6 +172,8 @@ def fetch(url, out):
 
 PUB = "https://www.cadc-ccda.hia-iha.nrc-cnrc.gc.ca/data/pub/CFHT"
 recs = []
+if len(grp["publisherIDs"]) != len(grp["safe_ids"]):
+    raise ValueError("safe_ids/publisherIDs cardinality mismatch before download")
 for pid, safe in zip(grp["publisherIDs"], grp["safe_ids"]):
     if safe == "TBD":
         continue
@@ -311,6 +361,14 @@ except Exception as e:
     diff = {"mode": "error", "note": str(e)[:200]}
     checksums = {}
 
+record = json.load(open(os.path.join(job_dir, "group.json")))
+checkout_sha = os.environ.get("CHECKOUT_SHA")
+try:
+    import subprocess
+    if checkout_sha is None:
+        checkout_sha = subprocess.check_output(["git", "-C", repo, "rev-parse", "HEAD"], text=True).strip()
+except (OSError, subprocess.CalledProcessError):
+    pass
 metrics = {"exp_id": exp_id, "job_tag": job_tag, "wall_s": wall,
            "max_rss_kb": max_rss, "cpu_percent": cpu_percent,
            "workers": int(workers),
@@ -318,6 +376,12 @@ metrics = {"exp_id": exp_id, "job_tag": job_tag, "wall_s": wall,
            "mpix": mpix, "mpix_s": (mpix / wall) if wall else None,
            "nhdus": nhdus, "per_stage": per_stage, "mask_diff": diff,
            "mask_checksums": checksums, "mask_checksum_scope": "all-image-hdus-v1",
+           "manifest_sha256": record.get("manifest_sha256"),
+           "manifest_status": record.get("manifest_status"),
+           "code_pinned_sha": record.get("code_pinned_sha"),
+           "run_one_version": os.environ.get("RUN_ONE_VERSION"),
+           "checkout_ref": os.environ.get("CHECKOUT_REF"),
+           "checkout_sha": checkout_sha,
            "source": source, "cpu_basis": cpu_basis,
            "input_key": {"safe_ids": sorted(json.load(open(os.path.join(job_dir, "group.json")))["group"]["safe_ids"]),
                          "flat_safe_ids": sorted(json.load(open(os.path.join(job_dir, "group.json")))["group"].get("flat_safe_ids", [])),

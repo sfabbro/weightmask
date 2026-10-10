@@ -16,9 +16,10 @@
 # Append --no-wait to skip measurement polling. Setup still waits for its
 # dependent clone/fetch/checkout steps.
 set -euo pipefail
+RUN_ONE_VERSION="wm27-provenance-v2"
 
 HERE="$(cd "$(dirname "$0")" && pwd)"
-MANIFEST="$HERE/../canfar_experiments/manifest.json"
+MANIFEST="${MANIFEST_PATH:-$HERE/../canfar_experiments/manifest.json}"
 PROJECT_MOUNT="${PROJECT_MOUNT:-/arc/projects/mlao/cfhtcast}"
 WORK_ROOT="$PROJECT_MOUNT/weightmask-perf"
 BOOTSTRAP="${BOOTSTRAP:-$WORK_ROOT/repos/bootstrap2}"
@@ -27,6 +28,25 @@ case " $* " in *" --no-wait "*) WAIT=0;; esac
 
 manifest_py() { python3 -c "import json,sys; m=json.load(open('$MANIFEST')); $1"; }
 SHA="$(manifest_py "print(m['code']['pinned_sha'])")"
+MANIFEST_FILE_SHA="$(python3 -c "import hashlib; print(hashlib.sha256(open('$MANIFEST','rb').read()).hexdigest())")"
+RUNNER_REF="$(manifest_py "print(m['runner']['ref'])")"
+RUNNER_VERSION="$(manifest_py "print(m['runner']['version'])")"
+RUNNER_SHA256="$(manifest_py "print(m['runner']['sha256'])")"
+VALIDATOR_SHA256="$(manifest_py "print(m['runner']['validator_sha256'])")"
+LOCAL_RUNNER_SHA256="$(python3 -c "import hashlib; print(hashlib.sha256(open('$HERE/run_one.sh','rb').read()).hexdigest())")"
+LOCAL_VALIDATOR_SHA256="$(python3 -c "import hashlib; print(hashlib.sha256(open('$HERE/manifest.py','rb').read()).hexdigest())")"
+if [ "$RUNNER_VERSION" != "$RUN_ONE_VERSION" ]; then
+    echo "runner version mismatch: manifest=$RUNNER_VERSION script=$RUN_ONE_VERSION" >&2
+    exit 1
+fi
+if [ "$RUNNER_SHA256" != "$LOCAL_RUNNER_SHA256" ]; then
+    echo "runner SHA mismatch: manifest=$RUNNER_SHA256 script=$LOCAL_RUNNER_SHA256" >&2
+    exit 1
+fi
+if [ "$VALIDATOR_SHA256" != "$LOCAL_VALIDATOR_SHA256" ]; then
+    echo "validator SHA mismatch: manifest=$VALIDATOR_SHA256 script=$LOCAL_VALIDATOR_SHA256" >&2
+    exit 1
+fi
 IMAGE="$(manifest_py "print(m['defaults']['image'])")"
 CPU="$(manifest_py "print(m['defaults'].get('cpu',8))")"
 MEM="$(manifest_py "print(m['defaults'].get('memory_gb',32))")"
@@ -47,20 +67,28 @@ wait_for() { # session_id
 }
 
 do_setup() {
-    echo "== setup: clone to $BOOTSTRAP @ $SHA =="
+    echo "== setup: current runner $RUNNER_REF@$RUNNER_SHA256; science $SHA =="
     local out id
-    out="$(canfar create headless "$IMAGE" --name wm-bootstrap --cpu 1 --memory 4 -- git clone "$REPO" "$BOOTSTRAP")"
-    echo "$out"
-    id="$(echo "$out" | grab_id)"
-    # clone fails if the dir already exists; fall through to checkout either way
-    wait_for "$id" || true
+    if out="$(canfar create headless "$IMAGE" --name wm-bootstrap --cpu 1 --memory 4 -- git clone "$REPO" "$BOOTSTRAP")"; then
+        echo "$out"
+        id="$(echo "$out" | grab_id)"
+        wait_for "$id" || true
+    else
+        echo "bootstrap exists; reusing $BOOTSTRAP"
+    fi
     out="$(canfar create headless "$IMAGE" --name wm-fetch --cpu 1 --memory 4 -- git -C "$BOOTSTRAP" fetch origin)"
     echo "$out"
     wait_for "$(echo "$out" | grab_id)"
-    out="$(canfar create headless "$IMAGE" --name wm-checkout --cpu 1 --memory 4 -- git -C "$BOOTSTRAP" checkout "$SHA")"
+    out="$(canfar create headless "$IMAGE" --name wm-checkout-runner --cpu 1 --memory 4 -- git -C "$BOOTSTRAP" checkout -B runner "origin/$RUNNER_REF")"
     echo "$out"
     wait_for "$(echo "$out" | grab_id)"
     out="$(canfar create headless "$IMAGE" --name wm-verify --cpu 1 --memory 4 -- git -C "$BOOTSTRAP" rev-parse HEAD)"
+    echo "$out"
+    wait_for "$(echo "$out" | grab_id)"
+    out="$(canfar create headless "$IMAGE" --name wm-verify-run-one --cpu 1 --memory 4 -- git -C "$BOOTSTRAP" grep -F "$RUNNER_VERSION" -- benchmarks/canfar/run_one.sh)"
+    echo "$out"
+    wait_for "$(echo "$out" | grab_id)"
+    out="$(canfar create headless "$IMAGE" --name wm-verify-runner-files --cpu 1 --memory 4 -- git -C "$BOOTSTRAP" ls-files --error-unmatch benchmarks/canfar/run_one.sh benchmarks/canfar/manifest.py)"
     echo "$out"
     wait_for "$(echo "$out" | grab_id)"
     echo "setup done"
@@ -79,13 +107,16 @@ registry_env_args() {
 
 submit_job() { # exp_id job_tag -> echoes session id
     local exp="$1" tag="$2" name out
+    if ! python3 "$HERE/manifest.py" "$MANIFEST" "$exp"; then
+        return 1
+    fi
     name="wm-$(echo "$exp-$tag" | tr 'A-Z' 'a-z')"
     local keep=0
     case "$exp" in E0|E8) keep=1;; esac
     local checkout
     checkout="$(manifest_py "print(next(x for x in m['groups'] if x['exp_id']=='$exp').get('checkout') or '')")"
     case "$checkout" in ''|'TBD'*|'None') checkout="$SHA";; esac
-    local env_args=(--env "MANIFEST_SHA=$SHA" --env "CHECKOUT_REF=$checkout" --env "KEEP_ALL=$keep" --env "PROJECT_MOUNT=$PROJECT_MOUNT")
+    local env_args=(--env "MANIFEST_SHA=$SHA" --env "MANIFEST_FILE_SHA=$MANIFEST_FILE_SHA" --env "RUNNER_VERSION=$RUNNER_VERSION" --env "RUNNER_SHA256=$RUNNER_SHA256" --env "VALIDATOR_SHA256=$VALIDATOR_SHA256" --env "CHECKOUT_REF=$checkout" --env "KEEP_ALL=$keep" --env "PROJECT_MOUNT=$PROJECT_MOUNT")
     while IFS= read -r kv; do env_args+=(--env "$kv"); done < <(python3 -c "
 import json
 m = json.load(open('$MANIFEST'))

@@ -8,7 +8,7 @@ explains. Also characterise each surviving component (span, width, brightness,
 star attachment) so bleed and satellite trails can be told apart on evidence.
 
 Sampling is validated, not assumed. Every-4th-HDU is a reasonable default for a
-wide survey but it missed the only real trails in the local corpus, twice, and
+wide survey but it missed the only unconfirmed linear features in the local corpus, twice, and
 both misses silently understated what the cheap prescreen could do. So the
 default is now to scan every HDU, and any coarser sample is checked against the
 amps that actually matter before any work starts -- the run aborts if they are
@@ -42,6 +42,7 @@ if REPO not in sys.path:
     sys.path.insert(0, REPO)
 
 from production_inputs import capture_detector_inputs, streak_config  # noqa: E402
+from streak_recall_floor import build_stage_evidence  # noqa: E402
 
 import weightmask.streaks as ST  # noqa: E402
 from weightmask.utils import rms_valid_mask, robust_rms  # noqa: E402
@@ -58,7 +59,7 @@ EXPOSURES = [
     ("megacam_streak_case.fits", "megacam_streak_case"),
 ]
 
-# The only two amps in the local corpus carrying a real linear feature, and the
+# The only two amps in the local corpus carrying an unconfirmed linear feature, and the
 # only reason a stride of 4 is unsafe. Keep this in step with the amp list.
 REQUIRED = {("996195p", 35), ("996195p", 36)}
 
@@ -188,6 +189,8 @@ def run_one(job):
                 "explains_final_px": int((stage_mask & mask).sum()),
             }
         out["components"] = component_table(mask, data_sub, rms)
+        records = {key: value for key, value in out.items() if key != "evidence"}
+        out["evidence"] = build_stage_evidence(records, (science, data_sub, rms, existing), scfg)["evidence"]
     except Exception as exc:  # pragma: no cover - surfaced, never swallowed
         out["error"] = f"{type(exc).__name__}: {exc}"
     return out

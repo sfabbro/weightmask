@@ -284,9 +284,13 @@ def _independent_line_stats(data_sub, point, direction, shape, offsets=(25.0, 60
         background.append(_bilinear(data_sub, xs + offset * perpendicular[0], ys + offset * perpendicular[1]))
         background.append(_bilinear(data_sub, xs - offset * perpendicular[0], ys - offset * perpendicular[1]))
     background = np.concatenate(background)
+    background = background[np.isfinite(background)]
+    if background.size == 0:
+        return None
     bg_median = float(np.median(background))
     bg_sigma = _mad_std(background) or (float(np.std(background)) or 1e-6)
     z = (on_line - bg_median) / bg_sigma
+    z[~np.isfinite(z)] = -np.inf
     spacing_px = length / max(n - 1, 1)
     span, start, peak = longest_support_run(z, threshold)
     return {
@@ -379,16 +383,45 @@ def _bright_components(data_sub, threshold_sig, min_px, min_elongation, max_comp
     fixture is used to score, and thresholded high (default 20 sigma) so it stays
     a high-precision miner rather than a second detector.
     """
-    median = float(np.median(data_sub))
+    finite = np.asarray(data_sub)[np.isfinite(data_sub)]
+    if finite.size == 0:
+        return []
+    median = float(np.median(finite))
     sigma = _mad_std(data_sub) or 1.0
-    return _components_from_mask(data_sub > median + threshold_sig * sigma, min_px, max_components, min_elongation)
+    proposal = np.isfinite(data_sub) & (data_sub > median + threshold_sig * sigma)
+    return _components_from_mask(proposal, min_px, max_components, min_elongation)
 
 
 def _column_and_row_noise(data_sub):
     """Robust per-column and per-row noise, for the axis veto."""
-    column = data_sub - np.median(data_sub, axis=0, keepdims=True)
-    row = data_sub - np.median(data_sub, axis=1, keepdims=True)
-    return 1.4826 * np.median(np.abs(column), axis=0), 1.4826 * np.median(np.abs(row), axis=1)
+    data_sub = np.asarray(data_sub)
+    finite = np.isfinite(data_sub)
+    safe = np.where(finite, data_sub, np.nan)
+    valid_columns = np.any(finite, axis=0)
+    valid_rows = np.any(finite, axis=1)
+    column_center = np.full(data_sub.shape[1], np.nan, dtype=np.float64)
+    row_center = np.full(data_sub.shape[0], np.nan, dtype=np.float64)
+    if np.any(valid_columns):
+        column_center[valid_columns] = np.nanmedian(safe[:, valid_columns], axis=0)
+    if np.any(valid_rows):
+        row_center[valid_rows] = np.nanmedian(safe[valid_rows, :], axis=1)
+    column = data_sub - column_center[np.newaxis, :]
+    row = data_sub - row_center[:, np.newaxis]
+    column_abs = np.where(finite, np.abs(column), np.nan)
+    row_abs = np.where(finite, np.abs(row), np.nan)
+    column_sigma = np.full(data_sub.shape[1], np.inf, dtype=np.float64)
+    row_sigma = np.full(data_sub.shape[0], np.inf, dtype=np.float64)
+    if np.any(valid_columns):
+        column_sigma[valid_columns] = 1.4826 * np.nanmedian(column_abs[:, valid_columns], axis=0)
+    if np.any(valid_rows):
+        row_sigma[valid_rows] = 1.4826 * np.nanmedian(row_abs[valid_rows, :], axis=1)
+    return column_sigma, row_sigma
+
+
+def _axis_noise_baseline(axis_sigma):
+    values = np.asarray(axis_sigma, dtype=np.float64)
+    values = values[np.isfinite(values)]
+    return float(np.median(values)) if values.size else 1.0
 
 
 def _dedupe_candidates(candidates, tol_px, tol_deg):
@@ -507,8 +540,8 @@ def mine_hdu(job):
 
     candidates = _dedupe_candidates(candidates, tol_px=6.0, tol_deg=1.5)
 
-    median_column = float(np.median(column_sigma)) or 1.0
-    median_row = float(np.median(row_sigma)) or 1.0
+    median_column = _axis_noise_baseline(column_sigma)
+    median_row = _axis_noise_baseline(row_sigma)
     for candidate in candidates:
         candidate["independent"] = _independent_line_stats(
             data_sub, candidate["point"], candidate["direction"], science.shape
@@ -519,7 +552,14 @@ def mine_hdu(job):
         veto = None
         if vertical_align <= 1.5:
             x = int(round(candidate["point"][0]))
-            if 0 <= x < w and column_sigma[x] > 3.0 * median_column:
+            if 0 <= x < w and not np.isfinite(column_sigma[x]):
+                veto = {
+                    "kind": "invalid_column",
+                    "coord": x,
+                    "axis_sigma": None,
+                    "median_axis_sigma": median_column,
+                }
+            elif 0 <= x < w and column_sigma[x] > 3.0 * median_column:
                 veto = {
                     "kind": "bad_column",
                     "coord": x,
@@ -528,7 +568,14 @@ def mine_hdu(job):
                 }
         elif horizontal_align <= 1.5:
             y = int(round(candidate["point"][1]))
-            if 0 <= y < h and row_sigma[y] > 3.0 * median_row:
+            if 0 <= y < h and not np.isfinite(row_sigma[y]):
+                veto = {
+                    "kind": "invalid_row",
+                    "coord": y,
+                    "axis_sigma": None,
+                    "median_axis_sigma": median_row,
+                }
+            elif 0 <= y < h and row_sigma[y] > 3.0 * median_row:
                 veto = {
                     "kind": "bad_row",
                     "coord": y,

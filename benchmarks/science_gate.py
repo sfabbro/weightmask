@@ -13,10 +13,19 @@ import math
 import os
 import subprocess
 import sys
+import json
+
+try:
+    from .release_evidence import git_commit, sha256, utc_now, write_manifest
+except ImportError:
+    from release_evidence import git_commit, sha256, utc_now, write_manifest
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 DEFAULT_DATA = os.path.join("benchmark_data", "megacam", "perf")
 DEFAULT_OUT = os.path.join("test_outputs", "harness", "science-gate.md")
+DEFAULT_MANIFEST = os.path.join("test_outputs", "harness", "science-gate.json")
+INPUT_MANIFEST = os.path.join("benchmarks", "trail_truth", "megacam_real_labels.json")
+METRIC_REVISIONS = ["truth-band-recall-v2", "truth-pixel-recall-v3", "additive-finite-injection-v3"]
 WORM_AUDIT = 0.275
 WORM_DROP = 0.02
 SINGLE_FLOOR = 0.15
@@ -75,7 +84,48 @@ def _write(path, lines):
         handle.write("\n".join(lines) + "\n")
 
 
-def _skip(out_path, data_dir):
+def _evidence(version, command, status, data_ids):
+    config = os.path.join(ROOT, "weightmask.yml")
+    input_manifest = os.path.join(ROOT, INPUT_MANIFEST)
+    return {
+        "schema": "weightmask.release-evidence.v1",
+        "status": status,
+        "version": version,
+        "commit_sha": git_commit(ROOT),
+        "config_sha": sha256(config) if os.path.isfile(config) else "",
+        "input_manifest_sha": sha256(input_manifest) if os.path.isfile(input_manifest) else "",
+        "input_sha": sha256(input_manifest) if os.path.isfile(input_manifest) else "",
+        "manifest_sha": sha256(input_manifest) if os.path.isfile(input_manifest) else "",
+        "metric_revisions": METRIC_REVISIONS,
+        "command": command,
+        "timestamp": utc_now(),
+        "data_ids": sorted(data_ids),
+        "real_trail_recall": "n/a",
+        # The shipped fixture has no independently confirmed trail. A numeric
+        # recall recorded later clears this exclusion.
+        "scope_exclusions": ["real_trail_recall"],
+    }
+
+
+def _repo_path(path):
+    return path if os.path.isabs(path) else os.path.join(ROOT, path)
+
+
+def _write_evidence(path, evidence):
+    write_manifest(path, evidence)
+
+
+def _fixture_data_ids():
+    path = os.path.join(ROOT, INPUT_MANIFEST)
+    try:
+        with open(path) as handle:
+            fixture = json.load(handle)
+        return list(fixture.get("data_requirements", {}).get("exposures", {}))
+    except (OSError, ValueError, TypeError):
+        return []
+
+
+def _skip(out_path, data_dir, manifest_path, version, command):
     line = (
         f"{data_dir} has no FITS files. science-gate skipped. "
         "A skip is not a pass: artefact FP, injected recall, cosmic-ray, and timing gates were not run."
@@ -93,6 +143,7 @@ def _skip(out_path, data_dir):
             "No MegaCam timing or false-positive rate was measured in this run.",
         ],
     )
+    _write_evidence(manifest_path, _evidence(version, command, "skipped", _fixture_data_ids()))
     return 0
 
 
@@ -215,15 +266,26 @@ def main(argv=None):
         "--data-dir", help=f"Relocate fixture inputs here (default uses fixture paths; probe {DEFAULT_DATA})."
     )
     parser.add_argument("--out", default=DEFAULT_OUT)
+    parser.add_argument("--manifest", default=DEFAULT_MANIFEST)
+    parser.add_argument("--version", default=None)
     parser.add_argument("--hdu", type=int, default=1)
     args = parser.parse_args(argv)
+    version = args.version or "0.0.0"
+    command = "pixi run science-gate" + (" " + " ".join(argv) if argv else "")
+    manifest_path = _repo_path(args.manifest)
 
     selected_data = args.data_dir if args.data_dir is not None else DEFAULT_DATA
     data_dir = selected_data if os.path.isabs(selected_data) else os.path.join(ROOT, selected_data)
     out_path = args.out if os.path.isabs(args.out) else os.path.join(ROOT, args.out)
     fits = _fits_paths(data_dir)
     if not fits:
-        return _skip(out_path, os.path.relpath(data_dir, ROOT) if data_dir.startswith(ROOT) else data_dir)
+        return _skip(
+            out_path,
+            os.path.relpath(data_dir, ROOT) if data_dir.startswith(ROOT) else data_dir,
+            manifest_path,
+            version,
+            command,
+        )
 
     out_dir = os.path.dirname(os.path.abspath(out_path))
     os.makedirs(out_dir, exist_ok=True)
@@ -235,6 +297,21 @@ def main(argv=None):
     _cosmics(exposure, args.hdu, out_dir, failures, notes)
     _perf(exposure, out_dir, failures, notes)
     status = "failed" if failures else "passed"
+    evidence = _evidence(version, command, status, _fixture_data_ids())
+    try:
+        score_path = os.path.join(out_dir, "trail_truth.score.json")
+        with open(score_path) as handle:
+            score = json.load(handle)
+        recall = score.get("totals", {}).get("streaks", {}).get("trail_recall")
+        if recall is None:
+            evidence["real_trail_recall"] = "n/a"
+            evidence["scope_exclusions"] = ["real_trail_recall"]
+        else:
+            evidence["real_trail_recall"] = recall
+            evidence["scope_exclusions"] = []
+    except (OSError, ValueError, TypeError):
+        pass
+    _write_evidence(manifest_path, evidence)
     lines = ["# science-gate", "", f"status: {status}", ""]
     if failures:
         lines.append("## Failures")

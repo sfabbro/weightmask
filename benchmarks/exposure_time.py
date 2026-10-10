@@ -16,8 +16,8 @@ handled here:
 * **Order.** The first run of either arm pays for importing skimage/scipy,
   populating the on-disk flat-bad-pixel cache, and faulting the 350 MB flat into
   the page cache. Measuring the arms in sequence and reporting the first one made
-  streaks look 2.6x *slower*. Both arms are now warmed up and discarded first, and
-  each arm is timed ``--repeats`` times with the fastest reported.
+  streaks look 2.6x *slower*. Arm order is randomized and timed runs are split
+  into cold-cache and warm-cache observations.
 * **Profiling in the wrong process.** A ``cProfile`` in the parent measures
   ``subprocess.run`` waiting on the child, which attributes the entire run to
   ``select.poll``. Nothing is profiled here: the pipeline already prints a
@@ -33,7 +33,7 @@ one core's cost and the stage attribution stays readable; ``--scaling`` sweeps
 Usage:
     pixi run exposure-time
     pixi run exposure-time -- --exposure benchmark_data/megacam/perf/1013719p.fits.fz
-    pixi run exposure-time -- --repeats 1                # one repeat instead of two
+    pixi run exposure-time -- --repeats 5                # five repeats per arm
     pixi run exposure-time -- --scaling 1 2 4 8         # how it uses the cores
 """
 from __future__ import annotations
@@ -47,36 +47,51 @@ import subprocess
 import sys
 import tempfile
 import time
+from pathlib import Path
 
 import fitsio
 
 REPO = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+if REPO not in sys.path:
+    sys.path.insert(0, REPO)
+
+from benchmarks import perf_protocol
+
 FLAT = os.path.join(REPO, "benchmark_data", "megacam", "perf", "flat_08Bm01_r.fits.fz")
 
 CHIP_TIMING = re.compile(r"--- Image processed in ([\d.]+) seconds --- top=(.*)")
 STREAK_PIXELS = re.compile(r"Final streak mask includes ([\d,]+) new pixels")
 
 
-def make_config(outdir, enable_streaks):
+def make_config(outdir, enable_streaks, *, config_id=None, cache_dir=None):
     """Toggle the stage by rewriting the one line.
 
     The CLI then does exactly what a user would do, rather than taking a code path
     only this benchmark can reach. The assert is not decoration: a silent failure
     to rewrite would leave both arms identical and the comparison meaningless.
     """
+    os.makedirs(outdir, exist_ok=True)
     with open(os.path.join(REPO, "weightmask.yml")) as handle:
         text = handle.read()
     if not enable_streaks:
         text = text.replace("streak_masking:\n  enable: true", "streak_masking:\n  enable: false", 1)
         assert "streak_masking:\n  enable: false" in text, "failed to disable streak_masking"
-    path = os.path.join(outdir, f"config_{'on' if enable_streaks else 'off'}.yml")
+    if cache_dir is not None:
+        text = re.sub(
+            r"(?m)^(\s*bad_mask_cache_dir:)\s*.*$",
+            rf'\1 "{Path(cache_dir)}"',
+            text,
+            count=1,
+        )
+    suffix = f"_{config_id}" if config_id else ""
+    path = os.path.join(outdir, f"config_{'on' if enable_streaks else 'off'}{suffix}.yml")
     with open(path, "w") as handle:
         handle.write(text)
     return path
 
 
-def run_once(exposure, enable_streaks, outdir, nproc=1):
-    output = os.path.join(outdir, "on" if enable_streaks else "off")
+def run_once(exposure, enable_streaks, outdir, nproc=1, run_id=None, environment=None, cache_dir=None):
+    output = os.path.join(outdir, run_id or "run", "on" if enable_streaks else "off")
     os.makedirs(output, exist_ok=True)
     command = [
         sys.executable,
@@ -86,7 +101,7 @@ def run_once(exposure, enable_streaks, outdir, nproc=1):
         "--flat_image",
         FLAT,
         "--config",
-        make_config(outdir, enable_streaks),
+        make_config(outdir, enable_streaks, config_id=run_id, cache_dir=cache_dir),
         "--output_mask",
         os.path.join(output, "mask.fits"),
         "--output_map",
@@ -100,7 +115,7 @@ def run_once(exposure, enable_streaks, outdir, nproc=1):
     # An earlier version appended one --hdu per chip and silently measured a
     # single-chip run while reporting it as eight.
     started = time.perf_counter()
-    completed = subprocess.run(command, cwd=REPO, capture_output=True, text=True)
+    completed = subprocess.run(command, cwd=REPO, capture_output=True, text=True, env=environment)
     elapsed = time.perf_counter() - started
     if completed.returncode != 0:
         raise RuntimeError(f"CLI failed (exit {completed.returncode}):\n{completed.stderr[-3000:]}")
@@ -138,7 +153,9 @@ def main(argv=None):
         "--exposure",
         default=os.path.join(REPO, "benchmark_data", "megacam", "long", "996195p.fits.fz"),
     )
-    parser.add_argument("--repeats", type=int, default=2, help="timed runs per arm; fastest reported")
+    parser.add_argument("--repeats", type=int, default=5, help="timed runs per arm; minimum 5")
+    parser.add_argument("--seed", type=int, default=0, help="seed for the deterministic A/B schedule")
+    parser.add_argument("--report", help="write the deterministic JSON timing report here")
     parser.add_argument(
         "--scaling",
         type=int,
@@ -155,8 +172,10 @@ def main(argv=None):
     parser.add_argument("--keep", action="store_true")
     args = parser.parse_args(argv)
 
-    if args.repeats < 1:
-        parser.error("--repeats must be positive")
+    try:
+        perf_protocol.validate_repeats(args.repeats)
+    except ValueError as error:
+        parser.error(str(error))
     if args.scaling is not None and (not args.scaling or args.scaling[0] != 1 or min(args.scaling) < 1):
         parser.error("--scaling must start with 1 and contain only positive worker counts")
     if args.hdus:
@@ -183,7 +202,7 @@ def main(argv=None):
 
         if args.scaling:
             return scaling(args, exposure, outdir, chips)
-        comparison(args, exposure, outdir, chips)
+        comparison(args, exposure, outdir, chips, report_path=args.report)
     finally:
         if not args.keep:
             shutil.rmtree(outdir, ignore_errors=True)
@@ -201,8 +220,7 @@ def scaling(args, exposure, outdir, chips):
     values = args.scaling
     if not values or values[0] != 1 or min(values) < 1:
         raise ValueError("scaling must start with 1 and contain only positive worker counts")
-    if args.repeats < 1:
-        raise ValueError("repeats must be positive")
+    perf_protocol.validate_repeats(args.repeats)
     print("warmup (discarded)...", flush=True)
     run_once(exposure, True, outdir, nproc=values[0])
     print(flush=True)
@@ -210,65 +228,147 @@ def scaling(args, exposure, outdir, chips):
     rows = []
     for nproc in values:
         times = []
-        for _ in range(args.repeats):
-            elapsed, _stdout = run_once(exposure, True, outdir, nproc=nproc)
+        for repeat in range(args.repeats):
+            elapsed, _stdout = run_once(exposure, True, outdir, nproc=nproc, run_id=f"scale-{nproc}-{repeat}")
             times.append(elapsed)
-        rows.append((nproc, min(times)))
-        print(f"  nproc={nproc:<3d} {min(times):7.1f}s   ({['%.1f' % t for t in times]})", flush=True)
+        summary = perf_protocol.summarize(times)
+        rows.append((nproc, summary))
+        print(
+            f"  nproc={nproc:<3d} median={summary['median']:7.1f}s "
+            f"IQR={summary['iqr']:.1f}s MAD={summary['mad']:.1f}s "
+            f"({['%.1f' % t for t in times]})",
+            flush=True,
+        )
 
-    base = rows[0][1]
+    base = rows[0][1]["median"]
     print("\n=== scaling, streaks ON ===")
-    print(f"  {'nproc':>6} {'wall':>9} {'speedup':>9} {'efficiency':>11} {'s/chip':>9}")
-    for nproc, wall in rows:
+    print(f"  {'nproc':>6} {'median':>9} {'speedup':>9} {'efficiency':>11} {'s/chip':>9}")
+    for nproc, summary in rows:
+        wall = summary["median"]
         speedup = base / wall
         efficiency = base / (wall * nproc)
         print(f"  {nproc:6d} {wall:8.1f}s {speedup:8.2f}x {100 * efficiency:10.0f}% {wall / chips:8.2f}s")
-    best_nproc, best_wall = min(rows, key=lambda r: r[1])
-    print(f"\n  fastest: nproc={best_nproc} at {best_wall:.1f}s ({base / best_wall:.2f}x over nproc={rows[0][0]})")
     if len(rows) > 1:
-        marginal = (rows[-2][1] - rows[-1][1]) / (rows[-1][1] or 1) * 100
+        marginal = (rows[-2][1]["median"] - rows[-1][1]["median"]) / (rows[-1][1]["median"] or 1) * 100
         print(f"  last step bought {marginal:.0f}% -- near-zero means more workers did not help")
     return 0
 
 
-def comparison(args, exposure, outdir, chips):
-    print(f"timing:   {args.repeats} run(s) per arm after a discarded warmup, fastest reported\n", flush=True)
+def _arm_output_equivalent(output_dirs):
+    from benchmarks import perf_megacam
 
-    print("warmup (discarded)...", flush=True)
-    for enable in (True, False):
-        run_once(exposure, enable, outdir)
-    print(flush=True)
+    if len(output_dirs) < 2:
+        return True
+    reference = output_dirs[0]
+    return all(perf_megacam._compare_products(path, reference)["ok"] for path in output_dirs[1:])
 
-    results = {}
-    for label, enable in (("streaks OFF", False), ("streaks ON", True)):
-        runs = []
-        for _ in range(args.repeats):
-            elapsed, stdout = run_once(exposure, enable, outdir)
-            runs.append((elapsed, parse(stdout)))
-        best = min(runs, key=lambda r: r[0])
-        results[label] = best
-        pixels = best[1][3]
-        print(
-            f"  {label}: {best[0]:7.1f}s  ({best[0] / chips:.2f} s/chip)  "
-            f"chips timed {len(best[1][0])}  streak px {pixels:,.0f}  "
-            f"all {['%.1f' % r[0] for r in runs]}",
-            flush=True,
+
+def comparison(args, exposure, outdir, chips, report_path=None):
+    repeats = perf_protocol.validate_repeats(args.repeats)
+    seed = int(getattr(args, "seed", 0))
+    schedule = perf_protocol.interleaved_schedule(
+        repeats,
+        seed=seed,
+        arms=("baseline", "treatment"),
+        cold_repetitions=1,
+    )
+    environment = perf_protocol.thread_environment(os.environ)
+    process_environment = os.environ.copy()
+    process_environment.update(environment)
+    print(f"timing:   {repeats} run(s) per arm; randomized seed={seed}; median/IQR/MAD reported\n", flush=True)
+
+    samples = {"cold": {"baseline": [], "treatment": []}, "warm": {"baseline": [], "treatment": []}}
+    parsed = {"baseline": [], "treatment": []}
+    output_dirs = {"baseline": [], "treatment": []}
+    config_paths = []
+    warm_cache_root = Path(outdir) / "cache"
+    for arm in ("baseline", "treatment"):
+        warm_cache = perf_protocol.cache_directory(warm_cache_root, "warm", arm, 0)
+        prewarm_id = f"prewarm-{arm}"
+        run_once(
+            exposure,
+            arm == "treatment",
+            outdir,
+            environment=process_environment,
+            run_id=prewarm_id,
+            cache_dir=warm_cache,
         )
+        shutil.rmtree(Path(outdir) / prewarm_id, ignore_errors=True)
+    for repetition, arm in schedule:
+        enable = arm == "treatment"
+        run_id = f"timed-{repetition}-{arm}"
+        cache = "cold" if not parsed[arm] else "warm"
+        cache_dir = perf_protocol.cache_directory(warm_cache_root, cache, arm, repetition)
+        try:
+            elapsed, stdout = run_once(
+                exposure,
+                enable,
+                outdir,
+                environment=process_environment,
+                run_id=run_id,
+                cache_dir=cache_dir,
+            )
+        finally:
+            if cache == "cold":
+                perf_protocol.cleanup_cache_directory(cache_dir)
+        samples[cache][arm].append(elapsed)
+        parsed[arm].append((repetition, elapsed, parse(stdout)))
+        output_dirs[arm].append(os.path.join(outdir, run_id, "on" if enable else "off"))
+        config_paths.append(make_config(outdir, enable, config_id=run_id, cache_dir=cache_dir))
 
-    off_t, (off_chips, off_stages, off_stage_chips, off_px) = results["streaks OFF"]
-    on_t, (on_chips, on_stages, on_stage_chips, on_px) = results["streaks ON"]
+    correctness = {arm: _arm_output_equivalent(paths) for arm, paths in output_dirs.items()}
+    perf_protocol.require_correctness_equivalence(correctness)
+    report = perf_protocol.make_report(
+        instrument="MegaCam exposure-time",
+        input_paths=[exposure, FLAT],
+        config_paths=sorted(set(config_paths)),
+        repeats=repeats,
+        seed=seed,
+        schedule=schedule,
+        samples=samples,
+        correctness=correctness,
+        thread_environment=environment,
+        cold_repetitions=1,
+        arm_definitions={
+            "baseline": {"streak_masking.enable": False},
+            "treatment": {"streak_masking.enable": True},
+        },
+    )
+    selected = {}
+    for arm in ("baseline", "treatment"):
+        warm_runs = parsed[arm][1:]
+        target = report["results"]["warm"][arm]["median"]
+        selected[arm] = min(warm_runs, key=lambda item: abs(item[1] - target))
+    report["protocol"]["selected"] = {
+        arm: {"arm": arm, "cache": "warm", "repetition": run[0]} for arm, run in selected.items()
+    }
+    report["protocol"]["prewarmed"] = {arm: True for arm in ("baseline", "treatment")}
+    report["protocol"]["eligibility"] = perf_protocol.release_eligibility(
+        repeats,
+        all(correctness.values()),
+        False,
+        full_products=False,
+        distinct_arms=True,
+    )
+    if report_path:
+        perf_protocol.write_report(report, report_path)
+    off_t = report["results"]["warm"]["baseline"]["median"]
+    on_t = report["results"]["warm"]["treatment"]["median"]
+    off_chips, off_stages, off_stage_chips, off_px = selected["baseline"][2]
+    on_chips, on_stages, on_stage_chips, on_px = selected["treatment"][2]
     delta = on_t - off_t
     print("\n=== the number ===")
     print(
         f"  streaks OFF   {off_t:8.1f}s   {off_t / chips:6.2f} s/chip"
-        f"   (median chip {statistics.median(off_chips):5.2f}s)"
+        f"   (median chip {statistics.median(off_chips):5.2f}s; "
+        f"IQR {report['results']['warm']['baseline']['iqr']:.1f}s; MAD {report['results']['warm']['baseline']['mad']:.1f}s)"
     )
     print(
         f"  streaks ON    {on_t:8.1f}s   {on_t / chips:6.2f} s/chip"
-        f"   (median chip {statistics.median(on_chips):5.2f}s)"
+        f"   (median chip {statistics.median(on_chips):5.2f}s; "
+        f"IQR {report['results']['warm']['treatment']['iqr']:.1f}s; MAD {report['results']['warm']['treatment']['mad']:.1f}s)"
     )
     print(f"  difference    {delta:+8.1f}s   = {100 * delta / off_t:+.1f}% of the streak-free run")
-    print(f"  the full run is {off_t / on_t:.2f}x faster without streak detection")
     print(f"  streak stage's share of the full run: {100 * delta / on_t:.0f}%")
 
     if off_px == 0.0 and on_px == 0.0:
@@ -297,6 +397,7 @@ def comparison(args, exposure, outdir, chips):
 
     if args.keep:
         print(f"\noutputs kept in {outdir}")
+    return report
 
 
 

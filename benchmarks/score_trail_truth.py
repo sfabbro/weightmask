@@ -89,12 +89,15 @@ def run_detector(detector, science, data_sub, rms, existing, header, streak_cfg)
         mask, _, _ = _detect_streaks_houghpeaks(data_sub, rms, existing, streak_cfg)
         return mask
     if detector == "poloka":
-        from poloka_tracks import poloka_satellite_mask
+        from poloka_tracks import finite_robust_rms, poloka_satellite_mask
 
+        finite_science = science[np.isfinite(science)]
+        if finite_science.size == 0:
+            raise ValueError("no finite science values for Poloka comparison")
         mask, _, _ = poloka_satellite_mask(
             science,
-            np.full(science.shape, float(np.median(science)), dtype=np.float32),
-            float(np.median(rms)),
+            np.full(science.shape, float(np.median(finite_science)), dtype=np.float32),
+            finite_robust_rms(rms),
             existing_mask=existing,
             sat_mask=science >= float(header.get("SATURATE", 0.0) or np.inf),
         )

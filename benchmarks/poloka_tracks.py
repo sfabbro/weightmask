@@ -16,13 +16,41 @@ restart to correct it - see review notes).
 import numpy as np
 
 
+def finite_robust_rms(rms):
+    """Return a representative positive RMS from finite map values."""
+    values = np.asarray(rms, dtype=np.float64)
+    values = values[np.isfinite(values) & (values > 0)]
+    if values.size == 0:
+        raise ValueError("no finite positive RMS values")
+    center = float(np.median(values))
+    deviations = np.abs(values - center)
+    scale = float(1.4826 * np.median(deviations))
+    if np.isfinite(scale) and scale > 0:
+        values = values[np.abs(values - center) <= 3.0 * scale]
+        if values.size:
+            center = float(np.median(values))
+    if not np.isfinite(center) or center <= 0:
+        raise ValueError("no finite positive RMS values")
+    return center
+
+
 def poloka_satellite_mask(data, sky_map, sigma, existing_mask=None, sat_mask=None,
                           nsigma=1.0, min_elong=2.0, min_axis_frac=0.02):
     """Return (bool mask, n_tracks, details). Mirrors ClusterList/Cut/Mask."""
     from scipy.ndimage import label
 
     img = np.asarray(data, dtype=np.float64)
-    sky = np.nanmedian(sky_map) if np.ndim(sky_map) else float(sky_map)
+    if np.ndim(sky_map):
+        sky_values = np.asarray(sky_map, dtype=np.float64)
+        sky_values = sky_values[np.isfinite(sky_values)]
+        if sky_values.size == 0:
+            raise ValueError("no finite sky values")
+        sky = float(np.median(sky_values))
+    else:
+        sky = float(sky_map)
+    sigma = float(sigma)
+    if not np.isfinite(sigma) or sigma <= 0:
+        raise ValueError("sigma must be finite and positive")
     thresh = sky + nsigma * sigma
     h, w = img.shape
     diag = float(np.hypot(h, w))

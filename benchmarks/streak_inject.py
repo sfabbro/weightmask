@@ -2,7 +2,8 @@
 """Streak injection-recovery harness on a real HDU, as a swept grid.
 
 Injects synthetic trails (continuous and dashed, several lengths/brightnesses and
-angles) into a background-subtracted real image, runs ``detect_streaks``, and
+angles) into raw science, recomputes production detector inputs, runs
+``detect_streaks``, and
 reports per-trail recall plus novel false-positive pixels. Every grid cell is one
 TSV row, so a threshold change is judged by diffing two runs instead of by
 reading a log.
@@ -66,7 +67,56 @@ def sweep_specs(lengths=SWEEP_LENGTHS, sigmas=SWEEP_SIGMAS, dashed=SWEEP_DASHED,
     return specs
 
 
-def place_trails(shape, specs, rng, min_separation=500.0, margin=0.15, attempts=200):
+def _point_segment_distance(point, start, end):
+    segment = end - start
+    length_sq = float(np.dot(segment, segment))
+    if length_sq <= 0:
+        return float(np.linalg.norm(point - start))
+    fraction = float(np.clip(np.dot(point - start, segment) / length_sq, 0.0, 1.0))
+    return float(np.linalg.norm(point - (start + fraction * segment)))
+
+
+def _segment_distance(left, right):
+    left_start, left_end = left
+    right_start, right_end = right
+    left_vector = left_end - left_start
+    right_vector = right_end - right_start
+
+    def cross(first, second):
+        return float(first[0] * second[1] - first[1] * second[0])
+
+    denominator = cross(left_vector, right_vector)
+    offset = right_start - left_start
+    if abs(denominator) > 1e-12:
+        left_fraction = cross(offset, right_vector) / denominator
+        right_fraction = cross(offset, left_vector) / denominator
+        if 0.0 <= left_fraction <= 1.0 and 0.0 <= right_fraction <= 1.0:
+            return 0.0
+    return min(
+        _point_segment_distance(left_start, right_start, right_end),
+        _point_segment_distance(left_end, right_start, right_end),
+        _point_segment_distance(right_start, left_start, left_end),
+        _point_segment_distance(right_end, left_start, left_end),
+    )
+
+
+def _trail_segment(length, angle, cx, cy):
+    direction = np.array([np.cos(angle), np.sin(angle)], dtype=np.float64)
+    centre = np.array([cx, cy], dtype=np.float64)
+    half = 0.5 * float(length) * direction
+    return centre - half, centre + half
+
+
+def place_trails(
+    shape,
+    specs,
+    rng,
+    min_separation=500.0,
+    margin=0.15,
+    attempts=200,
+    rejected=None,
+    band_half_width=2.0,
+):
     """Pick non-overlapping trail placements, yielding the ones that fit.
 
     Crossings merge into tangles that no line-finder should fully recover, so
@@ -80,12 +130,28 @@ def place_trails(shape, specs, rng, min_separation=500.0, margin=0.15, attempts=
         for _ in range(attempts):
             cand_cx = float(rng.uniform(w * margin, w * (1.0 - margin)))
             cand_cy = float(rng.uniform(h * margin, h * (1.0 - margin)))
-            if all(max(abs(cand_cx - px), abs(cand_cy - py)) > min_separation for px, py, _ in placed):
+            candidate_segment = _trail_segment(length, angle, cand_cx, cand_cy)
+            if all(
+                max(abs(cand_cx - pcx), abs(cand_cy - pcy)) > min_separation
+                and _segment_distance(candidate_segment, _trail_segment(pl, pa, pcx, pcy))
+                > 2.0 * band_half_width
+                for pl, _, _, pa, pcx, pcy in placed
+            ):
                 found = (cand_cx, cand_cy)
                 break
         if found is None:
+            if rejected is not None:
+                rejected.append(
+                    {
+                        "length": length,
+                        "peak_sig": peak_sig,
+                        "dashed": dashed,
+                        "reason": "placement_failed",
+                        "truth_px": 0,
+                    }
+                )
             continue
-        placed.append((found[0], found[1], angle))
+        placed.append((length, peak_sig, dashed, angle, found[0], found[1]))
         yield length, peak_sig, dashed, angle, found[0], found[1]
 
 
@@ -101,6 +167,7 @@ def trail_flux(
     dash_period=50.0,
     dash_on=30.0,
     profile_width=1.2,
+    rms_map=None,
 ):
     """Flux in sky-sigma units for one trail, plus the mask of its main body."""
     h, w = shape
@@ -112,11 +179,30 @@ def trail_flux(
     if dashed:
         on_trail &= np.mod(along, dash_period) < dash_on
     profile = np.exp(-0.5 * (across / profile_width) ** 2)
+    body = on_trail & (profile > 0.3)
     flux = np.where(on_trail, peak_sig * profile, 0.0)
-    return flux, on_trail & (flux > 0.3 * peak_sig)
+    if rms_map is not None:
+        rms_map = np.asarray(rms_map, dtype=np.float32)
+        if rms_map.shape != shape:
+            raise ValueError("rms_map shape differs from the injection shape")
+        scaled = np.zeros_like(flux)
+        valid = on_trail & np.isfinite(rms_map) & (rms_map > 0)
+        scaled[valid] = flux[valid] * rms_map[valid]
+        flux = scaled
+    return flux, body
 
 
-def inject_grid(shape, specs, rng, min_separation=500.0, margin=0.15):
+def inject_grid(
+    shape,
+    specs,
+    rng,
+    min_separation=500.0,
+    margin=0.15,
+    invalid_mask=None,
+    return_rejected=False,
+    profile_width=1.6,
+    rms_map=None,
+):
     """Return ``(flux, truth, trails)``; ``trails`` carries each trail's own truth.
 
     Per-trail truth is tracked explicitly rather than recovered from connected
@@ -126,8 +212,42 @@ def inject_grid(shape, specs, rng, min_separation=500.0, margin=0.15):
     flux = np.zeros(shape, dtype=np.float32)
     truth = np.zeros(shape, dtype=bool)
     trails = []
-    for length, peak_sig, dashed, angle, cx, cy in place_trails(shape, specs, rng, min_separation, margin):
-        trail, body = trail_flux(shape, length, peak_sig, dashed, angle, cx, cy)
+    rejected = []
+    valid_rms = None
+    if rms_map is not None:
+        rms_map = np.asarray(rms_map, dtype=np.float32)
+        if rms_map.shape != shape:
+            raise ValueError("rms_map shape differs from the injection shape")
+        valid_rms = np.isfinite(rms_map) & (rms_map > 0)
+    for length, peak_sig, dashed, angle, cx, cy in place_trails(
+        shape, specs, rng, min_separation, margin, rejected=rejected, band_half_width=2.0
+    ):
+        trail, body = trail_flux(
+            shape,
+            length,
+            peak_sig,
+            dashed,
+            angle,
+            cx,
+            cy,
+            profile_width=profile_width,
+            rms_map=rms_map,
+        )
+        overlap = np.any(body & truth)
+        invalid = (invalid_mask is not None and np.any(body & invalid_mask)) or (
+            valid_rms is not None and np.any(body & ~valid_rms)
+        )
+        if overlap or invalid:
+            rejected.append(
+                {
+                    "length": length,
+                    "peak_sig": peak_sig,
+                    "dashed": dashed,
+                    "reason": "truth_overlap" if overlap else "invalid_or_excluded",
+                    "truth_px": int(np.count_nonzero(body)),
+                }
+            )
+            continue
         flux += trail
         truth |= body
         trails.append(
@@ -141,7 +261,22 @@ def inject_grid(shape, specs, rng, min_separation=500.0, margin=0.15):
                 "truth": body,
             }
         )
+    if return_rejected:
+        return flux, truth, trails, rejected
     return flux, truth, trails
+
+
+def inject_source_poisson(raw_science, source_adu, gain, rng, invalid_mask=None):
+    """Add a source in ADU with Poisson counting noise in electrons."""
+    gain = float(gain)
+    if not np.isfinite(gain) or gain <= 0:
+        raise ValueError("gain must be finite and positive")
+    source = np.maximum(np.asarray(source_adu, dtype=np.float32), 0.0)
+    if invalid_mask is not None:
+        source = np.where(invalid_mask, 0.0, source)
+    electrons = source.astype(np.float64) * gain
+    realization = rng.poisson(electrons).astype(np.float32) / gain
+    return np.asarray(raw_science, dtype=np.float32) + realization
 
 
 def trail_recall(mask, body, dilation=5, line_half_width=2.0):
@@ -186,9 +321,15 @@ def score_mask(mask, baseline, truth, dilation=5):
     return int(np.count_nonzero(novel & ~truth)), int(np.count_nonzero(novel & ~near)), int(np.count_nonzero(novel))
 
 
+def scoreable_truth(body, data_sub, existing, baseline):
+    """Partition a trail truth mask after production recomputation."""
+    rejected = ~np.isfinite(data_sub) | existing | baseline
+    return body & ~rejected, body & rejected
+
+
 def apply_overrides(config, pairs):
     """Apply ``key=value`` (optionally dotted) overrides in place and return it."""
-    from weightmask.utils import clean_config_dict
+    from weightmask.config import clean_config_dict
 
     for item in pairs or []:
         if "=" not in item:
@@ -233,6 +374,9 @@ TSV_COLUMNS = [
     "cx",
     "cy",
     "truth_px",
+    "scoreable_px",
+    "rejected_px",
+    "rejected_cells",
     "recall",
     "recall5",
     "recall_line",
@@ -308,8 +452,7 @@ def main(argv=None):
         parser.error("--seeds must be positive")
 
     import fitsio
-    from astropy.stats import mad_std
-    from production_inputs import capture_detector_inputs
+    from production_inputs import capture_detector_inputs, production_gain_read_noise
 
     from weightmask.streaks import detect_streaks
 
@@ -332,50 +475,64 @@ def main(argv=None):
     # The recorded ``bin`` recall curve was non-monotonic for exactly that reason
     # -- it measured whether the sensitive stages ran, not resolution.
     base_cfg["streak_masking"] = dict(streak_cfg)
-    data_sub, rms, existing = capture_detector_inputs(sci, header, base_cfg, flat=flat)
+    clean_data_sub, clean_rms, clean_existing = capture_detector_inputs(sci, header, base_cfg, flat=flat)
     note = "production streak stage" + ("" if flat is not None else " (NO FLAT)")
     if flat is None:
         print("WARNING: no --flat given; upstream bad-column/bleed masking is much weaker than production.")
-    print(f"existing_mask: {int(existing.sum())} px ({note})")
+    print(f"existing_mask: {int(clean_existing.sum())} px ({note})")
 
-    finite = data_sub[np.isfinite(data_sub)]
-    noise = float(mad_std(finite[:: max(1, finite.size // 200000)]))
-    cache_key = baseline_key(data_sub, rms, existing, base_cfg)
+    gain, _read_noise = production_gain_read_noise(header, base_cfg)
+    cache_key = baseline_key(clean_data_sub, clean_rms, clean_existing, base_cfg)
+
+    cache_path = os.path.join(args.cache_dir, f"{exposure_id}_{args.hdu}_{cache_key}_prod.npy")
+    if not args.no_cache and os.path.exists(cache_path):
+        clean_baseline = np.load(cache_path, allow_pickle=False).astype(bool)
+        if clean_baseline.shape != sci.shape:
+            raise ValueError("cached baseline shape differs from the science frame")
+        print(f"baseline cached ({int(clean_baseline.sum())} px)")
+    else:
+        t0 = time.time()
+        clean_baseline = detect_streaks(clean_data_sub, clean_rms, clean_existing, dict(streak_cfg))
+        print(f"baseline fresh ({int(clean_baseline.sum())} px, {time.time() - t0:.1f}s)")
+        if not args.no_cache:
+            os.makedirs(args.cache_dir, exist_ok=True)
+            np.save(cache_path, clean_baseline.astype(np.uint8))
 
     rows = []
     for seed in range(args.seed, args.seed + args.seeds):
         rng = np.random.default_rng(seed)
-        flux, truth, trails = inject_grid(sci.shape, specs, rng, args.min_separation)
-        data_test = data_sub + flux * noise
-
-        # The "prod" tag is part of the key: baselines cached before the inputs
-        # came from the production stage were computed from a different image and
-        # must not be reused against these.
-        cache_path = os.path.join(
-            args.cache_dir, f"{exposure_id}_{args.hdu}_{cache_key}_prod.npy"
+        flux, truth, trails, rejected = inject_grid(
+            sci.shape,
+            specs,
+            rng,
+            args.min_separation,
+            invalid_mask=~np.isfinite(sci) | clean_baseline,
+            return_rejected=True,
+            rms_map=clean_rms,
         )
-        if not args.no_cache and os.path.exists(cache_path):
-            baseline = np.load(cache_path, allow_pickle=False).astype(bool)
-            if baseline.shape != sci.shape:
-                raise ValueError("cached baseline shape differs from the science frame")
-            print(f"seed {seed}: baseline cached ({int(baseline.sum())} px)")
-        else:
-            t0 = time.time()
-            baseline = detect_streaks(data_sub, rms, existing, dict(streak_cfg))
-            print(f"seed {seed}: baseline fresh ({int(baseline.sum())} px, {time.time() - t0:.1f}s)")
-            if not args.no_cache:
-                os.makedirs(args.cache_dir, exist_ok=True)
-                np.save(cache_path, baseline.astype(np.uint8))
+        raw_test = inject_source_poisson(sci, flux, gain, rng, invalid_mask=~np.isfinite(sci))
+        data_sub, rms, existing = capture_detector_inputs(raw_test, header, base_cfg, flat=flat)
 
         t0 = time.time()
-        mask = detect_streaks(data_test, rms, existing, dict(streak_cfg))
+        mask = detect_streaks(data_sub, rms, existing, dict(streak_cfg))
         dt = time.time() - t0
 
-        fp_px, fp5_px, novel_px = score_mask(mask, baseline, truth)
-        print(f"seed {seed}: trails={len(trails)} truth_px={int(truth.sum())} fp_px={fp_px} fp5_px={fp5_px} {dt:.1f}s")
+        scoreable = np.zeros(sci.shape, dtype=bool)
+        trail_partitions = []
+        for trail in trails:
+            accepted_truth, rejected_pixels = scoreable_truth(
+                trail["truth"], data_sub, existing, clean_baseline
+            )
+            scoreable |= accepted_truth
+            trail_partitions.append((accepted_truth, rejected_pixels))
+        fp_px, fp5_px, novel_px = score_mask(mask, clean_baseline, scoreable)
+        print(
+            f"seed {seed}: trails={len(trails)} rejected_cells={len(rejected)} truth_px={int(truth.sum())} "
+            f"scoreable_px={int(scoreable.sum())} fp_px={fp_px} fp5_px={fp5_px} {dt:.1f}s"
+        )
 
-        for index, trail in enumerate(trails):
-            exact, tolerant, line = trail_recall(mask, trail["truth"])
+        for index, (trail, (accepted_truth, rejected_pixels)) in enumerate(zip(trails, trail_partitions)):
+            exact, tolerant, line = trail_recall(mask, accepted_truth)
             row = {key: value for key, value in trail.items() if key != "truth"}
             row.update(
                 {
@@ -384,6 +541,9 @@ def main(argv=None):
                     "seed": seed,
                     "trail": index,
                     "truth_px": int(np.count_nonzero(trail["truth"])),
+                    "scoreable_px": int(np.count_nonzero(accepted_truth)),
+                    "rejected_px": int(np.count_nonzero(rejected_pixels)),
+                    "rejected_cells": len(rejected),
                     "recall": round(exact, 3),
                     "recall5": round(tolerant, 3),
                     "recall_line": round(line, 3),
@@ -393,7 +553,7 @@ def main(argv=None):
                     "dt_s": round(dt, 1),
                     "mode": streak_cfg.get("mode", "auto_ground"),
                     "note": note,
-                    "metric_revision": "truth-pixel-recall-v2",
+                    "metric_revision": "truth-pixel-recall-v3",
                 }
             )
             rows.append(row)

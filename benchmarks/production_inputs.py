@@ -28,9 +28,68 @@ replaced by a capture.
 from __future__ import annotations
 
 import contextlib
+import copy
 import io
 
 import numpy as np
+
+
+def _lookup_header(header, keys, default):
+    values = keys if isinstance(keys, (list, tuple)) else [keys]
+    for key in values:
+        if not isinstance(key, str) or not key:
+            continue
+        value = None
+        getter = getattr(header, "get", None)
+        if callable(getter):
+            value = getter(key, None)
+        if value is None:
+            try:
+                value = header[key]
+            except (KeyError, TypeError, AttributeError):
+                value = None
+        if value is not None:
+            return value
+    return default
+
+
+def production_gain_read_noise(header, config):
+    """Resolve gain/read noise with the same precedence as ``process_image``."""
+    variance = config.get("variance", {}) if isinstance(config, dict) else {}
+    gain_default = variance.get("default_gain", 1.0)
+    read_default = variance.get("default_rdnoise", 0.0)
+    gain_raw = _lookup_header(header, variance.get("gain_keyword", "GAIN"), gain_default)
+    read_raw = _lookup_header(header, variance.get("rdnoise_keyword", "RDNOISE"), read_default)
+    def coerce(raw, fallback, minimum, label):
+        try:
+            value = float(raw)
+            if not np.isfinite(value) or value < minimum:
+                raise ValueError
+        except (TypeError, ValueError):
+            value = float(fallback)
+        if not np.isfinite(value) or value < minimum:
+            raise ValueError(f"invalid {label} in production variance configuration")
+        return value
+
+    gain = coerce(gain_raw, gain_default, 1e-12, "gain")
+    read_noise = coerce(read_raw, read_default, 0.0, "read noise")
+    return gain, read_noise
+
+
+def _snapshot(value):
+    if isinstance(value, np.ndarray):
+        return np.array(value, copy=True)
+    if isinstance(value, dict):
+        return {key: _snapshot(item) for key, item in value.items()}
+    if isinstance(value, list):
+        return [_snapshot(item) for item in value]
+    if isinstance(value, tuple):
+        return tuple(_snapshot(item) for item in value)
+    return copy.deepcopy(value)
+
+
+class _CaptureStop(Exception):
+    pass
 
 
 def capture_detector_inputs(sci, header, config, detector_prior=None, flat=None):
@@ -68,6 +127,51 @@ def capture_detector_inputs(sci, header, config, detector_prior=None, flat=None)
     if "data_sub" not in captured:
         raise RuntimeError("process_image never reached the streak stage (is streak_masking.enable false?)")
     return captured["data_sub"], captured["rms"], captured["existing"]
+
+
+def capture_detector_calls(sci, header, config, detector_prior=None, flat=None, stop_after=None):
+    """Run production and return immutable snapshots of detector call boundaries."""
+    import weightmask.process as proc
+
+    calls = {name: [] for name in ("saturation", "cosmics", "objects", "streaks")}
+    calls["order"] = []
+    originals = {
+        "saturation": proc.detect_saturated_pixels,
+        "cosmics": proc.detect_cosmic_rays,
+        "objects": proc.detect_objects,
+        "streaks": proc.detect_streaks,
+    }
+
+    def record(name, function):
+        def wrapped(*args, **kwargs):
+            call = {"args": _snapshot(args), "kwargs": _snapshot(kwargs)}
+            calls[name].append(call)
+            calls["order"].append(name)
+            result = function(*args, **kwargs)
+            call["result"] = _snapshot(result)
+            if name == stop_after:
+                raise _CaptureStop
+            return result
+
+        return wrapped
+
+    proc.detect_saturated_pixels = record("saturation", originals["saturation"])
+    proc.detect_cosmic_rays = record("cosmics", originals["cosmics"])
+    proc.detect_objects = record("objects", originals["objects"])
+    proc.detect_streaks = record("streaks", originals["streaks"])
+    try:
+        with contextlib.redirect_stdout(io.StringIO()):
+            proc.process_image(sci, header, flat, config, detector_prior=detector_prior)
+    except _CaptureStop:
+        pass
+    finally:
+        proc.detect_saturated_pixels = originals["saturation"]
+        proc.detect_cosmic_rays = originals["cosmics"]
+        proc.detect_objects = originals["objects"]
+        proc.detect_streaks = originals["streaks"]
+    if not calls["order"]:
+        raise RuntimeError("process_image made no detector calls")
+    return calls
 
 
 def streak_config(config, enable=True):
