@@ -232,6 +232,10 @@ def _ccd_name(header):
             value = None
         if value is None:
             continue
+        # fitsio hands back bytes for a card it read as a string; decode it the
+        # way _hdu_identifier does so both naming paths agree on the token.
+        if isinstance(value, bytes):
+            value = value.decode(errors="replace")
         text = str(value).strip()
         if text:
             return text

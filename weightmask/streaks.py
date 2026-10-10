@@ -1036,6 +1036,31 @@ def _detect_trails_sparse_ransac(data_sub, bkg_rms_map, existing_mask, config):
     return trail_mask
 
 
+def _label_components(mask):
+    """Connected components of a boolean mask plus their sizes, or ``None`` if empty."""
+    labeled, n_components = label(np.asarray(mask, dtype=bool), connectivity=2, return_num=True)
+    if n_components == 0:
+        return None
+    sizes = np.bincount(labeled.ravel(), minlength=n_components + 1)
+    return labeled, n_components, sizes
+
+
+def _keep_by_component(labeled, n_components, sizes, min_pixels, keep_component):
+    """Apply ``keep_component(index, size)`` to each labelled component.
+
+    ``keep_component`` is consulted only for components of at least ``min_pixels``
+    pixels. A smaller one is always kept: a size floor is a poor judge on its own,
+    and the profile gate downstream has the geometry to be a better one.
+    """
+    keep = np.ones(n_components + 1, dtype=bool)
+    keep[0] = False
+    for index in range(1, n_components + 1):
+        if sizes[index] < int(min_pixels):
+            continue
+        keep[index] = bool(keep_component(index, int(sizes[index])))
+    return keep[labeled]
+
+
 def _drop_bright_components(mask, data_sub, bkg_rms_map, max_sigma, min_pixels=24, existing_mask=None):
     """Drop streak components too bright to be a trail.
 
@@ -1060,16 +1085,12 @@ def _drop_bright_components(mask, data_sub, bkg_rms_map, max_sigma, min_pixels=2
     """
     if max_sigma is None or bkg_rms_map is None or not np.any(mask):
         return mask
-    labeled, n_components = label(np.asarray(mask, dtype=bool), connectivity=2, return_num=True)
-    if n_components == 0:
+    components = _label_components(mask)
+    if components is None:
         return mask
-    sizes = np.bincount(labeled.ravel(), minlength=n_components + 1)
-    keep = np.ones(n_components + 1, dtype=bool)
-    keep[0] = False
-    for index in range(1, n_components + 1):
-        if sizes[index] < int(min_pixels):
-            keep[index] = True  # too small to judge
-            continue
+    labeled, n_components, sizes = components
+
+    def keep_component(index, _size):
         sel = labeled == index
         values = data_sub[sel].astype(np.float64)
         noise = bkg_rms_map[sel].astype(np.float64)
@@ -1077,11 +1098,11 @@ def _drop_bright_components(mask, data_sub, bkg_rms_map, max_sigma, min_pixels=2
         if existing_mask is not None:
             good &= ~existing_mask[sel]
         if not np.any(good):
-            keep[index] = True
-            continue
+            return True  # nothing measurable here, so nothing to judge it by
         sigma = float(np.percentile(values[good] / noise[good], 90))
-        keep[index] = sigma <= float(max_sigma)
-    return keep[labeled]
+        return sigma <= float(max_sigma)
+
+    return _keep_by_component(labeled, n_components, sizes, min_pixels, keep_component)
 
 
 def _drop_premasked_components(mask, existing_mask, max_fraction, min_pixels=24):
@@ -1103,19 +1124,18 @@ def _drop_premasked_components(mask, existing_mask, max_fraction, min_pixels=24)
         return mask
     if not np.any(mask):
         return mask
-    labeled, n_components = label(np.asarray(mask, dtype=bool), connectivity=2, return_num=True)
-    if n_components == 0:
+    components = _label_components(mask)
+    if components is None:
         return mask
-    sizes = np.bincount(labeled.ravel(), minlength=n_components + 1)
+    labeled, n_components, sizes = components
     overlap = np.bincount(labeled.ravel(), weights=existing_mask.ravel().astype(np.float64), minlength=n_components + 1)
-    keep = np.ones(n_components + 1, dtype=bool)
-    keep[0] = False
-    for index in range(1, n_components + 1):
-        if sizes[index] < int(min_pixels):
-            keep[index] = True  # too small to judge; the profile gate deals with it
-            continue
-        keep[index] = (overlap[index] / sizes[index]) <= float(max_fraction)
-    return keep[labeled]
+    return _keep_by_component(
+        labeled,
+        n_components,
+        sizes,
+        min_pixels,
+        lambda index, _size: (overlap[index] / sizes[index]) <= float(max_fraction),
+    )
 
 
 def _gate_mask_by_profile(mask, max_half_width=6.0, min_pixels=24):
@@ -1125,9 +1145,10 @@ def _gate_mask_by_profile(mask, max_half_width=6.0, min_pixels=24):
     pixels concentrate about one axis within ``max_half_width``. The returned
     mask is that band, not the whole voted corridor.
     """
-    labeled, n_components = label(np.asarray(mask, dtype=bool), connectivity=2, return_num=True)
-    if n_components == 0:
+    components = _label_components(mask)
+    if components is None:
         return np.zeros(np.shape(mask), dtype=bool)
+    labeled, n_components, _sizes = components
     out = np.zeros(labeled.shape, dtype=bool)
     for index in range(1, n_components + 1):
         ys, xs = np.nonzero(labeled == index)
