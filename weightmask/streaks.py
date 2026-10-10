@@ -738,6 +738,10 @@ def _refine_hough_peak(H, thetas, rhos, ti, ri):
     """
     orient = H.shape == (len(rhos), len(thetas))
     n_rho, n_th = (len(rhos), len(thetas)) if orient else (H.shape[1], H.shape[0])
+    # Clamp the peak before indexing the grids below: the neighbour probes are
+    # clamped, so an out-of-range index here would raise on a grid edge.
+    ti = min(n_th - 1, max(0, ti))
+    ri = min(n_rho - 1, max(0, ri))
 
     def _at(r, t):
         r = min(n_rho - 1, max(0, r))

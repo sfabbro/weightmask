@@ -57,28 +57,35 @@ def validate_config(config: dict) -> bool:
     return not errors
 
 
-def _first_present_keyword(header, key_cfg):
-    """Keyword name that ``_header_lookup`` would read, or None."""
-    if header is None:
-        return None
+def _header_candidates(header, key_cfg):
+    """Yield ``(keyword, value)`` for each configured keyword present in ``header``.
+
+    ``key_cfg`` is one keyword or a list/tuple tried in order. Non-string and
+    empty keywords are skipped, and any failed read counts as absent, so a
+    malformed or absent header yields nothing rather than aborting the run.
+    """
     keys = key_cfg if isinstance(key_cfg, (list, tuple)) else [key_cfg]
     get = getattr(header, "get", None)
-    for k in keys:
-        if not isinstance(k, str) or not k:
+    for key in keys:
+        if not isinstance(key, str) or not key:
             continue
         try:
-            v = get(k, None) if callable(get) else None
+            value = get(key, None) if callable(get) else None
         except (TypeError, AttributeError, KeyError):
-            v = None
-        if v is None:
+            value = None
+        if value is None:
             try:
-                if k in header:
-                    v = header[k]
+                if key in header:
+                    value = header[key]
             except (TypeError, AttributeError, KeyError):
-                v = None
-        if v is not None:
-            return k
-    return None
+                value = None
+        if value is not None:
+            yield key, value
+
+
+def _first_present_keyword(header, key_cfg):
+    """Keyword name that ``_header_lookup`` would read, or None."""
+    return next((key for key, _value in _header_candidates(header, key_cfg)), None)
 
 
 def _detection_background_views(sky_cal, rms_cal, candidate_mask, mesh_box):
@@ -111,26 +118,7 @@ def _detection_background_views(sky_cal, rms_cal, candidate_mask, mesh_box):
 
 def _header_lookup(header, key_cfg, default):
     """First-present header value for a str-or-list keyword config, else default."""
-    if header is None:
-        return default
-    keys = key_cfg if isinstance(key_cfg, (list, tuple)) else [key_cfg]
-    get = getattr(header, "get", None)
-    for k in keys:
-        if not isinstance(k, str) or not k:
-            continue
-        try:
-            v = get(k, None) if callable(get) else header.get(k, None) if hasattr(header, "get") else None
-        except (TypeError, AttributeError, KeyError):
-            v = None
-        if v is None:
-            try:
-                if k in header:
-                    v = header[k]
-            except (TypeError, AttributeError, KeyError):
-                v = None
-        if v is not None:
-            return v
-    return default
+    return next((value for _key, value in _header_candidates(header, key_cfg)), default)
 
 
 def _effective_tile_size(tile_size, shape) -> int:

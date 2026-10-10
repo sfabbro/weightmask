@@ -311,54 +311,30 @@ def detect_saturated_pixels(sci_data, sci_hdr, config):
     return saturation_level, sat_method_used, sat_mask_bool
 
 
-def _grow_bleed_up(sci_data, stop_thresh, x, y_min, max_grow, new_mask):
-    """Helper to grow bleed trail upward from a saturated segment."""
-    if y_min <= 0:
+def _grow_bleed(sci_data, stop_thresh, x, rows, new_mask):
+    """Mask the leading run of ``rows`` whose flux stays above ``stop_thresh``.
+
+    ``rows`` are the candidate pixels along column ``x`` in growth order, so
+    the caller decides direction simply by how it builds the index array.
+    Growth stops at the first sample at or below its threshold.
+    """
+    if rows.size == 0:
         return
 
-    start_idx = y_min - 1
-    end_idx = max(-1, start_idx - max_grow)
-
-    if end_idx == -1:
-        sci_slice = sci_data[start_idx::-1, x]
-        thresh_slice = stop_thresh[start_idx::-1]
-    else:
-        sci_slice = sci_data[start_idx:end_idx:-1, x]
-        thresh_slice = stop_thresh[start_idx:end_idx:-1]
-
-    cond = sci_slice > thresh_slice
-    if not np.all(cond):
-        grown = np.argmin(cond)
-    else:
-        grown = len(cond)
-
+    cond = sci_data[rows, x] > stop_thresh[rows]
+    grown = int(np.argmin(cond)) if not np.all(cond) else int(cond.size)
     if grown > 0:
-        end_mask = start_idx - grown
-        if end_mask == -1:
-            new_mask[start_idx::-1, x] = True
-        else:
-            new_mask[start_idx:end_mask:-1, x] = True
+        new_mask[rows[:grown], x] = True
+
+
+def _grow_bleed_up(sci_data, stop_thresh, x, y_min, max_grow, new_mask):
+    """Grow bleed upward from the saturated segment starting at ``y_min``."""
+    _grow_bleed(sci_data, stop_thresh, x, np.arange(y_min - 1, max(-1, y_min - 1 - max_grow), -1), new_mask)
 
 
 def _grow_bleed_down(sci_data, stop_thresh, h, x, y_max, max_grow, new_mask):
-    """Helper to grow bleed trail downward from a saturated segment."""
-    if y_max >= h - 1:
-        return
-
-    start_idx = y_max + 1
-    end_idx = min(h, start_idx + max_grow)
-
-    sci_slice = sci_data[start_idx:end_idx, x]
-    thresh_slice = stop_thresh[start_idx:end_idx]
-
-    cond = sci_slice > thresh_slice
-    if not np.all(cond):
-        grown = np.argmin(cond)
-    else:
-        grown = len(cond)
-
-    if grown > 0:
-        new_mask[start_idx : start_idx + grown, x] = True
+    """Grow bleed downward from the saturated segment ending at ``y_max``."""
+    _grow_bleed(sci_data, stop_thresh, x, np.arange(y_max + 1, min(h, y_max + 1 + max_grow)), new_mask)
 
 
 def grow_bleed_trails(sci_data, sat_mask, sky_map, bkg_rms_map, config):

@@ -684,6 +684,32 @@ def _common_wcs_geometry(header):
         has_cdelt = all(header.get(name) is not None for name in ("CDELT1", "CDELT2"))
         if not has_cd and not has_cdelt:
             return None
+        # WCS() warns and substitutes a default for a card it cannot parse
+        # (e.g. CDELT1 = "not a number"), which would hand back a plausible but
+        # wrong plate scale. Refuse such a header instead of failing open.
+        for name in (
+            "CRVAL1",
+            "CRVAL2",
+            "CRPIX1",
+            "CRPIX2",
+            "CDELT1",
+            "CDELT2",
+            "CD1_1",
+            "CD1_2",
+            "CD2_1",
+            "CD2_2",
+            "PC1_1",
+            "PC1_2",
+            "PC2_1",
+            "PC2_2",
+        ):
+            value = header.get(name)
+            if value is None:
+                continue
+            try:
+                float(value)
+            except (TypeError, ValueError):
+                return None
         cards = {}
         for name in (
             "CTYPE1",
