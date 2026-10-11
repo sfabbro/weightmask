@@ -27,9 +27,17 @@ repos:
 
   - repo: local
     hooks:
-      - id: ci-parity-pre-push
-        name: CI parity (lint + tests)
-        entry: bash -lc 'pixi run lint && pixi run test'
+      - id: ci-parity-inplace
+        name: CI parity, in place (lint + tests, same commands as CI)
+        entry: bash -lc 'pixi run lint && pixi run test -q'
+        language: system
+        pass_filenames: false
+        always_run: true
+        require_serial: true
+        stages: [pre-push]
+      - id: ci-parity-clean-export
+        name: CI parity, clean export (what the runner actually sees)
+        entry: bash -lc 'pixi run ci-local'
         language: system
         pass_filenames: false
         always_run: true
