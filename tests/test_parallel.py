@@ -2,6 +2,10 @@
 
 Threaded 36/40-HDU MEFs must match single-thread output byte-identically;
 dead-CCD MEFs must not assume 36; single-HDU files use the per-file path.
+
+The last class covers what one failing CCD costs: the per-HDU closures inside
+``process_all_hdus`` are only reachable by running a whole MEF, and their error
+branches decide whether a partial exposure is reported or lost.
 """
 
 import contextlib
@@ -10,6 +14,7 @@ import os
 import tempfile
 import unittest
 from argparse import Namespace
+from unittest.mock import patch
 
 import fitsio
 import numpy as np
@@ -458,6 +463,119 @@ class TestParallelEquivalence(unittest.TestCase):
             ratio = med[1] / med[0]
             self.assertGreater(ratio, 3.0)
             self.assertLess(ratio, 5.5)
+
+
+class TestStreamingFailureContainment(unittest.TestCase):
+    """What the per-HDU closures in ``process_all_hdus`` do when one CCD fails.
+
+    ``_compute_one`` and ``_emit`` are nested, so their error branches are only
+    reachable by running a MEF end to end. Those branches draw the line between
+    the two failure contracts: a ``StageFailure`` means a required stage is
+    broken and aborts the exposure (pinned in ``tests/test_release_io.py``),
+    while anything else costs only that CCD. ``cli.py`` turns the resulting
+    short count into a warning, so a mis-counted failure is a silently partial
+    product.
+    """
+
+    @staticmethod
+    def _paths(out_dir, tag):
+        return {
+            "out_map_path": os.path.join(out_dir, f"{tag}.weight.fits"),
+            "out_mask_path": os.path.join(out_dir, f"{tag}.mask.fits"),
+            "out_invvar_path": None,
+            "out_sky_path": None,
+            "out_weight_raw_path": None,
+            "individual_mask_paths": {},
+        }
+
+    def _run_with_one_failing_hdu(self, tmp, tag, max_workers, *, fail_index=2, n_hdus=4, close_log=None):
+        """Run ``n_hdus`` CCDs with one raising a plain ``ValueError``.
+
+        Real files and the real per-worker handle reopening; only detections for
+        ``fail_index`` are made to raise, so the surrounding streaming path is
+        the production one. Returns ``(success_count, stdout, paths)``.
+        """
+        import weightmask.mef as mef
+
+        sp = os.path.join(tmp, f"{tag}.fits")
+        fp = os.path.join(tmp, f"{tag}_flat.fits")
+        _write_mef(sp, n_hdus)
+        _write_flat(fp, n_hdus)
+        paths = self._paths(tmp, tag)
+        args = Namespace(tile_size=1024, individual_masks=False, max_workers=max_workers)
+        real_process = mef.process_hdu
+
+        def flaky_process(science, flat, config, index, **kwargs):
+            if index == fail_index:
+                raise ValueError(f"corrupt CCD {index}")
+            return real_process(science, flat, config, index, **kwargs)
+
+        real_open = mef._open_hdu_handles
+
+        def recording_open(index, **kwargs):
+            result = real_open(index, **kwargs)
+            closer = result[5]
+
+            def wrapped():
+                if close_log is not None:
+                    close_log.append(index)
+                closer()
+
+            return (*result[:5], wrapped, result[6])
+
+        buf = io.StringIO()
+        with (
+            fitsio.FITS(sp) as hi,
+            fitsio.FITS(fp) as hf,
+            patch("weightmask.mef.process_hdu", side_effect=flaky_process),
+            patch("weightmask.mef._open_hdu_handles", side_effect=recording_open),
+            contextlib.redirect_stdout(buf),
+        ):
+            n = process_all_hdus(
+                list(range(1, n_hdus + 1)),
+                hi,
+                hf,
+                _load_cfg(),
+                paths,
+                args,
+                flat_path=fp,
+                input_path=sp,
+                max_workers=max_workers,
+            )
+        return n, buf.getvalue(), paths
+
+    def test_partial_failure_reports_a_short_count_and_publishes_nothing(self):
+        # One bad CCD must cost one CCD, not the exposure: a raising worker is
+        # counted as a failure and the other CCDs are still processed. But the
+        # count is also the CLI's publish signal -- cli.py turns a partial count
+        # into "No new product set was published" and exit 1 -- so the surviving
+        # CCDs must not reach the final paths. Promoting them would ship a
+        # complete-looking, shorter exposure. Both modes, because the threaded
+        # path resolves results through futures rather than the loop index.
+        with tempfile.TemporaryDirectory() as tmp:
+            for max_workers in (1, 4):
+                n, log, paths = self._run_with_one_failing_hdu(tmp, f"contain{max_workers}", max_workers)
+                self.assertEqual(n, 3, f"max_workers={max_workers}")
+                self.assertIn("FATAL ERROR processing HDU 2: corrupt CCD 2", log)
+                self.assertIn("Skipping HDU 2 due to processing errors.", log)
+                for name, path in paths.items():
+                    if path:
+                        self.assertFalse(os.path.exists(path), f"{name} was published: {max_workers}")
+                # Refusing to publish must also take the rejected generation with
+                # it; a leftover temporary is a product nobody validated.
+                leftovers = [p for p in os.listdir(tmp) if ".wm-tmp-" in p or ".wm-bak-" in p]
+                self.assertEqual(leftovers, [], f"max_workers={max_workers}")
+
+    def test_a_failed_hdu_still_releases_its_input_handles(self):
+        # ``_open_hdu_handles`` reopens the science and flat files once per HDU
+        # in each worker, so a failure path that skips ``close()`` leaks a pair
+        # of descriptors per bad CCD for the whole run. The streaming argument
+        # for memory is equally an argument for closing on the error path.
+        with tempfile.TemporaryDirectory() as tmp:
+            closed = []
+            n, _log, _paths = self._run_with_one_failing_hdu(tmp, "handles", 4, close_log=closed)
+            self.assertEqual(n, 3)
+            self.assertEqual(sorted(closed), [1, 2, 3, 4])
 
 
 if __name__ == "__main__":
