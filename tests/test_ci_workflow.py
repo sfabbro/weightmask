@@ -96,7 +96,15 @@ class TestLintCannotWalkThePixiEnvironment(unittest.TestCase):
         ``benchmarks/ci_local.py`` exists to test, by exporting HEAD and running
         the real command there.
         """
-        result = subprocess.run(["pixi", "run", "lint"], cwd=REPO, capture_output=True, text=True)
+        # Route through the pixi wrapper rather than assuming `pixi` is on the
+        # PATH of whatever shell invoked the suite -- the same mismatch that
+        # breaks pre-commit's non-login shell (benchmarks/run_with_pixi.sh).
+        wrapper = REPO / "benchmarks" / "run_with_pixi.sh"
+        if wrapper.exists():
+            command = ["bash", str(wrapper), "lint"]
+        else:
+            command = ["pixi", "run", "lint"]
+        result = subprocess.run(command, cwd=REPO, capture_output=True, text=True)
         self.assertEqual(result.returncode, 0, result.stdout[-2000:])
 
 
