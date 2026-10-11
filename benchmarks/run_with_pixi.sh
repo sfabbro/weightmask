@@ -13,9 +13,13 @@ if command -v pixi > /dev/null 2>&1; then
   exec pixi run "$@"
 fi
 
-pixi_home_candidate="${HOME:-}"
-if [ -n "$pixi_home_candidate" ] && [ -x "$pixi_home_candidate/.pixi/bin/pixi" ]; then
-  exec "$pixi_home_candidate/.pixi/bin/pixi" run "$@"
+PIXI_HOME="${HOME:-}"
+if [ -n "$PIXI_HOME" ] && [ -x "$PIXI_HOME/.pixi/bin/pixi" ]; then
+  # Export, don't just exec: child processes (e.g. benchmarks/ci_local.py
+  # inside its clean export) may invoke `pixi` on their own and inherit this
+  # PATH, which the pre-commit shell did not contain it on.
+  export PATH="$PIXI_HOME/.pixi/bin:$PATH"
+  exec "$PIXI_HOME/.pixi/bin/pixi" run "$@"
 fi
 
 cat >&2 <<'EOF'
