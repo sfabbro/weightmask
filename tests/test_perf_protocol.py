@@ -154,9 +154,22 @@ def test_exposure_config_records_private_cold_cache(tmp_path):
     assert str(cold) in Path(path).read_text()
 
 
+def _pixi_argv(*args):
+    """Locate pixi without assuming it is on the caller's PATH.
+
+    pre-commit's non-login shell and GitHub runners alike can lack ~/.pixi/bin on PATH;
+    benchmarks/run_with_pixi.sh resolves both cases, so the tests reuse
+    it when present and fall back to bare pixi otherwise.
+    """
+    wrapper = Path(__file__).resolve().parents[1] / "benchmarks" / "run_with_pixi.sh"
+    if wrapper.exists():
+        return ["bash", os.fspath(wrapper), *args]
+    return ["pixi", "run", *args]
+
+
 def test_exposure_time_script_help_works_in_pixi():
     completed = subprocess.run(
-        ["pixi", "run", "exposure-time", "--", "--help"],
+        _pixi_argv("exposure-time", "--", "--help"),
         cwd=os.fspath(Path(__file__).resolve().parents[1]),
         capture_output=True,
         text=True,
@@ -168,7 +181,7 @@ def test_exposure_time_script_help_works_in_pixi():
 
 def test_megacam_cli_help_exposes_release_protocol_controls():
     completed = subprocess.run(
-        ["pixi", "run", "python", "benchmarks/perf_megacam.py", "--help"],
+        _pixi_argv("python", "benchmarks/perf_megacam.py", "--help"),
         cwd=os.fspath(Path(__file__).resolve().parents[1]),
         capture_output=True,
         text=True,
