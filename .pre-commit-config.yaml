@@ -29,7 +29,7 @@ repos:
     hooks:
       - id: ci-parity-inplace
         name: CI parity, in place (lint + tests, same commands as CI)
-        entry: bash -lc 'PATH="$HOME/.pixi/bin:$PATH" pixi run lint && PATH="$HOME/.pixi/bin:$PATH" pixi run test -q'
+        entry: bash benchmarks/run_with_pixi.sh lint && bash benchmarks/run_with_pixi.sh test -q
         language: system
         pass_filenames: false
         always_run: true
@@ -37,7 +37,7 @@ repos:
         stages: [pre-push]
       - id: ci-parity-clean-export
         name: CI parity, clean export (what the runner actually sees)
-        entry: bash -lc 'PATH="$HOME/.pixi/bin:$PATH" pixi run ci-local'
+        entry: bash benchmarks/run_with_pixi.sh ci-local
         language: system
         pass_filenames: false
         always_run: true

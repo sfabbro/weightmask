@@ -39,6 +39,14 @@ pixi run test
 pixi run python -m weightmask.cli --help
 ```
 
+Pixi's own executable lives outside this repository, typically in
+`~/.pixi/bin`, which is on the PATH in a login shell but *not* in the
+non-interactive shell pre-commit uses for its hooks. That mismatch is why
+git pre-push hooks here go through `benchmarks/run_with_pixi.sh`, which
+searches the PATH and then `~/.pixi/bin/pixi` before failing with an install
+hint rather than a bare "command not found". Calling `pixi run …` from an
+ordinary shell needs no wrapper.
+
 ## pip from a clone
 
 ```bash
