@@ -28,8 +28,16 @@ repos:
   - repo: local
     hooks:
       - id: ci-parity-inplace
-        name: CI parity, in place (lint + tests, same commands as CI)
-        entry: bash benchmarks/run_with_pixi.sh lint && bash benchmarks/run_with_pixi.sh test -q
+        name: CI parity, in place (lint, the command CI runs)
+        entry: bash benchmarks/run_with_pixi.sh lint
+        language: system
+        pass_filenames: false
+        always_run: true
+        require_serial: true
+        stages: [pre-push]
+      - id: ci-parity-inplace-tests
+        name: CI parity, in place (tests, the command CI runs)
+        entry: bash benchmarks/run_with_pixi.sh test -q
         language: system
         pass_filenames: false
         always_run: true
