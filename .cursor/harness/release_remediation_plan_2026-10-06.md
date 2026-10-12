@@ -78,29 +78,97 @@ entries assumed.
   report, `pixi 0.81.0` is already in `images.canfar.net/astroai/base:latest`, and
   the project mount `/arc/projects/mlao/cfhtcast/weightmask-perf` is writable by
   `sfabbro` and already carries `repos/`, `results/`, and `data/`.
-- **The platform lets a pod reach CADC only.** From inside a pod,
-  `www.cadc-ccda.hia-iha.nrc-cnrc.gc.ca` returns `200` and `ws-cadc.canfar.net`
-  resolves, while `github.com`, `raw.githubusercontent.com`,
-  `codeload.github.com`, and `gitlab.com` do not resolve at all, and `pypi.org`
-  and `files.pythonhosted.org` resolve but refuse the connection. That breaks the
-  transport the existing campaign scripts assume — `run_one.sh` git-clones
-  GitHub and can `curl` `pixi.sh` — so no gate can currently fetch the code under
-  test. The pod does carry a fresh per-session proxy certificate at
-  `/arc/home/sfabbro/.ssl/cadcproxy.pem`, which makes a CADC-hosted transport such
-  as VOSpace the concrete unblock. `gate_one.sh` already accepts a pinned
-  `SRC_TARBALL_URL` / `SRC_TARBALL_SHA256` code transport for exactly that.
-- **The CANFAR control plane is intermittently broken.** `canfar ps`, `canfar
-  stats`, and `canfar logs` return `HTTP 500` often enough ("Error calling /ac to
-  augment subject", "unexpected failure download certificate") that any retrieval
-  step needs a retry loop; `canfar info` and `canfar create` stayed reliable. The
-  historical `astroai/improc-webterm:latest` image no longer exists in the
-  registry.
+- **Pod egress is not "CADC only"; the pod resolver answers for a handful of
+  names.** Sampling resolution from inside a pod 36 times over six minutes
+  (`benchmarks/canfar/probe_dns_outage.py`) gives:
+
+  | host | resolved |
+  |---|---|
+  | `ws-uv.canfar.net` | 24/36 |
+  | `pypi.org` | 27/36 |
+  | `files.pythonhosted.org` | 19/36 |
+  | `www.cadc-ccda.hia-iha.nrc-cnrc.gc.ca` | 0/36 |
+  | `cadc-ccda.hia-iha.nrc-cnrc.gc.ca` | 0/36 |
+  | `ws.cadc-ccda.hia-iha.nrc-cnrc.gc.ca` | 0/36 |
+  | `cadc.nrc.ca` | 0/36 |
+  | `conda.anaconda.org` | 0/36 |
+  | `github.com` | 0/36 |
+  | `google.com` | 0/36 |
+
+  `google.com` failing rules out a CADC outage, and `/etc/resolv.conf` names the
+  cluster's NodeLocal cache (`nameserver 169.254.25.10`). Only the platform API
+  and the PyPI hosts answer, so *both* transports the campaign scripts assume are
+  dead: `run_one.sh` cannot git-clone GitHub, and a CADC/VOSpace transport is not
+  available either — the earlier `200` from `www.cadc-ccda…` no longer
+  reproduces. The pod does still carry a per-session proxy certificate at
+  `/arc/home/sfabbro/.ssl/cadcproxy.pem`.
+- **The CANFAR control plane is degraded by roughly half, and its errors name
+  the dependency.** 8 sequential `GET /skaha/v1/session` calls gave 5 x `200` and
+  3 x `500`; 20 `canfar create` attempts gave 10 accepted. The failures are
+  `IllegalStateException: Error calling /ac to augment subject` and
+  `RuntimeException: unexpected failure download certificate`, plus one
+  `UnknownHostException` naming the service's own hostname — the control plane
+  fails on precisely the calls that reach outside itself. So every submission
+  *and* retrieval needs a retry loop, `canfar info` and `canfar logs` included;
+  `canfar delete` also blocks on a confirmation prompt unless given `--force`.
+  `astroai/improc-webterm:latest` is gone from the registry, and
+  `GET /skaha/v1/image` is the authority for what is public.
 - **The local pixi environment is a relocated copy.** Its console scripts carry
   a stale shebang (`/Users/fabbros/src/weightmask/.pixi/...`), so
   `.pixi/envs/default/bin/pre-commit` fails with `bad interpreter` while
   `.pixi/envs/default/bin/python -m pre_commit` works. Run `pixi install` to
   rebuild it; see the "Rebuild copied or moved environments" section of
   `docs/releasing.md`.
+
+### CANFAR transport and environment (2026-10-12)
+
+Code now reaches a pod with neither GitHub nor CADC, so the *transport* blocker
+is solved. The *input data* blocker is not.
+
+- **`benchmarks/canfar/pod_ship.py`** ships a script through the session API.
+  Two independent limits had to be worked around. The `canfar` CLI sends
+  `cmd`/`args` as *query parameters*, and Tomcat rejects a request line above its
+  header limit: an 11.9 KB payload returns `400 Bad Request` before the app sees
+  it, so about 6 KB of args is usable. The same parameters in an
+  `application/x-www-form-urlencoded` **body** are accepted (a 920 KB body
+  creates a session). The body then meets argv limits instead — a 920 KB payload
+  reaches the pod as `exec … argument list too long`, because a single argv
+  string is capped at `MAX_ARG_STRLEN` (128 KiB). The payload is therefore
+  lzma+base64 compressed and split across space-separated argv tokens that a
+  bootstrap expression rejoins from `sys.argv`; the whole repository at a commit
+  is six tokens.
+- **`benchmarks/canfar/stage_source.py`** unpacks that tarball on the shared
+  mount at `…/weightmask-perf/repos/cand-<sha12>`, verifying the tarball sha256
+  in the pod before extracting. Verified at `313cb43`: 168 files, 3,443,875
+  bytes, sha256 `1e8bfd3c…` matched.
+- **`benchmarks/canfar/pod_run.py`** is the in-pod runner, parameterised by
+  `WM_TREE` / `WM_COMMAND`. A `$` in any env value is rejected with `400 Illegal
+  group reference` (the platform runs env values through a regex expansion), so
+  commands use a `{py}` placeholder for the interpreter instead.
+- **No public image carries the stack.** Probed per image: `astroai/improc`,
+  `astroai/improc-notebook` and `astroai/base` have numpy, scipy, astropy, sep
+  and yaml but lack **fitsio, scikit-image and astroscrappy**; `astroai/ray-worker`
+  and `cadc/webterm:26.04` have essentially none of them. `pixi install` cannot
+  repair that while `conda.anaconda.org` is at 0/36 — but the September
+  campaign's package cache survives at
+  `/arc/projects/mlao/cfhtcast/weightmask-perf/pixi-cache`, and solving against
+  it completes the conda half; only the PyPI step for the editable `weightmask`
+  dependency then fails. Because `weightmask` is pure Python, the built env's
+  interpreter is reused directly with `PYTHONPATH=<tree>`, so the install cost is
+  paid once per revision and later jobs need no network at all.
+
+Measured in pods at `313cb43`:
+
+| check | result |
+|---|---|
+| `benchmark-synthetic` (`synthetic_v2 --with-baselines`) | **ran and reproduces WM-16** — `F1 0.000 (TP:0, FP:0, FN:1390)` and `average streak F1 0.149 < 0.200` |
+| `pytest -q` | started; still running when this was written, no result captured |
+| `science-gate` | **blocked** — its inputs are three 343 MB CADC exposures and `www.cadc-ccda…` is at 0/36 |
+
+A pod-side smoke run of the gate is possible against
+`…/cfhtcast-bench/downloads/2240997p.fits.fz`, which the mount already carries,
+but that exposure is not the fixture input set, so its numbers would not
+reproduce or contradict the release gate.
 
 ### WM-16 root cause (2026-10-12)
 
