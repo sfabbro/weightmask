@@ -47,6 +47,22 @@ searches the PATH and then `~/.pixi/bin/pixi` before failing with an install
 hint rather than a bare "command not found". Calling `pixi run …` from an
 ordinary shell needs no wrapper.
 
+A push runs three parity gates by default: in-place lint, in-place tests, and
+`benchmarks/ci_local.py`'s clean export of `HEAD` — what the GitHub runner
+actually sees. The in-place pair together take the suite's full runtime; the
+clean export adds the same again. When you need a faster iteration loop on a
+push you have already validated, skip specific hooks deliberately rather than
+bypassing them all:
+
+```bash
+SKIP=ci-parity-inplace-tests,ci-parity-clean-export git push
+```
+
+pre-commit prints `Skipped` for each named hook id; the remaining gates still
+run. To bypass every hook for one push, use `git push --no-verify` — CI will
+still run everything the skipped hooks would have. Both are local conveniences:
+skipping does not change what CI requires on the pushed commit.
+
 ## pip from a clone
 
 ```bash

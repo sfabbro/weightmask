@@ -10,6 +10,7 @@ through ``benchmarks/run_with_pixi.sh`` so a push from a shell without pixi on
 its PATH yields an install hint instead of a bare exit 127.
 """
 
+import re
 import unittest
 from pathlib import Path
 
@@ -94,6 +95,27 @@ class TestPrePushHooks(unittest.TestCase):
         for hook_id in ("ci-parity-inplace", "ci-parity-inplace-tests", "ci-parity-clean-export"):
             entry = str(self.hooks[hook_id]["entry"])
             self.assertIn("run_with_pixi.sh", entry, f"{hook_id} must degrade gracefully without pixi on PATH")
+
+    def test_the_documented_skip_ids_exist_as_real_hooks(self):
+        """Docs tell people to SKIP specific ids; those ids must not drift.
+
+        The paragraph in docs/installation.md names ids explicitly. If a hook
+        is renamed or removed, an otherwise-valid skip would silently start
+        running (or stop matching entirely), leaving someone pushing without
+        the gate they thought they had skipped.
+        """
+        documented = re.findall(
+            r"SKIP=([a-z-]+(?:,[a-z-]+)*)",
+            (REPO / "docs" / "installation.md").read_text(),
+        )
+        self.assertTrue(documented, "docs must keep naming the skippable ids explicitly")
+        for group in documented:
+            for hook_id in group.split(","):
+                self.assertIn(
+                    hook_id,
+                    self.hooks,
+                    f"docs/installation.md names SKIP={hook_id} but no hook with that id exists",
+                )
 
     def test_the_pixi_wrapper_is_executable_and_handles_missing_home(self):
         self.assertTrue(WRAPPER.exists(), "the wrapper script must exist at its hook entry path")
