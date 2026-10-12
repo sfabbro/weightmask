@@ -2,6 +2,148 @@
 
 Status: **hold — remediated work committed to a PR; 0.2.1 not released**
 
+## Re-measurement 2026-10-12 on `b2e4da6` (PR head, clean tree)
+
+Nothing below changes the hold. It replaces estimates with measurements taken on
+the exact PR head commit, and records the release-path state that the earlier
+entries assumed.
+
+- **WM-16 still red, floors untouched.** `python -m tests.benchmarks.run --suite
+  synthetic_v2 --with-baselines` exited `1`: `average streak F1 0.149 < 0.200`.
+  All five per-case gates report `ok`; four cases contribute streak F1 `0.000`,
+  so the suite aggregate rests on `synthetic_sparse` alone. Evidence:
+  `test_outputs/benchmarks/synthetic_v2/summary.md`.
+- **Science gate re-run at HEAD completed: still `failed`, and the stale-evidence
+  problem is closed.** The run finished `2026-10-12T17:23:05Z` and wrote
+  `test_outputs/harness/science-gate.json` with `commit_sha=b2e4da6` (HEAD),
+  `version 0.2.1`, `status: failed`, `real_trail_recall: "n/a"`, and
+  `scope_exclusions: ["real_trail_recall"]`. That is a real qualification artifact
+  rather than the earlier `skipped` `0.0.0` temp-dir file: not stale, not skipped,
+  correctly versioned, with its only disqualifier being that the gates fail. The
+  four failures are unchanged from the `9b5231a` run — continuous recall
+  0.720 < 0.75, recall@5px 0.800 < 0.90, worm recall 0.207 (audit 0.275),
+  single-pixel 0.054 < 0.15 — so the 2026-10-10 measurement is confirmed on the
+  PR head, not superseded by it. The pre-run copies stay preserved as
+  `release-evidence.9b5231a-2026-10-10.json` and
+  `science-gate.9b5231a-2026-10-10.md`.
+- **The gate's default evidence path is not the path the release path reads.**
+  `benchmarks/science_gate.py` defaults its manifest to
+  `test_outputs/harness/science-gate.json`, while `docs/releasing.md` (lines 22,
+  24, 174-179) and `.github/workflows/release.yml` (lines 53, 109, 167) all read
+  `test_outputs/harness/release-evidence.json`. Following the documented command
+  is consistent because it passes `--manifest` explicitly; running the bare
+  `pixi run science-gate` silently writes evidence that no release path reads,
+  which is how a stale `release-evidence.json` survived next to a fresh
+  `science-gate.json`. One of the two names should become canonical — the choice
+  is a release-surface decision, so it is recorded here rather than changed on a
+  candidate branch.
+- **The HEAD-pinned evidence belongs to `wip/wm-remediation-0.2.1` at
+  `b2e4da6`.** The CANFAR runner lives on a separate branch
+  (`wip/canfar-gate-harness`, now `063f15e`) precisely so that stays true; on
+  that harness branch `HEAD` has moved past the evidence and a `release-check`
+  there would report a SHA mismatch for reasons that have nothing to do with the
+  gate.
+- **`release-check` sections 1–3 pass; only the evidence section fails.**
+  `release-check --version 0.2.1 --require-qualified --skip-build` on `b2e4da6`
+  reported exactly two problems against the pre-existing manifest: *status is
+  `failed`, not `passed`* and *evidence commit SHA does not match HEAD*. Version
+  agreement, packaged-configuration hash match, the changelog section, the clean
+  tree, and the tag guard all reported `ok`.
+- **Upstream still carries the old publisher.** `astroai/weightmask:main` is
+  `48b5a74`, declares `0.1.0`, has no `weightmask/_version.py`, and has
+  `publish.yml` (triggered by `release: [published]` and `workflow_dispatch`, no
+  validation) instead of `release.yml`. PR #75 replaces it. **Do not push a
+  `v0.2.1` tag before that merge:** `release.yml` fails closed when the tag
+  already exists, so an early tag poisons the only sanctioned release path.
+- **`0.2.0` was tagged but never released.** PyPI lists only `0.1.0`, neither
+  remote has a `v0.2.0` GitHub release, and `v0.2.0` exists only on the fork
+  (`6a09de4`); upstream has only `v0.1.0`. The changelog nevertheless carries a
+  `## 0.2.0 - 2026-10-02` section. Either complete that release or state
+  explicitly that 0.2.0 was never published; the tag guard and the documentation
+  links depend on which choice is made.
+- **Release staging path unblocked.** `release-check --outdir dist` refuses while
+  any entry exists in `dist/`; the five superseded 0.2.1 generations were moved
+  (not deleted) to `test_outputs/harness/dist-archive/` with their hashes. The
+  operator then approved and Tier B of the artifact purge was executed:
+  `test_outputs/` went from 128 GB to 689 MB, keeping every manifest, report, log,
+  hash, and pinned input. See `artifact_retention_2026-10-12.md` for the inventory,
+  the provenance map, and exactly what was removed and retained.
+- **Qualification is blocked by container egress, not by host load.** That
+  distinction matters: headless CANFAR jobs get isolated per-pod resources, so
+  "no concurrent benchmark load" is a statement about a shared machine and does
+  not apply to them. The Mac-side serialization, not the load rule, was the real
+  limit. A gate harness now exists (`benchmarks/canfar/gate_one.sh` and
+  `submit_gate.sh`, branch `wip/canfar-gate-harness`, runner id `wm-gate-v1`) and
+  was exercised against the live platform on 2026-10-12: jobs create, run, and
+  report, `pixi 0.81.0` is already in `images.canfar.net/astroai/base:latest`, and
+  the project mount `/arc/projects/mlao/cfhtcast/weightmask-perf` is writable by
+  `sfabbro` and already carries `repos/`, `results/`, and `data/`.
+- **The platform lets a pod reach CADC only.** From inside a pod,
+  `www.cadc-ccda.hia-iha.nrc-cnrc.gc.ca` returns `200` and `ws-cadc.canfar.net`
+  resolves, while `github.com`, `raw.githubusercontent.com`,
+  `codeload.github.com`, and `gitlab.com` do not resolve at all, and `pypi.org`
+  and `files.pythonhosted.org` resolve but refuse the connection. That breaks the
+  transport the existing campaign scripts assume — `run_one.sh` git-clones
+  GitHub and can `curl` `pixi.sh` — so no gate can currently fetch the code under
+  test. The pod does carry a fresh per-session proxy certificate at
+  `/arc/home/sfabbro/.ssl/cadcproxy.pem`, which makes a CADC-hosted transport such
+  as VOSpace the concrete unblock. `gate_one.sh` already accepts a pinned
+  `SRC_TARBALL_URL` / `SRC_TARBALL_SHA256` code transport for exactly that.
+- **The CANFAR control plane is intermittently broken.** `canfar ps`, `canfar
+  stats`, and `canfar logs` return `HTTP 500` often enough ("Error calling /ac to
+  augment subject", "unexpected failure download certificate") that any retrieval
+  step needs a retry loop; `canfar info` and `canfar create` stayed reliable. The
+  historical `astroai/improc-webterm:latest` image no longer exists in the
+  registry.
+- **The local pixi environment is a relocated copy.** Its console scripts carry
+  a stale shebang (`/Users/fabbros/src/weightmask/.pixi/...`), so
+  `.pixi/envs/default/bin/pre-commit` fails with `bad interpreter` while
+  `.pixi/envs/default/bin/python -m pre_commit` works. Run `pixi install` to
+  rebuild it; see the "Rebuild copied or moved environments" section of
+  `docs/releasing.md`.
+
+### WM-16 root cause (2026-10-12)
+
+The four zero-F1 cases are not a near miss: the production full-span trail
+detector returns **nothing at all**. `pred_area` is `0` against ground-truth
+areas of 1390-2476 px, and the stage logs `0 peaks` in both strata.
+
+Instrumenting `hough_line_peaks` inside the real detection path
+(`_detect_streaks_houghpeaks`) across all five `synthetic_v2` cases gives the
+reason:
+
+| case | max accumulator votes | min_votes | peaks found |
+| --- | --- | --- | --- |
+| `synthetic_sparse` | 33 | 100 | 0 |
+| `synthetic_complex` | 70 | 100 | 0 |
+| `synthetic_gradient_step` | 47 | 100 | 0 |
+| `synthetic_variable_width` | 72 | 100 | 0 |
+| `synthetic_elongated_sources` | 9 | 100 | 0 |
+
+A line can collect at most one accumulator vote per binned pixel it crosses, so
+on a 384 px case (96 binned at `bin: 4`) the whole accumulator tops out between
+9 and 72 votes. `min_votes=100` therefore sits above the stage's own ceiling and
+the Hough path can never accept anything at this image size.
+`synthetic_sparse` reaches F1 0.746 with **zero** Hough peaks, so its trail is
+found by the sparse-RANSAC stage, which is gated to sparse fields; the crowded,
+gradient, variable-width, and elongated regimes have no equivalent and score 0.
+`min_votes` is a scale-dependent absolute gating a quantity (trail length in
+binned pixels) that is not scale-free, so the aggregate gate is measuring a
+parameter cliff rather than the detector.
+
+**A one-line fix was attempted and rejected.** Scaling the floor to the
+retrievable span (`min_votes * min(bh, bw) / 512`, a no-op at the reference
+2048 px MegaCam amp scale) was implemented and then reverted: it broke six
+existing tests in `tests/test_streaks.py` and `tests/test_streak_fixes.py`, each
+going from a detected trail to an *empty* mask. Admitting weaker peaks also lets
+one claim a `(rho, theta)` slot in the `used` suppression list in iteration
+order, pre-empting the true trail. Those tests are right to fail, so the floor
+alone is not the fix. A correct change needs a size-aware floor **and** an
+order-independent acceptance step (rank candidates by score before claiming a
+slot) — a detector change that must not be smuggled into a release candidate.
+The tree was reverted clean; the patch is kept at `/tmp/wm/streaks_scaling.patch`
+for that work.
+
 Measured 2026-10-09 on the dirty candidate tree:
 
 - `pixi run lint` passed. `pixi run test` passed: 808 passed, 1 skipped, 1 xfailed.
