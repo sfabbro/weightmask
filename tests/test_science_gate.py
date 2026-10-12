@@ -22,9 +22,19 @@ class TestScienceGateSkip(unittest.TestCase):
     def test_missing_fits_is_a_skip(self):
         with tempfile.TemporaryDirectory() as tmp:
             out = os.path.join(tmp, "science-gate.md")
-            code = main(["--data-dir", tmp, "--out", out])
+            manifest = os.path.join(tmp, "science-gate.json")
+            code = main(["--data-dir", tmp, "--out", out, "--manifest", manifest])
             self.assertEqual(code, 0)
             text = open(out).read()
+            # Redirecting --out is not enough: without --manifest this call
+            # wrote the repository's own qualification manifest, so an ordinary
+            # test run stamped a skipped 0.0.0 artifact from a temporary data
+            # directory over real release evidence.
+            evidence = json.loads(open(manifest).read())
+            self.assertEqual(evidence["status"], "skipped")
+            # The recorded command must be the isolated skip, not a run against
+            # the repository's own fixtures.
+            self.assertIn(tmp, evidence["command"])
         self.assertIn("status: skipped", text)
         self.assertIn("not a pass", text)
         self.assertNotIn("status: passed", text)
