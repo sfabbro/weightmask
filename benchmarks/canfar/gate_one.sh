@@ -70,14 +70,35 @@ sha256_of() { # portable across coreutils and BSD userlands
     fi
 }
 
-git clone --quiet "$REPO_URL" "$REPO_DIR"
-git -C "$REPO_DIR" checkout --quiet "$MANIFEST_SHA"
-CHECKOUT_SHA="$(git -C "$REPO_DIR" rev-parse HEAD)"
-if [ "$CHECKOUT_SHA" != "$MANIFEST_SHA" ]; then
-    echo "checkout SHA mismatch: ref=$MANIFEST_SHA actual=$CHECKOUT_SHA" >&2
-    exit 1
+# Code transport. Headless pods reach CADC only: github.com does not resolve
+# and PyPI refuses connections (probed 2026-10-12), so `git clone` cannot be
+# the only path. SRC_TARBALL_URL names a reachable tarball of the checkout
+# (produce it with `git archive`), pinned by SRC_TARBALL_SHA256.
+CODE_SOURCE=git
+git clone --quiet "$REPO_URL" "$REPO_DIR" 2>/dev/null || true
+if [ -d "$REPO_DIR/.git" ]; then
+    git -C "$REPO_DIR" checkout --quiet "$MANIFEST_SHA"
+    CHECKOUT_SHA="$(git -C "$REPO_DIR" rev-parse HEAD)"
+    if [ "$CHECKOUT_SHA" != "$MANIFEST_SHA" ]; then
+        echo "checkout SHA mismatch: ref=$MANIFEST_SHA actual=$CHECKOUT_SHA" >&2
+        exit 1
+    fi
+else
+    : "${SRC_TARBALL_URL:?git clone failed and SRC_TARBALL_URL is unset}"
+    : "${SRC_TARBALL_SHA256:?set SRC_TARBALL_SHA256 with SRC_TARBALL_URL}"
+    echo "fetch code tarball: $SRC_TARBALL_URL"
+    curl -fsSL "$SRC_TARBALL_URL" -o "$JOB_DIR/src.tar.gz"
+    GOT="$(sha256_of "$JOB_DIR/src.tar.gz")"
+    if [ "$GOT" != "$SRC_TARBALL_SHA256" ]; then
+        echo "source tarball SHA mismatch: expected=$SRC_TARBALL_SHA256 actual=$GOT" >&2
+        exit 1
+    fi
+    mkdir -p "$REPO_DIR"
+    tar -xzf "$JOB_DIR/src.tar.gz" -C "$REPO_DIR"
+    CODE_SOURCE=tarball
+    CHECKOUT_SHA="$MANIFEST_SHA"
 fi
-echo "checkout_sha=$CHECKOUT_SHA"
+echo "checkout_sha=$CHECKOUT_SHA code_source=$CODE_SOURCE"
 cd "$REPO_DIR"
 
 # Stage the MegaCam perf frames the way the historical campaign did:
@@ -151,6 +172,7 @@ fi
     echo "exit_code=$STATUS"
     echo "wall_s=$WALL"
     echo "commit_sha=$CHECKOUT_SHA"
+    echo "code_source=$CODE_SOURCE"
     echo "runner_version=$RUN_ONE_VERSION"
     echo "mount=$ARCHIVE"
     if [ "$NEEDS_DATA" = "1" ]; then
