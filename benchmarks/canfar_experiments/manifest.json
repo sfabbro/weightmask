@@ -7,7 +7,7 @@
     "version": "wm27-provenance-v2",
     "ref": "main",
     "sha256": "519895014164ed3a67af30b7fbc062c26e69cf84232d6699198e7388dea07b00",
-    "validator_sha256": "ba5bd984a61a5768d394b766f497764151305e7ade7d7ff9ab05646756858d5a"
+    "validator_sha256": "85ff9d4ab687ea48314c059c50f5c368b8da0619371ddcfc4582dbbb47dd791f"
   },
   "branch": {
     "E2": "wip/exp-E2 (SHA in E2.checkout)",

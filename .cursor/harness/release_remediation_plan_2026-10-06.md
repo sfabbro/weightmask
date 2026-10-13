@@ -12,7 +12,12 @@ entries assumed.
   synthetic_v2 --with-baselines` exited `1`: `average streak F1 0.149 < 0.200`.
   All five per-case gates report `ok`; four cases contribute streak F1 `0.000`,
   so the suite aggregate rests on `synthetic_sparse` alone. Evidence:
-  `test_outputs/benchmarks/synthetic_v2/summary.md`.
+  `test_outputs/benchmarks/synthetic_v2/summary.md`. The cause recorded below was
+  incomplete, however: the accumulator is starved *upstream* of the vote floor.
+  Between 17.6% and 86.4% of each trail's own ground-truth pixels are already
+  inside the pre-mask when the streak stage runs, and only 0-6 binned cells on
+  the trail's line clear `thresh_sig` even unmasked. See the corrected WM-16
+  root cause below.
 - **Science gate re-run at HEAD completed: still `failed`, and the stale-evidence
   problem is closed.** The run finished `2026-10-12T17:23:05Z` and wrote
   `test_outputs/harness/science-gate.json` with `commit_sha=b2e4da6` (HEAD),
@@ -167,6 +172,25 @@ is solved. The *input data* blocker is not.
   interpreter is reused directly with `PYTHONPATH=<tree>`, so the install cost is
   paid once per revision and later jobs need no network at all.
 
+**The transport commit broke the campaign validator pin, and only a full-suite
+run caught it.** `3d7ecca` added one blank line to
+`benchmarks/canfar/manifest.py` — ruff `I001` requires it after the import block,
+and without it `pixi run lint` fails, which is why the change was made — but that
+changed the validator's sha256 from `ba5bd984…` to `85ff9d4a…`. The historical
+campaign manifest pins the validator digest at `runner.validator_sha256`, so the
+guard in `submit_all.sh` began hard-failing before it ever reached `canfar
+create` (`validator SHA mismatch: manifest=ba5bd984… script=85ff9d4a…`), and five
+tests in `tests/test_canfar_scripts.py` failed, including
+`test_manifest_is_pinned_historical_and_hash_is_content_hash`.
+
+**Fixed by refreshing the pin, not by reverting the blank line.** The whitespace
+change is required by lint and is behaviour-neutral, so the *pin* was the stale
+side: `runner.validator_sha256` now carries `85ff9d4a…`. `git grep` confirms no
+other tracked file referenced the old digest. Verified with `pixi run python -m
+pytest tests/test_canfar_scripts.py -q` (20 passed) and a full `pixi run test`.
+Recorded because it is this plan's own failure mode: a commit that looks clean,
+passes lint, and whose collateral damage appears only when the *whole* suite runs.
+
 Measured in pods at `313cb43`:
 
 | check | result |
@@ -221,6 +245,76 @@ order-independent acceptance step (rank candidates by score before claiming a
 slot) — a detector change that must not be smuggled into a release candidate.
 The tree was reverted clean; the patch is kept at `/tmp/wm/streaks_scaling.patch`
 for that work.
+
+**Correction 2026-10-12: the vote floor is the third cause, not the first.** The
+table above is not wrong, but it reports the accumulator's maximum *after* the
+pre-mask zeroed the binned SNR image, which makes the floor look like the whole
+story. Re-deriving the stage's own binary images from the exact
+`(data_sub, bkg_rms_map, existing_mask)` it receives shows the accumulator is not
+what starves. With the pre-mask ignored there are 741-1850 lit binned cells per
+case; with it applied there are 7-21. A floor cannot bind on an image that is
+already almost empty.
+
+`tests/benchmarks/wm16_hough_starvation.py` (new, committed, no network) measures
+the trail-specific quantities. `cells` is how many binned cells the trail's line
+crosses — the trail's vote ceiling even if every one were lit and unmasked:
+
+| case | trail px | trail premasked | frame premasked | cells | lit unmasked (strict/nominal) | lit but masked (strict/nominal) |
+| --- | --- | --- | --- | --- | --- | --- |
+| `synthetic_sparse` | 937 | 17.6% | 20.6% | 76 | 1 / 3 | 0 / 0 |
+| `synthetic_complex` | 1390 | 69.0% | 63.8% | 91 | 0 / 6 | 20 / 28 |
+| `synthetic_gradient_step` | 1390 | 49.5% | 62.3% | 91 | 0 / 1 | 31 / 48 |
+| `synthetic_variable_width` | 2476 | 38.3% | 48.5% | 74 | 0 / 2 | 15 / 22 |
+| `synthetic_elongated_sources` | 1390 | 86.4% | 63.8% | 91 | 0 / 0 | 25 / 36 |
+
+The order of causes is therefore:
+
+1. **The pre-mask is what starves the stage.** At 384 px with 60-80 stars the
+   saturation, cosmic-ray and object masks together cover 48.5-63.8% of the
+   frame and, more to the point, 17.6-86.4% of the trail's own pixels. The
+   trail's lit cells are almost entirely on the masked side (`synthetic_elongated_sources`:
+   0 lit unmasked against 36 lit masked). `_drop_premasked_components` then
+   encodes the same fact as policy — a candidate more than 25% premasked is
+   dropped as "not a new finding" — so the pipeline deliberately declines to
+   report a trail the earlier stages already covered.
+2. **Releasing the mask alone would still not find it.** Only 0-6 unmasked
+   binned cells on the trail's line clear `thresh_sig: 2.5`, against 74-91 that
+   the line crosses. So the trail is largely below the detector's significance
+   floor at this scale as well.
+3. **The vote ceiling is real but latent.** The trail's line crosses only 74-91
+   binned cells at 384 px, so its absolute maximum is ~91 votes against
+   `min_votes: 100` — the arithmetic above is right, and the floor would become
+   binding the moment causes 1 and 2 were removed. This is precisely why the
+   rejected one-line scaling could not have fixed the aggregate: it raises the
+   ceiling above a binary image that contains at most 6 trail cells, not the ~90
+   the argument assumes. Order of repair is mask and significance first, floor
+   third.
+
+The instrument asserts the generator is reproducible from the case parameters
+before it reports, so a fixture change cannot silently invalidate these numbers.
+
+**A background-absorption hypothesis was tested and refuted.** An exploratory
+2x2 crossing trail flux with frame size measured the contrast the pipeline's sky
+subtraction retains: 99.9-100.4%. SEP is not eating the trail. That 2x2 is
+*not* used to choose a fix, because its columns are confounded — the generator's
+background scales with frame size, so the same `streak` flux is not the same
+significance at a different size (median-subtracted 90th-percentile trail SNR:
+62.4 at 384 px versus 3.08 at 1536 px), and the ground-truth trail mask includes
+off-core pixels from the square dilation in `mark()`. One observation survives as
+a lead rather than proof: at 1536 px the same regime and seed reaches F1 0.426
+with a 6x flux where 384 px reaches 0.000 at both fluxes, so the detector does
+recover a trail once the frame is large enough for it — the fixture at 384 px
+puts 60-80 stars into 1/28th of a reference amp's area, at 28x the surface
+density for the same star count.
+
+**Consequence for the work list.** Both "fix the generator" and "fix the
+detector" remain open, and neither is a one-liner: the generator must be
+scale-consistent (star density and trail significance at 384 px), and the
+detector must stop treating an upstream mask as proof of absence. Choosing
+between them changes the injection floors, which the 2026-10-09 decision
+explicitly defers to an owner decision that re-derives them against the
+HEAD-`main` corrected score. So this correction changes the *diagnosis* only;
+WM-16 stays open and the floors stay untouched.
 
 Measured 2026-10-09 on the dirty candidate tree:
 
@@ -714,6 +808,13 @@ This is an evidence task, not permission to tune until the suite turns green.
 ## [ ] WM-16 — Enforce synthetic numerical gates in CI
 
 The CI-sized `synthetic_sparse` gates are in `tests/benchmarks/run.py` and pass under `pixi run test`. The full-suite aggregate does not: average streak F1 0.149 < 0.200 on 2026-10-09. Do not lower 0.200.
+
+Root cause corrected by measurement on 2026-10-12: the vote floor is the third
+cause, not the first. The pre-mask starves the accumulator (17.6-86.4% of each
+trail's own pixels are already masked when the streak stage runs) and only 0-6
+unmasked binned cells clear `thresh_sig`. Re-measure with
+`pixi run python tests/benchmarks/wm16_hough_starvation.py`; do not re-derive a
+floor fix from the accumulator-maximum table alone.
 
 Owner: Luna
 Reviewer: Sol
