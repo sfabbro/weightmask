@@ -113,6 +113,16 @@ entries assumed.
   `canfar delete` also blocks on a confirmation prompt unless given `--force`.
   `astroai/improc-webterm:latest` is gone from the registry, and
   `GET /skaha/v1/image` is the authority for what is public.
+- **Standing image decision: use `images.canfar.net/astroai/base:latest` for
+  headless sessions; `astroai/improc` is not needed.** It is public, it is
+  labelled `headless`, it carries `pixi 0.81.0`, and probing it showed the same
+  package set as `improc` (numpy, scipy, astropy, sep, yaml, pandas, matplotlib —
+  and the same three missing packages), so `improc` buys nothing.
+  `benchmarks/canfar/pod_ship.py` defaults to it and `CANFAR_IMAGE` overrides it.
+  The `improc-webterm` name in
+  `benchmarks/canfar_experiments/manifest.json` is deliberately left alone: that
+  manifest is pinned and historical, and rewriting it would falsify the record of
+  what the September campaign actually ran.
 - **The local pixi environment is a relocated copy.** Its console scripts carry
   a stale shebang (`/Users/fabbros/src/weightmask/.pixi/...`), so
   `.pixi/envs/default/bin/pre-commit` fails with `bad interpreter` while
