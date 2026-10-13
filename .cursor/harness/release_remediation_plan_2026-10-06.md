@@ -162,7 +162,7 @@ Measured in pods at `313cb43`:
 | check | result |
 |---|---|
 | `benchmark-synthetic` (`synthetic_v2 --with-baselines`) | **ran and reproduces WM-16** — `F1 0.000 (TP:0, FP:0, FN:1390)` and `average streak F1 0.149 < 0.200` |
-| `pytest -q` | started; still running when this was written, no result captured |
+| `pytest -q -v`, bound by `timeout 1500` | **did not finish**: reached 71% (through `tests/test_rms_validity.py`) before the bound hit, `rc=124`. Three failures appeared first — two in `tests/test_perf_protocol.py`, one in `tests/test_release_machinery.py` — but the run was cut off before the failure summary, so the assertions were never captured. The same two modules pass locally in 45 s (81 passed, 12 subtests), and a re-run aimed at just those modules failed with `FATAL: WM_TREE and WM_COMMAND are both required`: the session was created but its env never arrived, which is a control-plane flake rather than a test result. **Treat the pod failure count as unexplained, not as product failures.** |
 | `science-gate` | **blocked** — its inputs are three 343 MB CADC exposures and `www.cadc-ccda…` is at 0/36 |
 
 A pod-side smoke run of the gate is possible against
