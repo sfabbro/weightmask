@@ -322,6 +322,10 @@ def main():
         if rc != 0 or not os.path.isdir(os.path.join(scratch_tree, "weightmask")):
             print("FATAL: could not copy the staged tree", flush=True)
             return 3
+        # Set on os.environ, not just the subprocess env: prepare_environment
+        # reads this the same way it reads the other WM_* settings, and setting
+        # only the subprocess copy silently disabled the reuse path.
+        os.environ["WM_TREE_ORIGIN"] = tree
         env["WM_TREE_ORIGIN"] = tree
         tree = scratch_tree
         env["WM_TREE"] = tree
