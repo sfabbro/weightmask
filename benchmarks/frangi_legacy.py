@@ -163,5 +163,3 @@ def _detect_streaks_frangi_legacy(data_sub, bkg_rms_map, existing_mask, config):
         return np.zeros(data_sub.shape, dtype=bool)
 
     return streak_mask_final_bool
-
-

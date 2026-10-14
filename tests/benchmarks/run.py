@@ -13,8 +13,8 @@ except Exception:  # pragma: no cover
     fitsio = None
 
 from tests.benchmarks.download_data import process_suite, validate_case_file
-from tests.simulate_and_test import _f1, run_masking_test
-from weightmask.bad import detect_bad_pixels
+from tests.simulate_and_test import GENERATOR_REVISION, METRIC_REVISION, _f1, run_masking_test
+from weightmask.bad import detect_bad_pixels, detect_dark_hot_pixels
 from weightmask.contract import (
     INVERSE_VARIANCE_SEMANTICS,
     MASK_POLARITY,
@@ -29,6 +29,17 @@ from weightmask.variance import calculate_inverse_variance
 ROOT = Path(__file__).resolve().parents[2]
 MANIFEST_DIR = Path(__file__).resolve().parent / "manifests"
 OUTPUT_ROOT = ROOT / "test_outputs" / "benchmarks"
+
+_SYNTHETIC_CASE_GATES = {
+    "synthetic_sparse": {
+        "centerline_coverage_min": 0.35,
+        "along_trail_coverage_min": 0.35,
+        "false_positive_per_mpix_max": 1000.0,
+        "overmask_pixels_per_truth_max": 0.25,
+        "object_recall_min": 0.90,
+        "bad_pixel_f1_min": 0.50,
+    }
+}
 
 
 def _load_repo_config():
@@ -45,14 +56,15 @@ def load_manifest(suite_name):
 
 
 def _mask_stats(pred_mask, gt_mask, eval_gt_mask=None):
+    """Compatibility precision/recall statistics for benchmark diagnostics."""
     if eval_gt_mask is None:
         eval_gt_mask = gt_mask
     tp = int(np.sum(pred_mask & eval_gt_mask))
     fp = int(np.sum(pred_mask & (~eval_gt_mask)))
     fn = int(np.sum((~pred_mask) & gt_mask))
     precision = tp / (tp + fp + 1e-9)
-    recall = tp / (tp + fn + 1e-9)
-    recall = min(recall, 1.0)
+    core_hits = int(np.sum(pred_mask & gt_mask))
+    recall = core_hits / (core_hits + fn + 1e-9)
     return {
         "precision": float(precision),
         "recall": float(recall),
@@ -60,113 +72,186 @@ def _mask_stats(pred_mask, gt_mask, eval_gt_mask=None):
         "pred_area": int(np.sum(pred_mask)),
         "gt_area": int(np.sum(gt_mask)),
         "overmask_fraction": float(fp / (np.sum(pred_mask) + 1e-9)) if np.sum(pred_mask) > 0 else 0.0,
+        "false_positive_pixels": fp,
+        "false_positive_per_mpix": float(fp / pred_mask.size * 1e6),
+        "overmask_pixels_per_truth": float(fp / (np.sum(gt_mask) + 1e-9)),
         "width_ratio": float(np.sum(pred_mask) / (np.sum(gt_mask) + 1e-9)) if np.sum(gt_mask) > 0 else 0.0,
     }
 
 
-def _simple_hough_baseline(data_sub, bkg_rms):
-    """Satdet-style baseline without MRT rescue (calls private helpers)."""
-    from weightmask.streaks import (
-        _detect_streaks_contours,
-        _detect_streaks_houghpeaks,
-        _detect_streaks_satdet,
-    )
+def _streak_geometry_stats(pred_mask, components, centerlines):
+    from scipy.ndimage import binary_dilation
 
-    config = {
-        "enable": True,
-        "mode": "auto_ground",
-        "debug": True,
-        "enable_sparse_ransac": False,
-        "satdet_params": {
-            "rescale_percentiles": [2.0, 98.5],
-            "gaussian_sigmas": [1.5],
-            "canny_low_threshold": 0.08,
-            "canny_high_threshold": 0.25,
-            "small_edge_perimeter": 40,
-            "hough_threshold": 8,
-            "hough_min_line_length": 90,
-            "hough_max_line_gap": 25,
-            "cluster_angle_tol_deg": 3.0,
-            "cluster_rho_tol_px": 24.0,
-            "min_cluster_segments": 2,
-            "edge_buffer": 20,
-            "min_edge_touches": 0,
-            "min_interior_span": 80.0,
-            "min_segment_density": 0.01,
-            "candidate_corridor_radius": 10,
-            "max_existing_mask_fraction": 0.85,
-            "confidence_threshold": 0.25,
-        },
-        "mask_params": {
-            "strip_length": 196,
-            "strip_width": 64,
-            "profile_sigma_threshold": 1.0,
-            "profile_percentile": 70.0,
-            "rotation_interpolation_order": 1,
-            "padding": 2,
-            "min_mask_pixels": 16,
-            "min_row_hits": 5,
-            "min_row_hit_fraction": 0.2,
-            "max_support_width": 18,
-        },
+    components = np.asarray(components)
+    centerlines = np.asarray(centerlines)
+    tolerant = binary_dilation(pred_mask, iterations=2)
+    centerline_coverages = []
+    along_coverages = []
+    for label in np.unique(components):
+        if label <= 0:
+            continue
+        coords = np.argwhere(centerlines == label)
+        if coords.size == 0:
+            continue
+        centerline = centerlines == label
+        centerline_coverages.append(float(np.mean(pred_mask[centerline])))
+        if len(coords) < 2:
+            along_coverages.append(float(np.any(tolerant[centerline])))
+            continue
+        centered = coords - np.mean(coords, axis=0)
+        _, _, vectors = np.linalg.svd(centered, full_matrices=False)
+        positions = centered @ vectors[0]
+        hits = tolerant[coords[:, 0], coords[:, 1]]
+        if not np.any(hits):
+            along_coverages.append(0.0)
+        else:
+            span = float(np.max(positions) - np.min(positions))
+            along_coverages.append(float((np.max(positions[hits]) - np.min(positions[hits])) / max(span, 1.0)))
+    return {
+        "centerline_coverage": float(np.mean(centerline_coverages)) if centerline_coverages else 0.0,
+        "along_trail_coverage": float(np.mean(along_coverages)) if along_coverages else 0.0,
     }
-    empty = np.zeros_like(data_sub, dtype=bool)
+
+
+def _synthetic_case_gate_failures(case_name, result):
+    gates = _SYNTHETIC_CASE_GATES.get(case_name)
+    if gates is None:
+        return []
+    failures = []
+    streak = result.get("streak_stats", {})
+    object_metrics = result.get("weightmask", {}).get("Objects", (np.nan, np.nan))
+    bad_pixels = result.get("bad_pixel_stats", {})
+    values = {
+        "centerline coverage": streak.get("centerline_coverage"),
+        "along-trail coverage": streak.get("along_trail_coverage"),
+        "false positives per Mpix": streak.get("false_positive_per_mpix"),
+        "overmask pixels per truth": streak.get("overmask_pixels_per_truth"),
+        "object recall": object_metrics[1] if len(object_metrics) > 1 else np.nan,
+        "bad-pixel F1": bad_pixels.get("f1"),
+    }
+    def finite(value):
+        try:
+            return bool(np.isfinite(float(value)))
+        except (TypeError, ValueError):
+            return False
+
+    failures.extend(f"{case_name}: {name} is nonfinite" for name, value in values.items() if not finite(value))
+    limits = (
+        ("centerline coverage", "centerline_coverage_min", lambda value, limit: value < limit, "<"),
+        ("along-trail coverage", "along_trail_coverage_min", lambda value, limit: value < limit, "<"),
+        ("false positives per Mpix", "false_positive_per_mpix_max", lambda value, limit: value > limit, ">"),
+        ("overmask pixels per truth", "overmask_pixels_per_truth_max", lambda value, limit: value > limit, ">"),
+        ("object recall", "object_recall_min", lambda value, limit: value < limit, "<"),
+        ("bad-pixel F1", "bad_pixel_f1_min", lambda value, limit: value < limit, "<"),
+    )
+    for name, gate_name, failed, relation in limits:
+        if gate_name not in gates:
+            failures.append(f"{case_name}: missing gate {gate_name}")
+            continue
+        value = values[name]
+        limit = gates[gate_name]
+        if finite(value) and failed(float(value), limit):
+            failures.append(f"{case_name}: {name} {float(value):.3f} {relation} {limit:.3f}")
+    return failures
+
+
+def _simple_hough_baseline(data_sub, bkg_rms, thresh_sig=5.0, half_width=3):
+    """A plain Hough-transform streak detector, independent of weightmask.
+
+    A comparator is only worth its name if it is a *different* algorithm reached
+    through no weightmask code. The two that used to sit here both violated that
+    and neither ran: ``_simple_hough_baseline`` imported the deleted
+    ``_detect_streaks_satdet`` and crashed, and ``_rubin_compatible_kht`` called
+    ``detect_streaks`` itself, so a "comparator" was scored against the thing it
+    was meant to be compared to. Both are gone.
+
+    What remains is the honest minimal version of the name: threshold, Hough
+    transform, keep up to four strongest lines, paint their corridors. No candidate scoring,
+    no strip refinement, no vetoes -- the point is to be simple.
+    """
+    from skimage.transform import hough_line, hough_line_peaks
+
+    binary = np.isfinite(data_sub) & (data_sub > thresh_sig * bkg_rms)
+    if not binary.any():
+        return np.zeros_like(data_sub, dtype=bool)
+    accumulator, angles, distances = hough_line(binary)
+    # hough_line_peaks returns three parallel arrays, not a list of tuples.
+    vote, theta, rho = hough_line_peaks(accumulator, angles, distances, min_distance=4, min_angle=4, threshold=40)
     mask = np.zeros_like(data_sub, dtype=bool)
-    hp_mask, _, _ = _detect_streaks_houghpeaks(data_sub, bkg_rms, empty, config)
-    mask |= hp_mask
-    ct_mask, _, _ = _detect_streaks_contours(data_sub, bkg_rms, empty, config)
-    mask |= ct_mask
-    sat_mask, _, _ = _detect_streaks_satdet(data_sub, bkg_rms, empty, config)
-    mask |= sat_mask
+    yy, xx = np.mgrid[0 : data_sub.shape[0], 0 : data_sub.shape[1]]
+    for angle, offset in zip(theta[:4], rho[:4]):
+        normal = (np.cos(angle), np.sin(angle))
+        distance = np.abs(xx * normal[0] + yy * normal[1] - offset)
+        mask |= distance <= half_width
     return mask
 
 
-def _rubin_compatible_baseline(data_sub, bkg_rms):
-    config = {
-        "enable": True,
-        "mode": "auto_ground",
-        "debug": True,
-        "enable_sparse_ransac": False,
-        "satdet_params": {
-            "rescale_percentiles": [1.0, 99.2],
-            "gaussian_sigmas": [1.0, 2.0],
-            "canny_low_threshold": 0.06,
-            "canny_high_threshold": 0.18,
-            "small_edge_perimeter": 35,
-            "hough_threshold": 5,
-            "hough_min_line_length": 60,
-            "hough_max_line_gap": 18,
-            "cluster_angle_tol_deg": 2.0,
-            "cluster_rho_tol_px": 30.0,
-            "min_cluster_segments": 2,
-            "edge_buffer": 12,
-            "min_edge_touches": 0,
-            "min_interior_span": 70.0,
-            "min_segment_density": 0.01,
-            "candidate_corridor_radius": 10,
-            "max_existing_mask_fraction": 0.9,
-            "confidence_threshold": 0.20,
-        },
-        "mrt_rescue_params": {
-            "theta_step_deg": 1.0,
-            "peak_threshold_sig": 4.0,
-            "max_candidates": 4,
-            "confidence_threshold": 0.22,
-        },
-        "mask_params": {
-            "strip_length": 220,
-            "strip_width": 72,
-            "profile_sigma_threshold": 1.0,
-            "profile_percentile": 72.0,
-            "rotation_interpolation_order": 1,
-            "padding": 2,
-            "min_mask_pixels": 16,
-            "min_row_hits": 4,
-            "min_row_hit_fraction": 0.18,
-            "max_support_width": 20,
-        },
-    }
-    return detect_streaks(data_sub, bkg_rms, np.zeros_like(data_sub, dtype=bool), config)
+def _radon_baseline(data_sub, bkg_rms, thresh_sig=4.0, theta_step_deg=2.0, min_length=60.0):
+    """A standalone Radon line search, independent of weightmask.
+
+    Replaces the ``simple_radon`` comparator the MegaCam manifest asked for and
+    the code never provided -- the name sat in ``comparators`` with no
+    implementation behind it, so requesting it silently produced no baseline at
+    all. This is the matched-filter idea the deleted production rescue used
+    (Nir, Zackay & Ofek 2018: a PSF-broadened line template scored along rotated
+    axes), written out longhand so the comparison does not route through
+    weightmask code.
+
+    For each trial angle the image is projected onto the perpendicular axis. Two
+    sinograms are accumulated: the matched-filter sum, and a count of pixels above
+    ``thresh_sig``. A line is accepted where the count reaches ``min_length`` and
+    the sum peaks along that row. The count is the gate that does the work -- a
+    single hot pixel has count 1 and is rejected no matter how bright, which is
+    the failure a sum-threshold alone gets wrong.
+    """
+    finite = np.isfinite(data_sub)
+    normalized = np.where(finite, data_sub / np.maximum(bkg_rms, 1e-6), 0.0)
+    bright = np.where(finite & (data_sub > thresh_sig * bkg_rms), 1.0, 0.0).astype(np.float32)
+    height, width = data_sub.shape
+    diagonal = int(np.ceil(np.hypot(height, width))) + 2
+    padded_sum = np.zeros((diagonal, diagonal), dtype=np.float32)
+    padded_bright = np.zeros((diagonal, diagonal), dtype=np.float32)
+    offset_y, offset_x = (diagonal - height) // 2, (diagonal - width) // 2
+    padded_sum[offset_y : offset_y + height, offset_x : offset_x + width] = normalized
+    padded_bright[offset_y : offset_y + height, offset_x : offset_x + width] = bright
+    grid_y, grid_x = np.mgrid[0:diagonal, 0:diagonal]
+
+    mask = np.zeros_like(data_sub, dtype=bool)
+    # The image occupies padded rows/cols [offset_y:, offset_x:]. The corridor is
+    # measured against those same padded coordinates -- an earlier version used
+    # the top-left of the padded grid as if it were the image origin, which shifted
+    # every corridor by the pad offset and so found the line at 0/260.
+    window_y = grid_y[offset_y : offset_y + height, offset_x : offset_x + width]
+    window_x = grid_x[offset_y : offset_y + height, offset_x : offset_x + width]
+    for theta_deg in np.arange(0.0, 180.0, theta_step_deg):
+        theta = np.deg2rad(theta_deg)
+        normal_x, normal_y = np.cos(theta), np.sin(theta)
+        # rho is measured on the padded grid, whose x*nx + y*ny range depends on
+        # the angle and can go negative. Shift into non-negative bins and keep the
+        # offset, so bin i is the geometric offset (i + rho_offset).
+        raw = grid_x * normal_x + grid_y * normal_y
+        rho_offset = int(np.floor(raw.min())) - 1
+        rho = (np.floor(raw) - rho_offset).astype(np.int32)
+        n_bins = diagonal * 2 + 4
+        projection_sum = np.bincount(rho.ravel(), weights=padded_sum.ravel(), minlength=n_bins)
+        support = np.bincount(rho.ravel(), weights=padded_bright.ravel(), minlength=n_bins)
+
+        long_enough = support >= min_length
+        if not long_enough.any():
+            continue
+        candidates = np.flatnonzero(long_enough)
+        for index in candidates:
+            # Local maximum along rho within its own connected run, so a star
+            # cluster at one rho cannot borrow a neighbouring angle's peak.
+            if projection_sum[index] < projection_sum[index - 1] or projection_sum[index] < projection_sum[
+                index + 1
+            ]:
+                continue
+            # Bin i is the geometric offset (i + rho_offset); the corridor is
+            # drawn around that, in the same padded-grid units the window uses.
+            distance = np.abs(window_x * normal_x + window_y * normal_y - (index + rho_offset))
+            mask |= distance <= 1.5
+    return mask
 
 
 def _benchmark_synthetic_bad_pixels(seed, size):
@@ -255,6 +340,42 @@ def _synthetic_v2_cases():
     ]
 
 
+def _evaluate_synthetic_case(case, with_baselines=False):
+    args = SimpleNamespace(**case)
+    metrics, products = run_masking_test(str(ROOT / "weightmask.yml"), args, save_fits=False, return_products=True)
+    case_result = {"weightmask": metrics}
+    from scipy.ndimage import binary_dilation
+
+    dilated_streak_gt = binary_dilation(products["ground_truth"]["streak"], iterations=2)
+    streak_stats = _mask_stats(
+        products["masks"]["streaks"], products["ground_truth"]["streak"], eval_gt_mask=dilated_streak_gt
+    )
+    streak_stats.update(
+        _streak_geometry_stats(
+            products["masks"]["streaks"],
+            products["ground_truth"].get("streak_components", np.zeros_like(products["ground_truth"]["streak"])),
+            products["ground_truth"].get("streak_centerlines", np.zeros_like(products["ground_truth"]["streak"])),
+        )
+    )
+    case_result["streak_stats"] = streak_stats
+    case_result["bad_pixel_stats"] = _benchmark_synthetic_bad_pixels(case["seed"], case["size"])
+    if with_baselines:
+        data_sub = products["science"] - np.nanmedian(products["science"])
+        case_result["baselines"] = {
+            "simple_hough": _mask_stats(
+                _simple_hough_baseline(data_sub, products["bkg_rms"]),
+                products["ground_truth"]["streak"],
+                eval_gt_mask=dilated_streak_gt,
+            ),
+            "radon": _mask_stats(
+                _radon_baseline(data_sub, products["bkg_rms"]),
+                products["ground_truth"]["streak"],
+                eval_gt_mask=dilated_streak_gt,
+            ),
+        }
+    return case_result, products
+
+
 def run_synthetic_v2(with_baselines=False, selected_cases=None):
     out_dir = OUTPUT_ROOT / "synthetic_v2"
     out_dir.mkdir(parents=True, exist_ok=True)
@@ -262,31 +383,7 @@ def run_synthetic_v2(with_baselines=False, selected_cases=None):
     for case in _synthetic_v2_cases():
         if selected_cases and case["name"] not in selected_cases:
             continue
-        args = SimpleNamespace(**case)
-        metrics, products = run_masking_test(str(ROOT / "weightmask.yml"), args, save_fits=False, return_products=True)
-        case_result = {"weightmask": metrics}
-        from scipy.ndimage import binary_dilation
-
-        dilated_streak_gt = binary_dilation(products["ground_truth"]["streak"], iterations=2)
-        streak_stats = _mask_stats(
-            products["masks"]["streaks"], products["ground_truth"]["streak"], eval_gt_mask=dilated_streak_gt
-        )
-        case_result["streak_stats"] = streak_stats
-        case_result["bad_pixel_stats"] = _benchmark_synthetic_bad_pixels(case["seed"], case["size"])
-        if with_baselines:
-            data_sub = products["science"] - np.nanmedian(products["science"])
-            case_result["baselines"] = {
-                "simple_hough": _mask_stats(
-                    _simple_hough_baseline(data_sub, products["bkg_rms"]),
-                    products["ground_truth"]["streak"],
-                    eval_gt_mask=dilated_streak_gt,
-                ),
-                "rubin_compatible_kht": _mask_stats(
-                    _rubin_compatible_baseline(data_sub, products["bkg_rms"]),
-                    products["ground_truth"]["streak"],
-                    eval_gt_mask=dilated_streak_gt,
-                ),
-            }
+        case_result, products = _evaluate_synthetic_case(case, with_baselines=with_baselines)
         results[case["name"]] = case_result
         np.savez_compressed(
             out_dir / f"{case['name']}.npz",
@@ -294,8 +391,18 @@ def run_synthetic_v2(with_baselines=False, selected_cases=None):
             bkg_rms=products["bkg_rms"],
             streak_pred=products["masks"]["streaks"].astype(np.uint8),
             streak_truth=products["ground_truth"]["streak"].astype(np.uint8),
+            streak_components=products["ground_truth"].get("streak_components", np.zeros_like(products["ground_truth"]["streak"], dtype=np.int16)),
+            streak_centerlines=products["ground_truth"].get("streak_centerlines", np.zeros_like(products["ground_truth"]["streak"], dtype=np.int16)),
         )
-    failures = []
+    failures = [] if results else ["No benchmark cases were evaluated"]
+    for name, result in results.items():
+        failures.extend(_synthetic_case_gate_failures(name, result))
+        scores = {
+            "streak F1": result["streak_stats"]["f1"],
+            "object recall": result["weightmask"]["Objects"][1],
+            "bad-pixel F1": result["bad_pixel_stats"]["f1"],
+        }
+        failures.extend(f"{name}: {metric} is nonfinite" for metric, value in scores.items() if not np.isfinite(value))
     if not selected_cases and results:
         streak_f1 = [result["streak_stats"]["f1"] for result in results.values()]
         object_recall = [result["weightmask"]["Objects"][1] for result in results.values()]
@@ -306,7 +413,13 @@ def run_synthetic_v2(with_baselines=False, selected_cases=None):
             failures.append(f"Synthetic-v2 average object recall {float(np.mean(object_recall)):.3f} < 0.900")
         if float(np.mean(bad_pixel_f1)) < 0.50:
             failures.append(f"Synthetic-v2 average bad-pixel F1 {float(np.mean(bad_pixel_f1)):.3f} < 0.500")
-    return {"suite": "synthetic_v2", "results": results, "gate_failures": failures}
+    return {
+        "suite": "synthetic_v2",
+        "generator_revision": GENERATOR_REVISION,
+        "metric_revision": METRIC_REVISION,
+        "results": results,
+        "gate_failures": failures,
+    }
 
 
 def _run_manifest_suite(manifest, with_baselines=False, selected_cases=None):
@@ -408,7 +521,9 @@ def _run_manifest_suite(manifest, with_baselines=False, selected_cases=None):
         if quality_metrics is not None:
             failures.extend(_quality_gate_failures(case["case_id"], quality_metrics, manifest.get("quality_gates", {})))
         suite_results[case["case_id"]] = result
-    return {"suite": manifest["suite"], "results": suite_results, "gate_failures": failures}
+    if not suite_results:
+        failures.append("No benchmark cases were evaluated")
+    return {"suite": manifest["suite"], "metric_revision": METRIC_REVISION, "results": suite_results, "gate_failures": failures}
 
 
 def _load_case_image(case_path):
@@ -500,8 +615,6 @@ def _crop_reference(array, crop):
     expected_shape = (int(crop["height"]), int(crop["width"]))
     if array.ndim != 2:
         raise ValueError(f"reference plane must be 2-D, got shape {array.shape}")
-    if array.shape == expected_shape:
-        return array
     y0 = int(crop["y0"])
     x0 = int(crop["x0"])
     y1 = y0 + expected_shape[0]
@@ -776,8 +889,8 @@ def _quality_gate_failures(case_id, metrics, gates):
     for metric_name, gate_name, failed, relation in limits:
         value = metrics.get(metric_name)
         limit = gates.get(gate_name)
-        if value is None:
-            failures.append(f"{case_id}: {metric_name} is unavailable")
+        if value is None or not np.isfinite(value):
+            failures.append(f"{case_id}: {metric_name} is unavailable or nonfinite")
         elif limit is not None and failed(value, limit):
             failures.append(f"{case_id}: {metric_name} {value:.6f} {relation} {limit:.6f}")
     return failures
@@ -814,8 +927,8 @@ def _evaluate_blank_control(data, bkg_rms, with_baselines):
         baselines["simple_hough"] = {
             "streak_pixels": int(np.sum(_simple_hough_baseline(data - np.nanmedian(data), bkg_rms)))
         }
-        baselines["rubin_compatible_kht"] = {
-            "streak_pixels": int(np.sum(_rubin_compatible_baseline(data - np.nanmedian(data), bkg_rms)))
+        baselines["radon"] = {
+            "streak_pixels": int(np.sum(_radon_baseline(data - np.nanmedian(data), bkg_rms)))
         }
     return metrics, streak_mask, baselines
 
@@ -854,18 +967,7 @@ def _evaluate_dark_injection(case, data, hdr, with_baselines):
     else:
         truth = dark > np.percentile(finite_dark, 99.5)
 
-    pred_bad = detect_bad_pixels(
-        np.where(np.isfinite(dark), 1.0 + dark / max(np.nanmax(np.abs(dark)), 1.0), 1.0).astype(np.float32),
-        {
-            "local_filter_size": 9,
-            "local_low_thresh": 0.5,
-            "local_high_thresh": 1.8,
-            "col_enable": True,
-            "col_deriv_sigma": 5.0,
-            "col_dead_thresh": 0.1,
-        },
-        using_unit_flat=False,
-    )
+    pred_bad = detect_dark_hot_pixels(dark, _load_repo_config().get("dark_masking", {}))
     existing = np.zeros_like(injected, dtype=bool)
     pred_cr = detect_cosmic_rays(
         injected,
@@ -883,10 +985,8 @@ def _evaluate_dark_injection(case, data, hdr, with_baselines):
         }
     }
     baselines = {}
-    if with_baselines:
-        dark_thresh = truth
-        baselines["dark_threshold_baseline"] = _mask_stats(dark_thresh, truth)
-        baselines["astroscrappy_only"] = _mask_stats(pred_cr, truth)
+    # ponytail: no independent dark comparator is installed. Truth scored
+    # against itself and the postfiltered CR result are not valid baselines.
     return metrics, {"pred_bad": pred_bad, "pred_cr": pred_cr, "truth": truth}, baselines
 
 
@@ -941,22 +1041,21 @@ def _evaluate_streak_case(
                 "streak_pixels": int(np.sum(hough_mask)),
                 "overlap_with_weightmask": int(np.sum(hough_mask & weightmask_mask)),
             }
-        if "rubin_compatible_kht" in case.get("comparators", []):
-            rubin_mask = _rubin_compatible_baseline(data_sub, bkg_rms)
-            baselines["rubin_compatible_kht"] = {
-                "streak_pixels": int(np.sum(rubin_mask)),
-                "overlap_with_weightmask": int(np.sum(rubin_mask & weightmask_mask)),
+        if "radon" in case.get("comparators", []):
+            radon_mask = _radon_baseline(data_sub, bkg_rms)
+            baselines["radon"] = {
+                "streak_pixels": int(np.sum(radon_mask)),
+                "overlap_with_weightmask": int(np.sum(radon_mask & weightmask_mask)),
             }
-        if "acstools_detsat" in case.get("comparators", []):
-            try:
-                baselines["acstools_detsat"] = {"status": "available"}
-            except Exception:
-                baselines["acstools_detsat"] = {"status": "unavailable"}
-        if "acstools_findsat_mrt" in case.get("comparators", []):
-            try:
-                baselines["acstools_findsat_mrt"] = {"status": "available"}
-            except Exception:
-                baselines["acstools_findsat_mrt"] = {"status": "unavailable"}
+        # A requested comparator with no implementation must be reported as not
+        # run, not dropped. ``simple_radon`` sat in the MegaCam manifest with no
+        # code behind it, so asking for it silently produced no baseline and the
+        # summary looked complete. Same for the two acstools comparators, whose
+        # old handlers were try/except around a dict literal and so always
+        # answered "available" without running anything.
+        for wanted in case.get("comparators", []):
+            if wanted not in baselines:
+                baselines[wanted] = {"status": "not_implemented", "reason": "no comparator code in this repository"}
     return metrics, weightmask_mask, baselines
 
 
@@ -1032,6 +1131,17 @@ def _write_suite_outputs(summary):
 
 
 def run_suite(suite, with_baselines=False, selected_cases=None, download=False):
+    if selected_cases:
+        suites = ("synthetic_v2", "megacam_real", "acs_compare") if suite == "all" else (suite,)
+        known = {
+            name: {case["name"] for case in _synthetic_v2_cases()}
+            if name == "synthetic_v2"
+            else {case["case_id"] for case in load_manifest(name)["cases"]}
+            for name in suites
+        }
+        unknown = selected_cases - set().union(*known.values())
+        if unknown:
+            return {"suite": suite, "results": {}, "gate_failures": [f"Unknown benchmark case(s): {', '.join(sorted(unknown))}"]}
     if suite == "synthetic_v2":
         return run_synthetic_v2(with_baselines=with_baselines, selected_cases=selected_cases)
     if suite in {"megacam_real", "acs_compare"}:
@@ -1043,6 +1153,8 @@ def run_suite(suite, with_baselines=False, selected_cases=None, download=False):
         combined = {}
         failures = []
         for item in ("synthetic_v2", "megacam_real", "acs_compare"):
+            if selected_cases and not selected_cases.intersection(known[item]):
+                continue
             summary = run_suite(item, with_baselines=with_baselines, selected_cases=selected_cases, download=download)
             combined[item] = summary["results"]
             failures.extend(summary.get("gate_failures", []))

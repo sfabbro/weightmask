@@ -1,6 +1,581 @@
 # Changelog
 
-## Unreleased
+## 0.2.1 (unreleased)
+
+Correctness, I/O safety, and release validation fixes. Masks, skies, weights,
+and confidence maps can change from 0.2.0.
+
+### Fixed
+
+- Object detection retains bright first-pass seeds instead of excluding them
+  from both passes. Elongated-source sky handoff also works with an empty config.
+- Streak refits retain coherent along-trail support instead of choosing a narrow
+  fragment and rejecting the whole trail. Hough support can bridge short gaps
+  from star masks without treating missing samples as empty sky; minimum run
+  length is enforced for isolated runs too. The two linear-feature regressions
+  are now pinned by centerline coverage, recovered span, corridor purity, and
+  area bounds; those geometry invariants are unchanged by the brightness-veto
+  setting.
+- A primary streak no longer suppresses the residual RANSAC search for another
+  trail. Its sigma threshold uses the measured RMS directly, so changing ADU
+  units does not change which residual pixels qualify.
+  Rejected clutter models do not consume the accepted-trail budget or stop the
+  search. Confirmed Hough bands cross interior source masks with finite science
+  and measured RMS; occluded pixels do not supply detection or brightness-veto
+  evidence, and unknown-noise gaps remain excluded. Each prediction must retain
+  its own coherent support after component vetoes; unrelated crossing trails
+  cannot revive a rejected model.
+- Cosmic-ray contrast gates measure signal above the sky. Unknown RMS pixels
+  cannot seed residual CR detections or authorize negative-sky repairs. Masked
+  pixels are excluded from the explicit median-filter background method.
+- Non-finite science pixels receive `NO_DATA` and zero weight. Entire invalid
+  flat tiles are `BAD`; cached masks are invalidated for this correction.
+  Integer bad masks are interpreted per pixel, and mismatched masks are rejected.
+- Integer science retains its native saturation ceiling with the canonical
+  configuration as well as an empty configuration. Amplifier gains
+  use valid local, disjoint sections when mosaic `DETSEC` coordinates do not
+  describe the HDU. Invalid header gain/read-noise values use validated defaults.
+- A zero or signed, bias-subtracted dark is valid. Dark hot pixels use the HDU
+  median plus `dark_masking.hot_sigma` times the robust scatter, rather than
+  dividing by a flat-like positive response. Non-finite dark values are `BAD`.
+- Output paths cannot alias inputs or other products, including through links.
+  Failed FITS writes and partial runs report failure. Invalid YAML section
+  shapes and unsupported float16 FITS output are rejected before processing.
+  Supplied keep-maps must be matching, finite, binary arrays.
+- Confidence normalization uses unclipped weights and the configured percentile
+  once per exposure. Compressed outputs track their actual image HDUs.
+  Chip-replica clearing restores confidence/raw weights while respecting
+  detected-source exclusions.
+- Sky reconstruction strips consumed FITS scaling/compression cards, streams
+  full-resolution images, and reports reconstruction/write failures.
+  Persistence priors require distinct other exposures and accept a later
+  compatible extension after a mismatched one.
+- Contract inverse variance is sanitized after float32 conversion, including
+  overflow/underflow. Direct products reject invalid inverse variance, and
+  truncated provenance warns rather than silently becoming empty provenance.
+- Flat-mask `tile_size` is honored. Big-endian FITS arrays use native,
+  contiguous buffers for SEP. Streak debug output is restored, and obsolete
+  perimeter constants and diagnostics are removed.
+- Release validation preserves existing `--outdir` contents, checks the newest
+  numeric release tag across branches, and independently installs/tests both
+  wheel and sdist outside the source tree. Local CI carries deletions, renames,
+  links, and quoted filenames correctly, reports test failures, and runs the
+  suite once.
+- Examples resolve repository configuration independently of the current
+  directory and report processing failures. Downloads replace an existing
+  science image only after transfer and complete FITS structure checks.
+- Test assertions now exercise elongated-source bits, cosmic failures, and
+  instrument mismatches. Synthetic injection honors flux/complex settings,
+  uses the known read noise, and seeds sweeps and pre-masks deterministically.
+  Recall measures recovered truth pixels; tolerated halos affect precision.
+- Benchmark gates reject empty, non-finite, failed, or mismatched evidence.
+  Reference crops and stage-ablation cells must match their actual inputs;
+  dark diagnostics use the production dark detector without self-truth baselines.
+  The science gate preserves declared fixture paths and profiles its selected
+  FITS input rather than depending on an unrelated cached exposure list.
+- Real-image injections add signal to finite, measured pixels; tolerant recall
+  counts truth pixels near the mask. Baseline caches include detector inputs,
+  configuration, and source. Timing comparisons retain calibration, reject
+  self-comparison, and fail on incomplete HDUs; CPU time matches the timed
+  region. Pull scatter is centered, and worker scaling requires a one-worker
+  reference. Historical scores and timings remain historical.
+- CANFAR runs honor manifest thread settings and `--no-wait`, wait for every
+  submitted job when requested, and compare masks across all image HDUs and
+  matching exposure identifiers.
+
+### Changed
+
+- Removed obsolete variance switches and the old theoretical denominator;
+  theoretical inverse variance always uses `g² F² / (S g F + RN²)`.
+  Background-only variance is never reduced by source noise a second time.
+- Removed ignored saturation selectors, retired streak parameters, the
+  `readnoise_keyword` configuration alias, `--max-workers`, and the old
+  reconstruction subcommand. Implicit configuration discovery uses
+  `weightmask.yml`; sky reconstruction uses `weightmask-reconstruct-sky`.
+  Supplied dark frames always use hot-pixel detection, with defaults when the
+  section is omitted. Unsupported settings are rejected.
+- Package and producer versions come directly from the required version module;
+  missing code cannot silently stamp a development version into products.
+- `WMSEM` / `INVERSE_VARIANCE_SEMANTICS` now describes the shared units as
+  `inverse_variance_adu^-2`, rather than labeling every estimator as a
+  flat-fielded Poisson weight. The array schema and quality-bit values stay 1.0.
+- Release is manual, dry-run by default, and runs lint/tests before building or
+  tagging. Publishing requires `astroai/weightmask` on `main`; version inputs
+  are passed as data, validated artifacts are saved, and failed jobs do not
+  announce successful releases. The old duplicate publish workflow is removed.
+- User docs/examples match the callable API, `NO_DATA` bit, configuration,
+  command names, and output behavior. README links work from PyPI.
+
+### Known limitations
+
+- Streak angular/dashed-trail recovery and the high-brightness veto remain
+  limited by the evidence described under 0.2.0; the veto can be disabled.
+- Exposure confidence uses a bounded sample per HDU, so its percentile is
+  approximate for differently sized detectors. Dark hot-pixel detection assumes
+  a mostly healthy HDU with a uniform pedestal; structured darks need calibrated
+  per-amplifier/local baselines.
+- This release does not claim validated real-trail recall. The local MegaCam
+  label set has no independently confirmed trail, so that recall is `n/a`.
+- The full synthetic suite is not a pass. `pixi run benchmark-synthetic` on
+  this tree reports average streak F1 0.149, below the unchanged 0.200 gate.
+  The CI-sized sparse case passes its own gates. The MegaCam science gate on
+  this tree also failed; see Qualification.
+- Full science benchmarks are opt-in. Historical scores under 0.2.0 used the
+  earlier generator and recall metric. Broad multi-seed/angular sweeps and
+  other instrument campaigns remain unqualified. Stage diagnostics with a
+  global sky and empty initial mask do not establish production-pipeline quality.
+
+### Qualification
+
+`pixi run science-gate` on this tree **failed**. Do not treat the 2026-10-06
+figures (continuous recall 0.753 / 0.903, worm 0.322, single-pixel 0.167) as
+the candidate result.
+
+- Artefact false positives on 89 annotated HDUs and 241 labelled artefacts are
+  still 0 (rate 0.000) with persistence on. Real-trail recall is `n/a`.
+- Injected continuous-trail mean recall on `1013719p` HDU 1 is 0.720 exact and
+  0.800 within five pixels, below 0.75 and 0.90.
+- Two-pass cosmic-ray recall is 0.207 for worms and 0.054 for single pixels,
+  below the worm drop limit and the 0.15 single-pixel floor.
+- The two-HDU timing run completed. It is not a speedup claim.
+- The local suite covers both geometry-guarded linear-feature regressions. One
+  optional torchfits test skips. A clean export passes lint, expected data/optional
+  skips, and entry-point smoke.
+
+## 0.2.0 - 2026-10-02
+
+Streak detection rewritten on measurement, and the measurement code itself
+audited. Behavioural changes are listed first because a consumer's masks will
+change.
+
+### Removed
+
+- **The Radon rescue** (`mrt_rescue_params`). Measured on 83 real amps it
+  accepted on 3, all three false positives, and moved `recall_line` by +0.000
+  across 8 of 8 injected-trail cells at 4-12 sigma, two lengths, two seeds. It
+  cost 121.7 s/amp of a 125.7 s/amp stage. Removed with its config block, the
+  `curate_trail_truth` proposer that read it, and `tests/test_radon_rescue.py`.
+- **`_streak_image_core`**, unused since the Canny/Hough stage went.
+- **The version literal**, which appeared in five files. Runtime consumers now
+  import `weightmask/_version.py`; the packaging copy in `pyproject.toml` is asserted to agree rather than
+  trusted, because `ProducerMetadata.version` stamps provenance into every
+  output map and a missed update writes a stale version into science products.
+
+### Unchanged, and now pinned
+
+- The two unconfirmed linear features in 996195p HDUs 35 and 36 still satisfy
+  the geometry-based corridor invariants at the shipped default, with the
+  brightness veto off, and with it wide open. `tests/test_brightness_veto.py`
+  asserts those invariants directly. A stage deletion that dropped one of them
+  to zero passed the suite green before that test existed.
+- Zero of ~1,100 stars fall inside the mask on the two unconfirmed-linear-feature chips.
+
+### Changed
+
+- **The brightness veto is optional.** `max_component_sigma: null` disables it.
+  Trails are unaffected either way; a hot column group (10,734 px) and a bright
+  star arm (4,385 px) return. Both sit below `max_premasked_fraction`, so the
+  pre-masked veto cannot take them. The column is instead catchable without
+  reference to brightness, since it is static: it persists at 0.90 across epochs
+  of the same field against 0.02 for a trail, which is what `--persistence` uses.
+- Corrected the p90 table that config, usage and this file all carried. It read
+  "~2 sigma" for trails and "54-66" for bleed; re-measured they are 3.0/3.2 and
+  1138/1345, and a star arm at 155 was missing entirely.
+- `docs/detector_audit.md` is marked historical and lists the stages it
+  describes that no longer ship.
+
+### Measured, for reference
+
+- Full 36-chip MegaCam exposure, one core: **389.9 s** without streak detection,
+  **420.4 s** with. The stage is 7% of the run, not the majority of it.
+- With `--nproc 8`: 139.6 s, 3.08x. The fall-off is machine saturation, not
+  serialisation -- per-chip wall time rises from 11.06 s to 27.14 s as threads
+  are added, and the two candidate serial sections measure 2.4 s and 1.0 s.
+
+### Known limitations
+
+- The detector's angular response is limited. On injected trials it recovers
+   near-horizontal trails and misses 25-160 degrees. Both unconfirmed linear features are at
+  ~1 degree, so the local corpus does not expose this. The response may be
+  telescope-specific and was not investigated further.
+- `max_component_sigma: 20` is a 6x margin above a sample of two trails. It is
+  provisional, and it would suppress a bright satellite constellation without
+  anything local revealing it.
+- `synthetic_v2` fails its quality gate at F1 0.159 against a 0.200 threshold.
+  This predates the work in this release and is unchanged by it.
+
+### Historical engineering record (not current release evidence)
+
+The following measurements document superseded MRT/Radon and detector-stage
+chronology. They are retained for reproducibility and are not claims about the
+current shipped detector or release qualification.
+
+### Per-stage findings behind the release
+
+### Sparse RANSAC keeps its place, and its price is 0.82 s/amp
+
+The third stage of the same question. On 224 real amps RANSAC runs on 222,
+accepts on 0, and costs 184 s of the 782 s stage -- 0.82 s/amp, 24%. Measured on
+its own remit, dashed trails:
+
+| injected trail | with RANSAC | without | |
+|---|---|---|---|
+| 1500 px dashed, 12 sigma | 0.167 | **0.000** | RANSAC is the only finder |
+| 800 px solid, 12 sigma | 0.165 | **0.000** | RANSAC is the only finder |
+| other 14 cells | equal | equal | no effect |
+| cells helped / hurt | 2 / 16 | | **0 hurt** |
+
+So it stays, for the same reason contours stays and the rescue did not: it is the
+sole finder in the cells where it helps and costs recall in none.
+
+Two things about this measurement that are worth not getting wrong.
+
+The timing column of the recall grid cannot price this stage. RANSAC is gated by
+`sparse_on_primary_weak_only`, and on the injected grid the gate is shut in
+**94 of 96 runs** -- the prescreen has usually already succeeded, so RANSAC is
+never entered. Its measured cost there is -0.1 s/run, which is noise, and
+negative cost is the signature of a stage that did not run. The honest price is
+the real-amp sweep's 0.82 s/amp, where the gate is open on 222 of 224.
+
+The grid was extended to inject dashed trails at all. RANSAC's stated job is
+dashed-trail recovery, and the first version of this grid only injected
+continuous ones -- which would have measured it on inputs it was never built for
+and returned a clean +0.000 for the wrong reason. That is the same error as
+judging contours on real amps alone, caught by asking what the stage was for
+before measuring it.
+
+`benchmarks/streak_recall_floor.py` now sweeps `{solid, dashed}` for every
+(length, sigma) cell and records `dashed` in each row.
+
+### Contours keeps its place; the instrument that decides is now reusable
+
+The Radon rescue was removed below because it cost 121.7 s/amp and found nothing.
+Contours has the same two surface signals -- 0 acceptances on 224 real amps, and
+44% of what the stage now costs -- and the opposite answer underneath:
+
+| injected trail | with contours | without | |
+|---|---|---|---|
+| 800 px, 6 sigma | 0.167 | **0.000** | contours is the only finder |
+| 800 px, 8 sigma | 0.167 | **0.000** | contours is the only finder |
+| other 6 cells | equal | equal | no effect |
+| mean gain | **+0.042** | | costs 3.3 s/run, 56% of the stage |
+
+Contours costs recall on **0 of 8** cells. That asymmetry is the whole result:
+the rescue moved recall by +0.000 everywhere, contours is the sole reason some
+injected trails are found at all. Per-amp, the whole gain is on 1013719p:9 at
+seed 0, where houghpeaks reaches 0.000 and contours reaches 1.000.
+
+The two stage runs of `benchmarks/streak_recall_floor.py` that produced this are
+the same instrument that killed the rescue, so the comparison is like-for-like:
+same amps, same grid, same production input path, stages switched by their own
+config block rather than by monkeypatching.
+
+`benchmarks/streak_recall_floor.py` now takes `--disable {contours,houghpeaks,ransac}`
+(repeatable). A stage switch that is not in that list is a `ValueError` rather
+than a silently ignored flag -- the failure mode this whole section is about is a
+knob that looks connected and is not.
+
+### Delete the Canny/Hough stage, and stop a re-mask of known-bad pixels
+
+Measured over 56 real MegaCam amps (every 4th HDU of six exposures, production
+inputs captured from the `process_image` streak stage), the `satdet` stage --
+multi-scale Canny + probabilistic Hough + segment clustering -- **ran on 56 of
+56 amps, accepted a candidate on none, and explained zero pixels of any final
+mask: 1,543 s across the sweep, 27.5 s per amp.**
+
+It is not mis-tuned. Sweeping `confidence_threshold` from 0.22 down to 0.02
+produced zero acceptances on six amps including both known unconfirmed linear features. Sweeping
+the Canny thresholds from 0.06/0.22 up to 0.60/1.30 left acceptance at zero
+too. Internally the stage is not idle -- it produces ~131,000 Hough segments and
+~5,300 clusters on a 9.8 Mpix amp -- but only 16 clusters survive its own gates
+and **the closest survivor is 1,357 px from the known unconfirmed linear feature**, so the
+trail is not in the stage's own candidate list at any setting. Its
+`min_cluster_segments` gate is also undocumented: the config's `min_segment_
+accept` gates a different, later check.
+
+Removed: `_detect_streaks_satdet` and 13 helpers only it called, plus
+`_StreakImageCache` and the three unmasked-retry config knobs.
+`_refine_trail_mask`, `_sample_trail_strip` and the rest of the strip machinery
+survive -- houghpeaks, contours and the rescue all use them.
+
+**All four unconfirmed linear-feature detections in 996195p are bit-identical before and after** (1286,
+584, 12001, 11034 px), so nothing was lost. HDU 35's streak stage went 37 s ->
+1.2 s, because the prescreen's own detection is now enough to skip the rescue;
+HDU 1 is 37 s -> 31.5 s, where the rescue still runs.
+
+The rescue gate was rewritten while the stage it depended on was being deleted.
+It used to be `low_confidence`, a flag owned by satdet, combined with a
+`prescreen_confirmed` heuristic -- a cost optimisation that could veto a more
+sensitive detector. It is now a statement about the image: the rescue runs unless
+the prescreen has already masked enough to have handled the frame.
+
+**Pre-masked veto.** A component lying mostly inside the mask the pipeline already
+carries is not a new finding. The dominant false positive on real amps is a
+saturated star's bleed: 45% of its pixels are already flagged, against **2%** for
+an unconfirmed linear feature -- a factor of 22, and free to compute because both masks
+are already in hand. Applied per component so a stage returning both a bleed and
+a trail keeps the trail, and to all four stages. On 996195p this removes the two
+false positives (HDUs 1 and 16) and leaves both unconfirmed linear features untouched.
+
+**Who owns the survivors?** Bit attribution in the final mask says 97% of the
+dead-column pixels carry `STREAK` and nothing else, so this is not a duplicate
+label -- `bad.py` genuinely does not own them. It detects bad columns *from the
+flat*, and in `1013719p` HDU 5 those columns are ordinary in the flat
+(median 1.0108 vs a flat median of 0.9967). They are instead at 97-99.5% of the
+`SATURATE` level (column medians 62,069-63,663 against `SATURATE = 63,973`), so
+the saturation stage misses them by a hair. The same structure appears in all
+three epochs of the QW322 pointing, so it is static.
+
+**Brightness veto** (`mask_params.max_component_sigma`, default 20). As a
+multiple of the local background RMS at p90, measured on real amps:
+
+| feature | p90 |
+|---|---|
+| unconfirmed linear feature (996195p HDU 35/36) | 3.0 / 3.2 sigma |
+| saturated-star bleed | 1138 / 1345 sigma |
+| bright star arm | 155 sigma |
+| near-saturated column group | ~2000 sigma |
+
+**Optional and uncalibrated at the high end.** `max_component_sigma: null`
+disables the veto. Setting it that way leaves both unconfirmed linear features byte-identical
+(12,001 and 11,034 px) and lets two artefacts back in: the column group
+(10,734 px) and the star arm (4,385 px), both of which sit below
+`max_premasked_fraction` so the pre-masked veto cannot take them. The column is
+alternatively catchable by persistence -- it is static, so it holds at 0.90
+across epochs of the same field against 0.02 for an unconfirmed linear feature -- via the CLI's
+`--persistence`; the star arm holds at 0.41 and is not reliably caught that way.
+
+The threshold itself is a 6x margin above a sample of **two** trails. That is a
+provisional setting rather than a measured constant, and it would suppress a
+bright satellite constellation without anything local showing it. Pinned by
+`tests/test_brightness_veto.py`.
+
+Both unconfirmed linear features survive **byte-identically** (12,001 and 11,034 px). The
+column components fall 10,773 -> 7,182 and 9,256 -> 5,785: the veto removes the
+saturated core but not the ~3-sigma halo around it, so it is a partial fix for
+that class. This is a stopgap; a pixel at 99% of `SATURATE` arguably belongs to
+the saturation stage, which is a wider change than this stage should make on
+its own.
+
+**No confirmed satellite trail exists locally, and an attempt to build one
+failed.** The two faint linear features in `996195p` HDUs 35/36 are unconfirmed
+(60-90 sigma after line integration, row median 34 e- against 40 e- noise,
+i.e. genuinely marginal) but nothing confirms either as a satellite: their
+fitted sky position angles differ by 1.74 deg once the 0.15 deg chip rotation is
+removed, roughly 18x the fit uncertainty, so they are probably two separate
+features rather than one trail, and there is no sibling epoch locally to test
+persistence against. A first attempt at a stability fixture was discarded
+because its independent line-integration fit reported the feature 66 px from
+where the detector puts it; the cause was a scoring bug in the fit, which
+rewarded raw line sums so a few bright pixels at y=3220 (row median 0.49 e-
+outlived the unconfirmed linear feature at y=3180, row median 34 e-). The detector was right.
+
+Consequence: **the repository still cannot measure confirmed real-data trail recall.**
+The veto thresholds are currently justified by one unconfirmed linear feature and a
+0.25 pre-masked fraction, not by a recall measurement. That is the honest state.
+
+### Streak benchmarks were scoring a code path production never runs
+
+`score_trail_truth.py` and `streak_inject.py` each built their own detector
+inputs: one `estimate_background` pass over the raw frame with an all-False
+exclusion. Production does neither. It iterates the background (preliminary pass,
+then cosmic-ray and bleed masking, then a final pass over the accumulated mask)
+and it hands `detect_streaks` a populated
+`interim_mask_bool | final_obj_mask | detector_prior`. Both benchmarks therefore
+measured something the pipeline never executes.
+
+Three separate things followed from that, and the first two were wrong:
+
+1. **The committed false-positive baseline was the background stage's error
+   attributed to the streak stage.** A single unmasked pass leaves the chip-fixed
+   columns and rows in `data_sub` as bright linear features. Re-scored on the
+   production path, on the same 8 HDUs and the same 32 labelled entries: **8
+   false positives (rate 0.250) -> 1 (0.031)**, gate 0.100, so the gate passes
+   where the committed run recorded 0.124 and failed. Seven of the eight HDUs go
+   to zero. `houghpeaks` scores 0.000 on the same inputs for 12 s against 567 s
+   for the full cascade.
+2. **The `bin` recall table in `weightmask.yml` cannot be used to pick a knob.**
+   It was measured on the same non-production path, so the documented
+   non-monotonicity (bin=1 scoring 0.36 at 6 sigma where bin=4 scores 0.94) was
+   never a resolution trade. The pick in that comment is withdrawn pending
+   re-measurement.
+3. **The `prescreen_confirmed` suppression is not the recall defect it looked
+   like.** It was the natural suspect -- the cheap prescreen accepting something
+   skips satdet and the Radon rescue. Flipping
+   `satdet_params.skip_when_prescreen_confirmed` to `false` on injected trails
+   moved the cost from 6.0 s to 22.6 s and left recall **exactly unchanged** at
+   0.101. Rejected.
+
+The scoring tally was checked against the committed totals before any comparison
+was drawn: the method reproduces 30 FP / 241 entries on the full set exactly.
+
+`benchmarks/production_inputs.py` replaces the hand-rolled inputs with a capture
+of the real `process_image` streak stage, so the harnesses cannot drift from the
+pipeline again. It raises rather than falling back if the streak stage is not
+reached, because a silent fallback is the defect. The score artifact now records
+the config path, its sha256 and the `streak_masking` block; the 2026-09-18
+artifact recorded none, which is why its timings could not be reconciled with a
+direct measurement. Five new tests in `tests/test_production_inputs.py` pin the
+capture to production and were each mutation-checked.
+
+### Verified against real data
+
+Every performance change in the audit below was checked end-to-end, not just per
+change: mask, inverse variance, weight, confidence and sky products for three
+real MegaCam amps of `1013719p` (4644x2112, 29.4 Mpix total), streaks enabled,
+`weightmask.yml` unmodified, against the pre-audit revision `0811166`.
+
+**All 15 arrays bit-identical: zero differing pixels, max|diff| exactly 0.** The
+throughput work cost nothing in output on real data.
+
+- Saturation tail histogram: 1285 ms -> 47 ms per 9.8 Mpix amp, by binning only
+  the pixels in the tail instead of letting `np.histogram` sort all 9,811,968 of
+  them to count the 510 that lie in it. Exact -- counts are integers, so there is
+  no summation order to preserve.
+- Sky mesh reconstruction: 4.4x and bit-identical, via the `axis=0`/`axis=1`
+  form of the same cubic spline. Note this is the mesh<->full-res inverse used
+  when reading a stored sky product, not the per-CCD path, so it is not counted
+  toward CCD throughput.
+- `variance`: `np.divide(..., where=)` in place of boolean fancy-indexing.
+- `mef`: dropped redundant `np.array(..., copy=True)` around FITS reads, and
+  `astype(copy=False)` on reads. `fitsio.read()` returns an owning, writable
+  array for plain and RICE_1 tile-compressed images alike, so this is not an
+  mmap alias.
+
+### Correctness and performance audit (bugs found and fixed)
+
+Continuation of the audit below, covering the MEF/CLI input layer:
+
+- **Fixed: the documented CFITSIO input form did not work.** `validate_input_files`
+  stat'ed the raw string, so `science.fits[1]` failed with "Input file not found"
+  before the spec was ever parsed — while `docs/usage.md` advertised exactly that
+  form and `weightmask-reconstruct-sky` honoured it. The spec is now stripped
+  before the filesystem is touched.
+- **Fixed: a silent trap in the auxiliary inputs.** `--flat_image x.fits[2]` was
+  parsed into a variable nothing read, so the flat was matched by index anyway
+  and the explicit HDU was silently ignored. An `[N]` on `--flat_image`,
+  `--dark_image` or `--badpix_mask` is now rejected, since those are matched to
+  the science HDU by index. Also removed the dead binding, and `--hdu` now says
+  when it overrides an `[N]` in the input spec.
+- **Fixed: a wrong-shaped sky product.** `reconstruct_sky_mesh` returned `(h, 1)`
+  when the mesh had a single node column — reachable for any HDU narrower than
+  the mesh box, e.g. 30 px wide with `box 32` — and wrote it without complaint.
+- **Fixed: a silent repeated cost.** An unwritable bad-mask cache directory (the
+  normal case for a read-only VOSpace flat, where the cache cannot live next to
+  the file) produced no output at all, while the ~20 s/HDU median filter was
+  recomputed on every run. It now warns and names `bad_mask_cache_dir`.
+- **Fixed: a partial run exited 0.** `run_pipeline` only failed when *nothing* was
+  processed, so a run with a failed CCD wrote fewer data extensions than there
+  were science HDUs and still reported success — and from the first skipped HDU
+  onward, extension position no longer matched the science HDU. A short run now
+  exits non-zero and says how many were written; `EXTNAME` is documented as the
+  authoritative source index.
+- **Fixed: the contract could launder a mask or a non-finite weight.**
+  `canonical_quality_mask` cast an `int64` mask with `astype`, wrapping modulo
+  2^32, so any flag at bit >= 32 vanished and that pixel was given **full
+  weight** — the exact failure the quality mask exists to prevent. Wider-than-
+  uint32 inputs are now refused. `WeightMaskProduct` also accepted `inf` and
+  `NaN` weights, because `x < 0` is False for both; the validator now requires
+  finite weight and confidence.
+- **Documented:** the persistence prior is a prior on the *streak detector* only.
+  Those pixels are withheld from streak detection so detector-fixed structure is
+  not reported as a trail; they are not bad pixels, keep their normal weight and
+  carry no quality bit.
+
+- **Fixed: a silent unit flat.** A flat MEF shorter than the science MEF left
+  `hdu_flat_obj = None`, so `process_image` substituted `F = 1` and printed one
+  `INFO` line. Every affected CCD got unflat-fielded weights and the run still
+  reported success. A short flat or keep-map now fails the HDU with a reason
+  and writes no products. This also exposed a flaw in an existing test that had
+  been passing *because* of the bug (science written with an empty primary
+  against a single-image flat, off by one).
+- **Fixed: a silent dark.** A dark frame shorter than the science MEF was
+  ignored with no log output at all, losing dark-derived hot-pixel rejection.
+- **Fixed: `scale_to_100` produced a mislabelled, then destroyed, product.**
+  With `confidence_params.scale_to_100: true` the file holds 0-100 but the
+  header claimed `normalized_weight_0_to_1`; and because
+  `normalize_scope: per_exposure` is the default, the global rescale then ran
+  `np.clip(data * factor, 0, 1)` over it, flattening everything above 1 % of
+  the normalisation to exactly 1.0. The clip now follows the map's actual range
+  and the semantics card is `normalized_weight_0_to_100` when scaled.
+- **Fixed: `detect_objects` raised `UnboundLocalError` on every frame with zero
+  detections**, reporting a normal outcome as `ERROR: Object detection failed`.
+  The returned mask was always correct, which is why the existing
+  empty-input test never caught it — it asserts the mask, not the log.
+- **Fixed: `"--5"` in a config value aborted config loading** with a traceback
+  instead of passing through as a string.
+
+The two boldest claims from the review that preceded these — that
+`ellipse_k: 3.0` empties the `DETECTED` mask, and that `amplifier_gain_map`
+cannot handle a `fitsio.FITSHDR` — were both measured and refuted.
+
+### Correctness and performance audit (round one)
+
+A two-round review of every module except `streaks.py` (which is 65 % of per-CCD wall time
+and is being left for its own round). Both rounds were about checking that an optimisation
+is actually behaviour-preserving, which turned out to matter more than the optimisations.
+
+**Three latent bugs, each invisible to the test suite as it stood:**
+
+- **Flat field silently dropped.** An attempt to skip re-reading the flat when the bad-pixel
+  mask was precomputed was wrong: `process_image` uses the flat as the *actual* flat field
+  for the variance/weight math, not just for the bad mask, so skipping it substituted a
+  unit flat and disabled flat-fielding on every parallel run. Undetectable by the suite
+  because every test flat is an array of ones. Pinned by
+  `test_process_hdu_still_passes_the_real_flat_when_bad_mask_is_precomputed`.
+- **`build_weight_product` mutated the caller's quality mask.** A `copy=False` cast in
+  `canonical_quality_mask` aliased a `uint32` input, so the `INVALID_VARIANCE` pass wrote
+  bits into the caller's array -- including the mask that gets written to disk. The copy is
+  load-bearing and is now documented as such; pinned by
+  `test_build_weight_product_does_not_mutate_the_callers_quality_mask`.
+- **Stale inverse-variance position in the chip-replica veto.** The raw-weight branch reused
+  an `ipos` that was only assigned inside the weight-map branch, so
+  `--out-weight-raw` without a weight map raised `NameError` on the first HDU or restored
+  from the *previous* HDU on later ones. Pinned by
+  `test_raw_weight_restore_does_not_depend_on_the_weight_map`.
+
+**Performance (all verified output-preserving):**
+
+- **Saturation: 1285 ms -> 47 ms per 9.8 Mpix amp.** `estimate_saturation_robust_clump`
+  built its 100-bin histogram with `np.histogram(finite_data, bins=<edges>)`. With explicit
+  bin edges numpy sorts the entire input while discarding everything outside the edge
+  range -- sorting 9,811,968 float32 values in order to count the 510 that lie in the
+  saturation tail. Restricting to the tail first and binning only that is exact (counts are
+  integers, so there is no summation order to preserve), asserted equal to `np.histogram`
+  over 300 fuzzed bin-edge cases. `_estimate_plateau_tail` already did this; the two are
+  now consistent. This stage was *absent* from the cProfile rather than cheap, because at
+  ~1.3 s/amp it fell below the top-35 cutoff.
+- **Sky mesh: 4.4x, bit-identical.** `reconstruct_sky_mesh` built one `CubicSpline` object
+  per column and per row; the `axis=0`/`axis=1` vector form is the same spline evaluated
+  in bulk. Note this is the mesh<->full-res inverse used when reading a stored sky product,
+  not the per-CCD path.
+- `variance`: `np.divide(..., where=)` instead of boolean fancy-indexing, which also stops
+  dividing by zero outside the valid region.
+- `mef`: dropped redundant `np.array(..., copy=True)` around FITS reads in the chip-replica
+  veto and used `astype(copy=False)` on reads. `fitsio.read()` returns an owning, writable
+  array for both plain and RICE_1 tile-compressed images, so this is not an mmap alias.
+- `satur`: the finite-pixel sample is computed once and threaded through instead of
+  re-running `np.isfinite` in each of the three estimators.
+
+**Debuggability:**
+
+- The perf harness could report a physically impossible throughput. `--resume` appends each
+  checkpointed exposure to the report (so its pixels and stage times count) but `continue`s
+  without running it, while `total_wall` times only the checkpoint walk: the committed
+  `test_outputs/perf/megacam_perf_after.md` shows `total_wall=0.0s` (really 5.479e-5s, hidden
+  by the `:.1f` format) beside `mpix/s=64442323.708`, against a true 0.073. Throughput is now
+  refused rather than faked, resumed records are tagged, and `hdu_wall_s > 1.5x total_wall_s`
+  raises a disagreement warning. Those "after" artifacts were a mixed-provenance measurement,
+  so the earlier round's headline perf numbers are re-measured rather than trusted.
+- `cosmics` reports which astroscrappy pass failed instead of one generic message, and the
+  faint-CR enhancement mode is validated before any detection so a bad config value raises
+  instead of being swallowed. `objects` likewise names the failing SEP pass.
+- Previously silent skip paths now warn: chip-replica position/shape mismatches, missing
+  individual masks, an invalid global confidence p99, unavailable dark HDUs, unusable
+  GAIN/RDNOISE headers, and a weight restore that fails after the mask was already rewritten.
+- `WeightMaskProduct` now validates shape, dtype and range on construction.
+- New `sep_background.edge_artifact_thresh` (default 50.0) replaces a hard-coded constant in
+  the edge-artifact check, which also now uses `nanmedian` so NaNs cannot poison the result.
 
 ### Curated real-MegaCam label set (new)
 

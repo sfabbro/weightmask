@@ -1,4 +1,4 @@
-# Canonical WeightMask config. Copy this file; it is not bundled in the wheel.
+# Canonical WeightMask config packaged with the library.
 # Extra top-level keys fail validation. See docs/usage.md and docs/algorithms.md.
 
 flat_masking:
@@ -15,21 +15,15 @@ flat_masking:
   dead_ccd_badpix_fraction: 0.9  # if already this fraction BAD, treat the CCD as dead
   bad_mask_cache: true           # reuse each flat HDU's bad-pixel mask across exposures
                                  # (~20 s per 9.8 Mpix HDU otherwise); the key covers the
-                                 # flat's path/size/mtime, HDU index, tile size and every
-                                 # setting above, so a changed flat never reads a stale mask.
+                                 # flat's path/size/mtime, HDU index, shape and every setting
+                                 # above; v4 masks are tile-size independent.
   bad_mask_cache_dir: null       # null → <flat directory>/.weightmask_cache
 
 dark_masking:
-  # Required for --dark_image; without this section the dark is ignored.
-  local_filter_size: 15          # pixels; same local-median test as the flat, on --dark_image
-  local_low_thresh: 0.5          # low-ratio cut (rarely fires on a dark)
-  local_high_thresh: 2.0         # hot pixels: dark / local-median above this
-  col_enable: true               # dead/hot columns on the dark
-  col_deriv_sigma: 10.0          # MAD-sigma on the column-median derivative
-  col_dead_thresh: 0.1           # columns this faint vs the chip median
+  hot_sigma: 8.0                # hot if dark > median + hot_sigma * 1.4826*MAD; non-finites are BAD
+                                # assumes a mostly healthy HDU with uniform dark pedestal
 
 saturation:
-  method: "histogram"            # accepted values histogram/header; histogram path always runs
   keyword: ["SATURATE", "SATUR", "SATURAT"]  # header advisory (first present); used if the clump fails the guard
   effective_full_scale: 65535.0  # ADU; 16-bit ceiling used as a histogram bound
   histogram_params:
@@ -37,7 +31,6 @@ saturation:
     hist_max_adu: null           # ADU; null → use effective_full_scale
     guard_fraction: 0.75         # keep the clump only if it sits this far into the tail
     max_upper_factor: 1.05       # reject clumps above this × the expected full scale
-    plateau_percentile: 99.8     # percentile used as a high-end anchor
     min_tail_pixels: 8           # need at least this many pixels in the sat clump
   bleed_adaptive_cap: false      # if true, cap bleed growth from the saturated-core height
   bleed_cap_core_factor: 3.0     # adaptive cap ≈ factor × core column extent
@@ -54,7 +47,7 @@ sep_background:
   box_size: 128                  # pixels; SEP mesh box (bw/bh)
   auto_box_scaling: true         # grow the box on large CCDs, capped by max_box_size
   filter_size: 3                 # SEP mesh-filter width (fw/fh)
-  iterations: 2                  # object-mask / background refinement loops
+  iterations: 2                  # object-mask / background refinement loops; 0 disables them
   mask_threshold: 0.8            # masked-fraction cut; above this, skip the mesh and use global SEP
   max_box_size: 1024             # pixels; cap for auto_box_scaling
   median_kernel_size: 31         # pixels; kernel if method is median_filter
@@ -62,12 +55,12 @@ sep_background:
   dip_repair_enable: true        # fill mesh undershoots next to bright masks when data agree
   dip_repair_sigma: 5.0          # how large a dip (in sky-RMS) is eligible for repair
   dip_repair_max_fraction: 0.05  # abort repair if more than this fraction of the CCD would change
+  edge_artifact_thresh: 50.0     # edge-vs-centre median gap (ADU) that triggers Gaussian smoothing
 
 cosmic_ray:
-  sigclip: 8.5                   # L.A.Cosmic/astroscrappy significance (conservative)
+  sigclip: 8.5                   # historical shipped value; fixed dimensionless L.A.Cosmic significance
   objlim: 15.0                   # contrast vs neighboring objects (stellar-core veto)
   niter: 2                       # astroscrappy iterations
-  dynamic_sigclip: false         # do not auto-lower sigclip on noisy chips
   dynamic_objlim: true           # raise objlim when the PSF looks undersampled
   psf_aware: true                # extra peakiness gate so stars are not taken as CRs
   psf_fwhm_guess: 3.0            # pixels; FWHM used by that gate
@@ -77,13 +70,20 @@ cosmic_ray:
   min_component_contrast_sigma: 4.0  # keep a CR island only if peak SNR exceeds this
   faint_cr:
     enable: true                 # second, fainter pass for elongated multi-pixel hits
-    sigclip: 5.0                 # looser L.A.Cosmic threshold
+    enhancement: "lacosmic"      # lacosmic (default) or opt-in residual prototype
+    sigclip: 5.0                 # lower, more permissive L.A.Cosmic threshold than the primary pass
     objlim_boost: 1.5            # multiply objlim on this pass
     niter: 1                     # one extra astroscrappy pass
     min_component_area: 3        # drop single/double-pixel noise
     max_component_area: 12       # still reject large islands
     min_elongation: 2.0          # keep only elongated "worms"
     min_contrast_sigma: 4.0      # vs local sky RMS
+    residual:
+      threshold_sig: 4.0         # residual threshold for the opt-in sparse path
+      min_component_area: 4
+      max_component_area: 12
+      min_elongation: 4.0
+      min_contrast_sigma: 4.0
 
 sep_objects:
   extract_thresh: 3.0            # SEP detection threshold in sky-RMS units
@@ -93,7 +93,7 @@ sep_objects:
   clean: true                    # SEP clean of spurious detections
   clean_param: 1.0               # SEP clean_param
   ellipse_k: 3.0                 # ellipse mask radius in Kron-like units
-  seed_thresh_factor: 1.25       # raise extract_thresh in crowded fields
+  seed_thresh_factor: 1.25       # multiply extract_thresh for first-pass seed extraction
   dynamic_halo_scaling: true     # grow ellipses for brighter objects
   halo_brightness_factor: 0.2    # how fast the halo grows with flux
   halo_flux_reference_percentile: 50.0  # flux percentile treated as "typical"
@@ -102,49 +102,15 @@ sep_objects:
   max_elongation: 3.0            # a/b above this can be withheld from DETECTED
   handoff_elongated_to_streak: true  # send those to the streak stage instead
   spike_enable: true             # axis-aligned diffraction-spike bars
-  spike_flux_thresh: 1.0e5       # ADU; only objects brighter than this get spikes
+  spike_flux_thresh: 1.0e+5      # ADU; only objects brighter than this get spikes
   spike_length_base: 100         # pixels; half-length of the bar
   spike_width: 3                 # pixels; bar thickness
 
 streak_masking:
   enable: true                   # STREAK bit; production mode is auto_ground only
-  mode: "auto_ground"            # Canny/Hough + strip refine + Radon rescue + optional RANSAC
-  dilation_radius: 2             # pixels; grow accepted trails
+  mode: "auto_ground"            # binned Hough peaks + contours + strip refine + optional RANSAC
+  profile_accept: true           # keep only the fitted line; drop components wider than max_support_width
   debug: false                   # extra streak diagnostics
-  retry_without_existing_mask: true  # retry if the first pass looks like a masked-star false positive
-  retry_if_area_fraction_exceeds: 0.03  # retry when the trail covers more than this of the CCD
-  retry_if_support_width_exceeds: 10.0  # pixels; retry when the refined width is this broad
-  satdet_params:
-    bin_factor: 2                # bin before Hough; strip confirmation stays full-res
-    rescale_percentiles: [4.5, 93.0]  # stretch before Canny
-    gaussian_sigma: 2.0          # pixels; fallback Gaussian if gaussian_sigmas is unused
-    gaussian_sigmas: [1.5, 2.0, 3.0]  # pixels; multi-scale Canny pre-smooth
-    canny_low_threshold: 0.06    # Canny hysteresis low (relative)
-    canny_high_threshold: 0.22   # Canny hysteresis high (relative)
-    small_edge_perimeter: 40     # drop compact edge blobs smaller than this
-    hough_threshold: 6           # probabilistic Hough vote threshold
-    hough_min_line_length: 65    # pixels; shortest Hough segment
-    hough_max_line_gap: 20       # pixels; gap allowed along a segment
-    hough_rng_seed: 0            # RNG seed for the probabilistic Hough
-    cluster_angle_tol_deg: 2.5   # deg; merge collinear segments
-    cluster_rho_tol_px: 30.0     # pixels; merge offset for that cluster
-    max_transverse_rms: 8.0      # pixels; reject fat/non-linear clusters
-    edge_buffer: 16              # pixels; CCD-edge margin for "touches the border"
-    min_edge_touches: 0          # require this many border contacts (0 = off)
-    min_interior_span: 70.0      # pixels; minimum projected length inside the CCD
-    min_segment_density: 0.01    # inlier density along the candidate
-    candidate_corridor_radius: 10  # pixels; corridor around a Hough line
-    max_existing_mask_fraction: 0.8  # reject if this much of the corridor is already masked
-    max_candidates: 8            # cap Hough candidates per CCD
-    min_segment_accept: 2        # need this many supporting segments
-    confidence_threshold: 0.22   # primary-pass accept threshold
-    skip_when_prescreen_confirmed: true
-                                 # skip the full-resolution multi-scale Canny/Hough
-                                 # sweep when the binned-Hough prescreen already
-                                 # accepted a trail. Measured on real MegaCam HDUs:
-                                 # bit-identical streak masks (0 differing pixels)
-                                 # on a clean field, a bright-trail field, and a
-                                 # bright+faint field, for -24.5 s per CCD.
   houghpeak_params:
     enable: true                 # binned Hough-peak extractor
     bin: 4                       # spatial binning before the peak search
@@ -158,30 +124,14 @@ streak_masking:
     shape_cut: 0.2               # compactness; reject round blobs
     area_cut: 100.0              # pixels; minimum contour area
     radius_dev_cut: 0.5          # reject contours that look circular
-  mrt_rescue_params:
-    enable: true                 # Radon rescue for faint/intermittent trails; it dominates
-                                 # the streak stage on a clean field (~35 s and ~350 MB per
-                                 # 9.8 Mpix HDU), so it can be switched off where fields are
-                                 # known to carry no such trails.
-    theta_step_deg: 2.0          # deg; Radon angle sampling
-    peak_threshold_sig: 4.2      # Radon-peak significance, measured over the
-                                 # geometrically valid rho range only
-    max_candidates: 4            # cap rescue lines
-    confidence_threshold: 0.25   # accept threshold for the rescue pass
-    bin: 1                       # mean-bin the projection image before the Radon.
-                                 # 1 = full resolution, ~20 s per CCD. Set 4 for ~1.6 s
-                                 # (12x) at the cost of `bin` pixels of rho quantisation:
-                                 # measured recall on injected trails (1.5 px wide, 800 px
-                                 # long, flat background) is 0.90/0.91/0.36/0.90 at bin=1 vs
-                                 # 0.39/0.90/0.94/0.80 at bin=4 for 60/12/6/4 sigma.
-    sigma_rel_floor: 0.001       # floor for a per-angle peak MAD, as a fraction of
-                                 # the median MAD over angles (never a fixed 1.0)
-    sinogram_highpass: 101       # samples; moving-median window subtracted along rho
-                                 # before significance is measured. The sinogram is
-                                 # star-clutter dominated (per-angle MAD ~1.1e3 on a
-                                 # real CCD, where a 4-sigma 2500px trail contributes
-                                 # only ~150), so broad star bumps must be removed
-                                 # before a narrow trail can stand out. 0 disables.
+  # mrt_rescue_params removed. The Radon rescue was the sensitive stage -- the
+  # one meant to find what the cheap prescreen misses. Measured before removal:
+  # over 83 real amps it accepted on 3, all three false positives, while
+  # houghpeaks explained the historical real detections; on injected trails at
+  # 4/6/8/12 sigma, two lengths, two seeds it moved recall_line by +0.000 in 8 of
+  # 8 cells. It cost 121.7 s/amp of a 125.7 s/amp stage. The `bin` recall table
+  # that used to live here was measured on the non-production input path and is
+  # withdrawn -- see benchmarks/streak_recall_floor.py and benchmarks/streak_stage_sweep.py.
   mask_params:
     strip_length: 256            # pixels; trail-aligned stamp length
     strip_width: 80              # pixels; stamp width for the profile
@@ -194,13 +144,37 @@ streak_masking:
     min_row_hit_fraction: 0.20   # fraction of rows that must contain mask
     min_col_hit_fraction: 0.10   # fraction of columns that must contain mask
     max_support_width: 12        # pixels; reject if the refined trail is wider
+    max_premasked_fraction: 0.25 # drop a streak component lying mostly in the upstream
+                                 # mask: it is not a new finding. Unconfirmed linear features
+                                 # sit at 0.02 on MegaCam; saturated-star bleed at 0.45.
+    # OPTIONAL brightness veto. Set to null to disable it entirely.
+    #
+    # Drop a component whose p90 exceeds this many background RMS. Measured on
+    # MegaCam, in sigma: unconfirmed linear features 3.0 and 3.2; saturated-star bleed
+    # 1138 and 1345; hot column group ~2000; bright star arm 155.
+    #
+    # UNCALIBRATED AT THE HIGH END. 20 is a 6x margin above the two trails that
+    # exist locally -- a sample of two. A bright satellite constellation would be
+    # deleted by this rule, and nothing in the local corpus would ever show it.
+    # Raise it, or null it, if that matters more than the artefacts below.
+    #
+    # Historical 0.2.0 veto measurements preceded the 0.2.1 object-mask fixes.
+    # Correct upstream masks now suppress some of those artefacts on their own;
+    # old per-component pixel counts do not describe the current pipeline.
+    #
+    # The column is also catchable without brightness: it is static, so it
+    # persists at 0.90 across epochs of the same field, against 0.02 for a real
+    # trail. `--persistence` uses that. The star arm persists at only 0.41 and is
+    # not reliably caught that way.
+    max_component_sigma: 20.0
+    max_row_gap: 24              # Hough only: group support across short gaps from star masks
+    min_row_run: 8               # reject short noise runs before grouping; gaps stay unfilled
   enable_sparse_ransac: true     # dashed-trail recovery on residual bright pixels
-  sparse_on_primary_weak_only: true  # run RANSAC only when primary confidence is low
   sparse_ransac_params:
     detect_thresh_sig: 6.0       # residual pixels this many σ above sky
     residual_threshold: 1.5      # pixels; RANSAC inlier distance
     min_inliers: 25              # minimum inliers to keep a line
-    min_length: 100              # pixels; minimum end-to-end length
+    min_length: 128              # pixels; rejects a measured persistent 116 px detector feature
     min_line_density: 0.6        # inliers per pixel of length
     dilation_radius: 1           # pixels; grow each RANSAC trail
     max_trials: 300              # RANSAC iterations
@@ -208,15 +182,15 @@ streak_masking:
 
 variance:
   method: "theoretical"          # "theoretical" (default), "rms_map", or "empirical_fit"
-  # Frozen 0.1: ivar = g^2 F^2 / (S*g + RN^2). Poisson+RN at F=1; F^2 sensitivity weight otherwise.
+  # ivar = g^2 F^2 / (S*g*F + RN^2). A spatially varying flat moved aperture flux
+  # by more than the fixture read-noise floor, so the sky term is S*g*F.
   gain_keyword: ["GAIN", "GAINA", "GAINB", "CCDGAIN"]  # e-/ADU; first present header wins
   rdnoise_keyword: ["RDNOISE", "RDNOIS", "RON"]        # e-; first present header wins
   default_gain: 1.5              # e-/ADU; used only if no gain keyword is present
   default_rdnoise: 5.0           # e-; used only if no read-noise keyword is present
   epsilon: 1.0e-9                # validity cut / safe-flat substitute; not added to the denominator
-  flat_rel_noise: 0.003          # fractional flat uncertainty; adds a vignette-scaled term
+  flat_rel_noise: 0.003          # dimensionless fractional flat uncertainty; adds (S*rel_map)^2 ADU^2
   rescale_variance: true         # scale so background SNR has robust scatter 1
-  unbias_variance: false         # optional extra unbias (off; rescale is the 0.1 path)
 
 confidence_params:
   dtype: "float32"               # confidence array dtype
@@ -227,7 +201,7 @@ confidence_params:
 output_params:
   output_map_format: "weight"    # primary -o product: "weight" or "confidence"
   mask_detected_in_weight: false # if true, DETECTED pixels also get zero weight
-  mask_bitpix: 16                # FITS BITPIX for the mask (uint16; values 0–63 fit)
+  mask_bitpix: 16                # FITS BITPIX for the mask (uint16; values 0–127 fit)
   ivar_bitpix: 32                # FITS BITPIX for ivar/weight/confidence/sky (float32)
   compress: false                # Rice (.fits.fz); if true and -o omitted, default suffix is .weight.fits.fz
   sky_format: full               # "full" map, or "mesh" for SKYMESH + weightmask-reconstruct-sky

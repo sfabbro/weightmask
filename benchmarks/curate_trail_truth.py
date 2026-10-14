@@ -84,6 +84,7 @@ import math
 import os
 import sys
 import time
+from collections import Counter
 from concurrent.futures import ProcessPoolExecutor
 
 import numpy as np
@@ -283,9 +284,13 @@ def _independent_line_stats(data_sub, point, direction, shape, offsets=(25.0, 60
         background.append(_bilinear(data_sub, xs + offset * perpendicular[0], ys + offset * perpendicular[1]))
         background.append(_bilinear(data_sub, xs - offset * perpendicular[0], ys - offset * perpendicular[1]))
     background = np.concatenate(background)
+    background = background[np.isfinite(background)]
+    if background.size == 0:
+        return None
     bg_median = float(np.median(background))
     bg_sigma = _mad_std(background) or (float(np.std(background)) or 1e-6)
     z = (on_line - bg_median) / bg_sigma
+    z[~np.isfinite(z)] = -np.inf
     spacing_px = length / max(n - 1, 1)
     span, start, peak = longest_support_run(z, threshold)
     return {
@@ -378,16 +383,45 @@ def _bright_components(data_sub, threshold_sig, min_px, min_elongation, max_comp
     fixture is used to score, and thresholded high (default 20 sigma) so it stays
     a high-precision miner rather than a second detector.
     """
-    median = float(np.median(data_sub))
+    finite = np.asarray(data_sub)[np.isfinite(data_sub)]
+    if finite.size == 0:
+        return []
+    median = float(np.median(finite))
     sigma = _mad_std(data_sub) or 1.0
-    return _components_from_mask(data_sub > median + threshold_sig * sigma, min_px, max_components, min_elongation)
+    proposal = np.isfinite(data_sub) & (data_sub > median + threshold_sig * sigma)
+    return _components_from_mask(proposal, min_px, max_components, min_elongation)
 
 
 def _column_and_row_noise(data_sub):
     """Robust per-column and per-row noise, for the axis veto."""
-    column = data_sub - np.median(data_sub, axis=0, keepdims=True)
-    row = data_sub - np.median(data_sub, axis=1, keepdims=True)
-    return 1.4826 * np.median(np.abs(column), axis=0), 1.4826 * np.median(np.abs(row), axis=1)
+    data_sub = np.asarray(data_sub)
+    finite = np.isfinite(data_sub)
+    safe = np.where(finite, data_sub, np.nan)
+    valid_columns = np.any(finite, axis=0)
+    valid_rows = np.any(finite, axis=1)
+    column_center = np.full(data_sub.shape[1], np.nan, dtype=np.float64)
+    row_center = np.full(data_sub.shape[0], np.nan, dtype=np.float64)
+    if np.any(valid_columns):
+        column_center[valid_columns] = np.nanmedian(safe[:, valid_columns], axis=0)
+    if np.any(valid_rows):
+        row_center[valid_rows] = np.nanmedian(safe[valid_rows, :], axis=1)
+    column = data_sub - column_center[np.newaxis, :]
+    row = data_sub - row_center[:, np.newaxis]
+    column_abs = np.where(finite, np.abs(column), np.nan)
+    row_abs = np.where(finite, np.abs(row), np.nan)
+    column_sigma = np.full(data_sub.shape[1], np.inf, dtype=np.float64)
+    row_sigma = np.full(data_sub.shape[0], np.inf, dtype=np.float64)
+    if np.any(valid_columns):
+        column_sigma[valid_columns] = 1.4826 * np.nanmedian(column_abs[:, valid_columns], axis=0)
+    if np.any(valid_rows):
+        row_sigma[valid_rows] = 1.4826 * np.nanmedian(row_abs[valid_rows, :], axis=1)
+    return column_sigma, row_sigma
+
+
+def _axis_noise_baseline(axis_sigma):
+    values = np.asarray(axis_sigma, dtype=np.float64)
+    values = values[np.isfinite(values)]
+    return float(np.median(values)) if values.size else 1.0
 
 
 def _dedupe_candidates(candidates, tol_px, tol_deg):
@@ -413,12 +447,7 @@ def mine_hdu(job):
     import yaml
 
     from weightmask.background import estimate_background
-    from weightmask.streaks import (
-        _candidate_from_rho_theta,
-        _detect_streaks_houghpeaks,
-        _detect_streaks_mrt_like,
-        detect_streaks,
-    )
+    from weightmask.streaks import _detect_streaks_houghpeaks, detect_streaks
 
     path, hdu, config_path, corridor_px, quiet, proposers, component_params = job
     (
@@ -427,7 +456,6 @@ def mine_hdu(job):
         bright_threshold_sig,
         bright_min_px,
         bright_min_elongation,
-        radon_max_candidates,
     ) = component_params
     sink = contextlib.redirect_stdout(io.StringIO()) if quiet else contextlib.nullcontext()
     with sink:
@@ -491,63 +519,13 @@ def mine_hdu(job):
                 measured["proposed_by"] = ["bright"]
                 measured["detector"] = {}
                 candidates.append(measured)
-        if "radon" in proposers:
-            # Orientation-agnostic: an exhaustive binned-Radon line search, so the
-            # candidate set cannot be biased toward whatever connected components
-            # or Hough bins happen to favour.  Uses the production rescue with its
-            # accept gates opened, because curation -- not the rescue -- is the
-            # filter here.
-            rescue_cfg = dict(streak_cfg)
-            rescue_cfg["mrt_rescue_params"] = {
-                "enable": True,
-                "theta_step_deg": 2.0,
-                "peak_threshold_sig": 2.0,
-                "max_candidates": radon_max_candidates,
-                "confidence_threshold": 0.0,
-                "bin": 4,
-                "sigma_rel_floor": 0.001,
-                "sinogram_highpass": 101,
-            }
-            _, rescue_accepted, _ = _detect_streaks_mrt_like(data_sub, rms, existing, rescue_cfg)
-            for candidate in rescue_accepted:
-                # Take the line straight from the production builder.  ``radon``
-                # parameterises a line *reflected* relative to the Hesse convention
-                # ``_candidate_from_rho_theta`` speaks, so rebuilding the line here
-                # from (theta, rho) by hand reproduces the mirror bug the rescue
-                # itself was fixed for -- and the mirrored line is what the
-                # independent profile and the mosaic test would then be scored on.
-                built = _candidate_from_rho_theta(
-                    -float(candidate["rho"]), 180.0 - float(candidate["theta_deg"]), science.shape
-                )
-                if built is None:
-                    continue
-                (x0, y0), (x1, y1) = built["endpoints"]
-                dx, dy = float(x1) - float(x0), float(y1) - float(y0)
-                span = math.hypot(dx, dy)
-                if span <= 0:
-                    continue
-                direction = (dx / span, dy / span)
-                candidates.append(
-                    {
-                        "point": [0.5 * (float(x0) + float(x1)), 0.5 * (float(y0) + float(y1))],
-                        "direction": [direction[0], direction[1]],
-                        "normal": list(_normalise_normal(-direction[1], direction[0])),
-                        "n_mask_px": 0,
-                        "rms_along_px": 0.0,
-                        "rms_across_px": 0.0,
-                        "width_px": 0.0,
-                        "length_px": span,
-                        "span_along_px": span,
-                        "elongation": float("nan"),
-                        "proposed_by": ["radon"],
-                        "detector": {
-                            "theta_deg": float(candidate["theta_deg"]),
-                            "rho": float(candidate["rho"]),
-                            "peak_snr": float(candidate.get("peak_snr", float("nan"))),
-                            "confidence": float(candidate.get("confidence", float("nan"))),
-                        },
-                    }
-                )
+        # The "radon" proposer is gone with the rescue it read candidates from.
+        # It proposed lines only for the curation corpus, and on 83 real amps the
+        # rescue it depended on accepted on 3 -- all false positives -- while
+        # changing injected-trail recall by +0.000 in 8 of 8 cells. Any candidate
+        # worth curating that neither `bright` nor `houghpeaks` proposes is a
+        # detector problem, not a curation-coverage problem, and the honest way
+        # to surface one is `pipeline` (the real production detector).
 
     if not candidates:
         return record
@@ -562,8 +540,8 @@ def mine_hdu(job):
 
     candidates = _dedupe_candidates(candidates, tol_px=6.0, tol_deg=1.5)
 
-    median_column = float(np.median(column_sigma)) or 1.0
-    median_row = float(np.median(row_sigma)) or 1.0
+    median_column = _axis_noise_baseline(column_sigma)
+    median_row = _axis_noise_baseline(row_sigma)
     for candidate in candidates:
         candidate["independent"] = _independent_line_stats(
             data_sub, candidate["point"], candidate["direction"], science.shape
@@ -574,7 +552,14 @@ def mine_hdu(job):
         veto = None
         if vertical_align <= 1.5:
             x = int(round(candidate["point"][0]))
-            if 0 <= x < w and column_sigma[x] > 3.0 * median_column:
+            if 0 <= x < w and not np.isfinite(column_sigma[x]):
+                veto = {
+                    "kind": "invalid_column",
+                    "coord": x,
+                    "axis_sigma": None,
+                    "median_axis_sigma": median_column,
+                }
+            elif 0 <= x < w and column_sigma[x] > 3.0 * median_column:
                 veto = {
                     "kind": "bad_column",
                     "coord": x,
@@ -583,7 +568,14 @@ def mine_hdu(job):
                 }
         elif horizontal_align <= 1.5:
             y = int(round(candidate["point"][1]))
-            if 0 <= y < h and row_sigma[y] > 3.0 * median_row:
+            if 0 <= y < h and not np.isfinite(row_sigma[y]):
+                veto = {
+                    "kind": "invalid_row",
+                    "coord": y,
+                    "axis_sigma": None,
+                    "median_axis_sigma": median_row,
+                }
+            elif 0 <= y < h and row_sigma[y] > 3.0 * median_row:
                 veto = {
                     "kind": "bad_row",
                     "coord": y,
@@ -672,9 +664,20 @@ def group_candidates(candidates, tol_deg, tol_px, max_gap_px):
 
 
 def _same_ccd(left, right):
-    if left.get("ccdname") and left.get("ccdname") == right.get("ccdname"):
-        return True
+    if left.get("ccdname") and right.get("ccdname"):
+        return left["ccdname"] == right["ccdname"]
     return left.get("extver", -1) == right.get("extver", -1) and left.get("extver", -1) >= 0
+
+
+def persistent_axis_mask(frames, min_other=2, sigma=3.0):
+    """Columns and rows bright in at least ``min_other`` other frames of one CCD.
+
+    Thin wrapper so the curator and the pipeline share one rule. The frames
+    passed here are the other epochs, not the exposure being labelled.
+    """
+    from weightmask.streaks import persistent_axis_mask as _persistent_axis_mask
+
+    return _persistent_axis_mask(frames, min_other=min_other, sigma=sigma)
 
 
 def find_static_matches(candidate, others, tol_deg, tol_px, min_support_px):
@@ -911,8 +914,8 @@ def main(argv=None):
     parser.add_argument("--workers", type=int, default=4)
     parser.add_argument(
         "--propose",
-        default="bright,houghpeaks,radon",
-        help="comma-separated proposers from {bright,houghpeaks,pipeline,radon}; 'pipeline' runs the production detect_streaks",
+        default="bright,houghpeaks",
+        help="comma-separated proposers from {bright,houghpeaks,pipeline}; 'pipeline' runs the production detect_streaks",
     )
     parser.add_argument("--corridor-px", type=float, default=30.0, help="mask-pixel corridor for the PCA re-measure")
     parser.add_argument("--min-component-px", type=int, default=400, help="smallest pipeline mask component to measure")
@@ -922,12 +925,6 @@ def main(argv=None):
     )
     parser.add_argument("--bright-min-px", type=int, default=150, help="bright proposer minimum component area")
     parser.add_argument("--bright-min-elongation", type=float, default=6.0, help="bright proposer minimum elongation")
-    parser.add_argument(
-        "--radon-max-candidates",
-        type=int,
-        default=16,
-        help="Radon proposer lines per HDU; each is measured with a full along-line profile, so this sets the run cost",
-    )
     parser.add_argument("--group-tol-deg", type=float, default=2.0, help="mosaic normal tolerance for grouping")
     parser.add_argument("--group-tol-px", type=float, default=15.0, help="mosaic offset tolerance (pixels)")
     parser.add_argument("--min-group-ccds", type=int, default=2, help="CCDs that must share a mosaic line")
@@ -942,7 +939,7 @@ def main(argv=None):
             "of a CCD axis are dominated by bad columns and register rows, and the Radon proposer's "
             "2 deg angle grid cannot resolve a near-axis trail from such a column -- measured, not "
             "assumed: candidates at exactly 2.00/4.00 deg were grid-quantised columns. Excluding the "
-            "first 5 deg costs at most 5/180 of possible orientations."
+            "5 deg around both axes excludes 20/180 of possible undirected orientations."
         ),
     )
     parser.add_argument(
@@ -995,7 +992,7 @@ def main(argv=None):
         parser.error(f"no exposures found under {args.data_root}")
 
     proposers = [item.strip() for item in args.propose.split(",") if item.strip()]
-    unknown = sorted(set(proposers) - {"bright", "houghpeaks", "pipeline", "radon"})
+    unknown = sorted(set(proposers) - {"bright", "houghpeaks", "pipeline"})
     if unknown:
         parser.error(f"unknown proposer(s): {', '.join(unknown)}")
     if not proposers:
@@ -1019,7 +1016,6 @@ def main(argv=None):
         args.bright_threshold_sig,
         args.bright_min_px,
         args.bright_min_elongation,
-        args.radon_max_candidates,
     )
     jobs = [
         (
@@ -1168,7 +1164,6 @@ def main(argv=None):
             "bright_threshold_sig": args.bright_threshold_sig,
             "bright_min_px": args.bright_min_px,
             "bright_min_elongation": args.bright_min_elongation,
-            "radon_max_candidates": args.radon_max_candidates,
             "group_tol_deg": args.group_tol_deg,
             "group_tol_px": args.group_tol_px,
             "min_group_ccds": args.min_group_ccds,
@@ -1203,6 +1198,15 @@ def main(argv=None):
         "summary": summary,
         "entries": committed,
     }
+    review_fixture = {**fixture, "entries": entries}
+    if args.entries == "labelled":
+        fixture["summary"] = {
+            **summary, "n_entries": len(committed),
+            "by_label": {**summary["by_label"], "uncertain": 0},
+            "by_proposer": dict(Counter("+".join(entry["proposed_by"]) or "unknown" for entry in committed)),
+            "by_exposure": {name: {**counts, "uncertain": 0} for name, counts in summary["by_exposure"].items()
+                            if counts["trail"] + counts["artefact"]},
+        }
 
     os.makedirs(os.path.dirname(os.path.abspath(args.out)), exist_ok=True)
     write_fixture(fixture, args.out)
@@ -1211,7 +1215,7 @@ def main(argv=None):
     if args.review_sheet:
         os.makedirs(os.path.dirname(os.path.abspath(args.review_sheet)), exist_ok=True)
         with open(args.review_sheet, "w") as handle:
-            handle.write(review_sheet(fixture))
+            handle.write(review_sheet(review_fixture))
         print(f"Wrote {args.review_sheet}")
 
     if summary["by_label"]["trail"] == 0:
@@ -1238,10 +1242,7 @@ def write_fixture(fixture, path):
         prefix += ","
     with open(path, "w") as handle:
         handle.write(prefix + "\n")
-        if not prefix.endswith("{"):
-            handle.write('  "entries": [\n')
-        else:
-            handle.write('  "entries": [\n')
+        handle.write('  "entries": [\n')
         for index, entry in enumerate(fixture["entries"]):
             comma = "," if index + 1 < len(fixture["entries"]) else ""
             handle.write("    " + json.dumps(entry, separators=(",", ":")) + comma + "\n")

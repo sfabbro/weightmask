@@ -1,5 +1,6 @@
 include CHANGELOG.md
 include weightmask.yml
+include weightmask/weightmask.yml
 prune tests
 prune examples
 prune benchmarks

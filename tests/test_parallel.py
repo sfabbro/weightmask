@@ -2,12 +2,19 @@
 
 Threaded 36/40-HDU MEFs must match single-thread output byte-identically;
 dead-CCD MEFs must not assume 36; single-HDU files use the per-file path.
+
+The last class covers what one failing CCD costs: the per-HDU closures inside
+``process_all_hdus`` are only reachable by running a whole MEF, and their error
+branches decide whether a partial exposure is reported or lost.
 """
 
+import contextlib
+import io
 import os
 import tempfile
 import unittest
 from argparse import Namespace
+from unittest.mock import patch
 
 import fitsio
 import numpy as np
@@ -145,6 +152,234 @@ class TestParallelEquivalence(unittest.TestCase):
             self.assertEqual(n, 1)
             self.assertTrue(os.path.exists(paths["out_map_path"]))
 
+    def test_short_flat_mef_fails_loudly_instead_of_using_a_unit_flat(self):
+        """A flat shorter than the science MEF must not degrade silently.
+
+        With `hdu_flat_obj = None`, process_image substitutes a unit flat and
+        prints only an INFO line, so every affected CCD gets unflat-fielded
+        weights and the run still reports success.
+        """
+        with tempfile.TemporaryDirectory() as tmp:
+            sp = os.path.join(tmp, "sci.fits")
+            fp = os.path.join(tmp, "flat_one.fits")
+            shape = (48, 48)
+            _write_mef(sp, 3, shape=shape)
+            fitsio.write(fp, np.full(shape, 0.5, dtype=np.float32), clobber=True)
+            paths = {
+                "out_map_path": os.path.join(tmp, "o.weight.fits"),
+                "out_mask_path": os.path.join(tmp, "o.mask.fits"),
+                "out_invvar_path": None,
+                "out_sky_path": None,
+                "out_weight_raw_path": None,
+                "individual_mask_paths": {},
+            }
+            args = Namespace(tile_size=1024, individual_masks=False, max_workers=1)
+            cfg = _load_cfg()
+            with fitsio.FITS(sp) as hi, fitsio.FITS(fp) as hf:
+                n = process_all_hdus([1, 2, 3], hi, hf, cfg, paths, args, flat_path=fp, input_path=sp)
+            self.assertEqual(n, 0)
+
+    def test_short_flat_mef_reports_why(self):
+        """The failure must name the length mismatch, not a downstream error."""
+        with tempfile.TemporaryDirectory() as tmp:
+            sp = os.path.join(tmp, "sci.fits")
+            fp = os.path.join(tmp, "flat_one.fits")
+            shape = (48, 48)
+            _write_mef(sp, 3, shape=shape)
+            fitsio.write(fp, np.full(shape, 0.5, dtype=np.float32), clobber=True)
+            paths = {
+                "out_map_path": os.path.join(tmp, "o.weight.fits"),
+                "out_mask_path": os.path.join(tmp, "o.mask.fits"),
+                "out_invvar_path": None,
+                "out_sky_path": None,
+                "out_weight_raw_path": None,
+                "individual_mask_paths": {},
+            }
+            args = Namespace(tile_size=1024, individual_masks=False, max_workers=1)
+            cfg = _load_cfg()
+            buf = io.StringIO()
+            with fitsio.FITS(sp) as hi, fitsio.FITS(fp) as hf:
+                with contextlib.redirect_stdout(buf):
+                    process_all_hdus([1, 2, 3], hi, hf, cfg, paths, args, flat_path=fp, input_path=sp)
+            log = buf.getvalue()
+            self.assertIn("flat", log)
+            self.assertIn("HDU(s), need index", log)
+            # The old bug: the reason was a downstream TypeError from calling
+            # len() on an already-closed fitsio handle.
+            self.assertNotIn("NoneType", log)
+
+    def test_short_keepmap_mef_fails_loudly_instead_of_dropping_the_flags(self):
+        """A keep-map shorter than the science MEF must not degrade silently.
+
+        The keep-map carries the BAD flags the instrument already knew about.
+        With the keep-map dropped for the affected CCDs the run still reports
+        success, and the products look complete while ignoring every pixel
+        upstream had flagged.
+        """
+        with tempfile.TemporaryDirectory() as tmp:
+            sp = os.path.join(tmp, "sci.fits")
+            bp = os.path.join(tmp, "keep_one.fits")
+            shape = (48, 48)
+            _write_mef(sp, 3, shape=shape)
+            fitsio.write(bp, np.ones(shape, dtype=np.uint8), clobber=True)
+            paths = {
+                "out_map_path": os.path.join(tmp, "o.weight.fits"),
+                "out_mask_path": os.path.join(tmp, "o.mask.fits"),
+                "out_invvar_path": None,
+                "out_sky_path": None,
+                "out_weight_raw_path": None,
+                "individual_mask_paths": {},
+            }
+            args = Namespace(tile_size=1024, individual_masks=False, max_workers=1)
+            cfg = _load_cfg()
+            buf = io.StringIO()
+            with fitsio.FITS(sp) as hi, fitsio.FITS(bp) as hb:
+                with contextlib.redirect_stdout(buf):
+                    n = process_all_hdus(
+                        [1, 2, 3],
+                        hi,
+                        None,
+                        cfg,
+                        paths,
+                        args,
+                        input_path=sp,
+                        hdul_badpix=hb,
+                        badpix_path=bp,
+                    )
+            self.assertEqual(n, 0)
+            # Refusing to process must also refuse to publish: a partial
+            # product would look like a successful run of a shorter exposure.
+            self.assertFalse(os.path.exists(paths["out_map_path"]))
+            self.assertFalse(os.path.exists(paths["out_mask_path"]))
+            # Without this the test also passes when the keep-map check is gone
+            # entirely and some unrelated downstream error happens to fail the
+            # HDU, which is not the property being pinned.
+            self.assertIn("keep-map", buf.getvalue())
+
+    def test_short_keepmap_mef_reports_why(self):
+        """The keep-map failure must name the length mismatch."""
+        with tempfile.TemporaryDirectory() as tmp:
+            sp = os.path.join(tmp, "sci.fits")
+            bp = os.path.join(tmp, "keep_one.fits")
+            shape = (48, 48)
+            _write_mef(sp, 3, shape=shape)
+            fitsio.write(bp, np.ones(shape, dtype=np.uint8), clobber=True)
+            paths = {
+                "out_map_path": os.path.join(tmp, "o.weight.fits"),
+                "out_mask_path": os.path.join(tmp, "o.mask.fits"),
+                "out_invvar_path": None,
+                "out_sky_path": None,
+                "out_weight_raw_path": None,
+                "individual_mask_paths": {},
+            }
+            args = Namespace(tile_size=1024, individual_masks=False, max_workers=1)
+            cfg = _load_cfg()
+            buf = io.StringIO()
+            with fitsio.FITS(sp) as hi, fitsio.FITS(bp) as hb:
+                with contextlib.redirect_stdout(buf):
+                    process_all_hdus(
+                        [1, 2, 3],
+                        hi,
+                        None,
+                        cfg,
+                        paths,
+                        args,
+                        input_path=sp,
+                        hdul_badpix=hb,
+                        badpix_path=bp,
+                    )
+            log = buf.getvalue()
+            self.assertIn("keep-map", log)
+            self.assertIn("HDU(s), need index", log)
+            self.assertNotIn("NoneType", log)
+
+    def test_short_dark_mef_warns_instead_of_silently_skipping(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            sp = os.path.join(tmp, "sci.fits")
+            fp = os.path.join(tmp, "flat.fits")
+            dp = os.path.join(tmp, "dark_one.fits")
+            shape = (48, 48)
+            _write_mef(sp, 3, shape=shape)
+            _write_flat(fp, 3, shape=shape)
+            fitsio.write(dp, None, clobber=True)
+            with fitsio.FITS(dp, "rw") as handle:
+                handle.write(np.full(shape, 100.0, dtype=np.float32))
+            paths = {
+                "out_map_path": os.path.join(tmp, "o.weight.fits"),
+                "out_mask_path": os.path.join(tmp, "o.mask.fits"),
+                "out_invvar_path": None,
+                "out_sky_path": None,
+                "out_weight_raw_path": None,
+                "individual_mask_paths": {},
+            }
+            args = Namespace(tile_size=1024, individual_masks=False, max_workers=1)
+            cfg = _load_cfg()
+            buf = io.StringIO()
+            # The *_path arguments are filename overrides for an already-open
+            # handle, not standalone inputs: the handle must be passed too, as
+            # the CLI does.
+            with fitsio.FITS(sp) as hi, fitsio.FITS(fp) as hf, fitsio.FITS(dp) as hd:
+                with contextlib.redirect_stdout(buf):
+                    process_all_hdus(
+                        [1, 2, 3],
+                        hi,
+                        hf,
+                        cfg,
+                        paths,
+                        args,
+                        flat_path=fp,
+                        input_path=sp,
+                        hdul_dark=hd,
+                        dark_path=dp,
+                    )
+            log = buf.getvalue()
+            self.assertIn("dark frame", log)
+            self.assertIn("No dark hot-pixel mask", log)
+
+    def test_scale_to_100_survives_rescale_and_is_labelled_honestly(self):
+        """A 0-100 confidence map must not be clipped to 1.0 or labelled 0-1.
+
+        `normalize_scope: per_exposure` is the shipped default, so with
+        `scale_to_100: true` the global rescale used to run
+        `np.clip(data*factor, 0, 1)` over a 0-100 file, flattening everything
+        above 1% of the normalisation to 1.0, while the header still claimed
+        `normalized_weight_0_to_1`.
+        """
+        from weightmask.contract import CONFIDENCE_SEMANTICS_SCALED
+
+        shape = (48, 48)
+        with tempfile.TemporaryDirectory() as tmp:
+            sp = os.path.join(tmp, "sci.fits")
+            fp = os.path.join(tmp, "flat.fits")
+            rng = np.random.default_rng(5)
+            fitsio.write(sp, None, clobber=True)
+            with fitsio.FITS(sp, "rw") as handle:
+                for level in (1000.0, 4000.0):  # different p99 per HDU
+                    handle.write((level + 30 * rng.standard_normal(shape)).astype(np.float32))
+            _write_flat(fp, 2, shape=shape)
+            paths = {
+                "out_map_path": os.path.join(tmp, "o.conf.fits"),
+                "out_mask_path": None,
+                "out_invvar_path": None,
+                "out_sky_path": None,
+                "out_weight_raw_path": None,
+                "individual_mask_paths": {},
+            }
+            args = Namespace(tile_size=1024, individual_masks=False, max_workers=1)
+            cfg = _load_cfg()
+            cfg["streak_masking"]["enable"] = False
+            cfg["output_params"]["output_map_format"] = "confidence"
+            cfg["confidence_params"]["scale_to_100"] = True
+            with fitsio.FITS(sp) as hi, fitsio.FITS(fp) as hf:
+                n = process_all_hdus([1, 2], hi, hf, cfg, paths, args, flat_path=fp, input_path=sp)
+            self.assertEqual(n, 2)
+            with fitsio.FITS(paths["out_map_path"]) as f:
+                maps = [f[1].read(), f[2].read()]
+                semantics = f[1].read_header().get("WMSEM")
+            for m in maps:
+                self.assertGreater(float(np.max(m)), 1.5, "0-100 map was clipped flat")
+            self.assertEqual(semantics, CONFIDENCE_SEMANTICS_SCALED)
+
     def test_resolve_workers(self):
         import os as _os
 
@@ -228,6 +463,119 @@ class TestParallelEquivalence(unittest.TestCase):
             ratio = med[1] / med[0]
             self.assertGreater(ratio, 3.0)
             self.assertLess(ratio, 5.5)
+
+
+class TestStreamingFailureContainment(unittest.TestCase):
+    """What the per-HDU closures in ``process_all_hdus`` do when one CCD fails.
+
+    ``_compute_one`` and ``_emit`` are nested, so their error branches are only
+    reachable by running a MEF end to end. Those branches draw the line between
+    the two failure contracts: a ``StageFailure`` means a required stage is
+    broken and aborts the exposure (pinned in ``tests/test_release_io.py``),
+    while anything else costs only that CCD. ``cli.py`` turns the resulting
+    short count into a warning, so a mis-counted failure is a silently partial
+    product.
+    """
+
+    @staticmethod
+    def _paths(out_dir, tag):
+        return {
+            "out_map_path": os.path.join(out_dir, f"{tag}.weight.fits"),
+            "out_mask_path": os.path.join(out_dir, f"{tag}.mask.fits"),
+            "out_invvar_path": None,
+            "out_sky_path": None,
+            "out_weight_raw_path": None,
+            "individual_mask_paths": {},
+        }
+
+    def _run_with_one_failing_hdu(self, tmp, tag, max_workers, *, fail_index=2, n_hdus=4, close_log=None):
+        """Run ``n_hdus`` CCDs with one raising a plain ``ValueError``.
+
+        Real files and the real per-worker handle reopening; only detections for
+        ``fail_index`` are made to raise, so the surrounding streaming path is
+        the production one. Returns ``(success_count, stdout, paths)``.
+        """
+        import weightmask.mef as mef
+
+        sp = os.path.join(tmp, f"{tag}.fits")
+        fp = os.path.join(tmp, f"{tag}_flat.fits")
+        _write_mef(sp, n_hdus)
+        _write_flat(fp, n_hdus)
+        paths = self._paths(tmp, tag)
+        args = Namespace(tile_size=1024, individual_masks=False, max_workers=max_workers)
+        real_process = mef.process_hdu
+
+        def flaky_process(science, flat, config, index, **kwargs):
+            if index == fail_index:
+                raise ValueError(f"corrupt CCD {index}")
+            return real_process(science, flat, config, index, **kwargs)
+
+        real_open = mef._open_hdu_handles
+
+        def recording_open(index, **kwargs):
+            result = real_open(index, **kwargs)
+            closer = result[5]
+
+            def wrapped():
+                if close_log is not None:
+                    close_log.append(index)
+                closer()
+
+            return (*result[:5], wrapped, result[6])
+
+        buf = io.StringIO()
+        with (
+            fitsio.FITS(sp) as hi,
+            fitsio.FITS(fp) as hf,
+            patch("weightmask.mef.process_hdu", side_effect=flaky_process),
+            patch("weightmask.mef._open_hdu_handles", side_effect=recording_open),
+            contextlib.redirect_stdout(buf),
+        ):
+            n = process_all_hdus(
+                list(range(1, n_hdus + 1)),
+                hi,
+                hf,
+                _load_cfg(),
+                paths,
+                args,
+                flat_path=fp,
+                input_path=sp,
+                max_workers=max_workers,
+            )
+        return n, buf.getvalue(), paths
+
+    def test_partial_failure_reports_a_short_count_and_publishes_nothing(self):
+        # One bad CCD must cost one CCD, not the exposure: a raising worker is
+        # counted as a failure and the other CCDs are still processed. But the
+        # count is also the CLI's publish signal -- cli.py turns a partial count
+        # into "No new product set was published" and exit 1 -- so the surviving
+        # CCDs must not reach the final paths. Promoting them would ship a
+        # complete-looking, shorter exposure. Both modes, because the threaded
+        # path resolves results through futures rather than the loop index.
+        with tempfile.TemporaryDirectory() as tmp:
+            for max_workers in (1, 4):
+                n, log, paths = self._run_with_one_failing_hdu(tmp, f"contain{max_workers}", max_workers)
+                self.assertEqual(n, 3, f"max_workers={max_workers}")
+                self.assertIn("FATAL ERROR processing HDU 2: corrupt CCD 2", log)
+                self.assertIn("Skipping HDU 2 due to processing errors.", log)
+                for name, path in paths.items():
+                    if path:
+                        self.assertFalse(os.path.exists(path), f"{name} was published: {max_workers}")
+                # Refusing to publish must also take the rejected generation with
+                # it; a leftover temporary is a product nobody validated.
+                leftovers = [p for p in os.listdir(tmp) if ".wm-tmp-" in p or ".wm-bak-" in p]
+                self.assertEqual(leftovers, [], f"max_workers={max_workers}")
+
+    def test_a_failed_hdu_still_releases_its_input_handles(self):
+        # ``_open_hdu_handles`` reopens the science and flat files once per HDU
+        # in each worker, so a failure path that skips ``close()`` leaks a pair
+        # of descriptors per bad CCD for the whole run. The streaming argument
+        # for memory is equally an argument for closing on the error path.
+        with tempfile.TemporaryDirectory() as tmp:
+            closed = []
+            n, _log, _paths = self._run_with_one_failing_hdu(tmp, "handles", 4, close_log=closed)
+            self.assertEqual(n, 3)
+            self.assertEqual(sorted(closed), [1, 2, 3, 4])
 
 
 if __name__ == "__main__":

@@ -34,6 +34,55 @@ def _tiny_flat_config():
     }
 
 
+class TestRetiredConfig(unittest.TestCase):
+    def test_retired_keys_are_rejected_even_when_disabled(self):
+        from weightmask.process import validate_config
+
+        for section, key in (
+            ("saturation", "method"),
+            ("variance", "unbias_variance"),
+            ("variance", "flat_fielded_poisson"),
+            ("variance", "readnoise_keyword"),
+            ("streak_masking", "method"),
+            ("dark_masking", "local_high_thresh"),
+            ("dark_masking", "col_enable"),
+            ("dark_masking", "unknown_key"),
+        ):
+            with self.subTest(section=section, key=key):
+                self.assertFalse(validate_config({section: {key: False}}))
+
+    def test_canonical_config_uses_current_options(self):
+        from weightmask.process import validate_config
+
+        with open("weightmask.yml") as stream:
+            config = yaml.safe_load(stream)
+        self.assertTrue(validate_config(config))
+        self.assertNotIn("method", config["saturation"])
+        self.assertNotIn("flat_fielded_poisson", config["variance"])
+
+    def test_retired_saturation_plateau_percentile_is_rejected(self):
+        from weightmask.process import validate_config
+
+        self.assertFalse(validate_config({"saturation": {"histogram_params": {"plateau_percentile": 99.8}}}))
+
+    def test_process_rejects_retired_keys_before_running_stages(self):
+        from weightmask.process import process_image
+
+        for section, key in (
+            ("variance", "unbias_variance"),
+            ("variance", "flat_fielded_poisson"),
+            ("variance", "readnoise_keyword"),
+            ("streak_masking", "method"),
+            ("streak_masking", "dilation_radius"),
+        ):
+            config = {section: {key: False}}
+            config.setdefault("streak_masking", {})["enable"] = False
+            with self.subTest(section=section, key=key):
+                with patch("weightmask.process.estimate_background", side_effect=AssertionError("stage ran")):
+                    with self.assertRaises(ValueError):
+                        process_image(np.ones((16, 16), dtype=np.float32), {}, None, config)
+
+
 class TestSingleFlatPrecompute(unittest.TestCase):
     def test_each_flat_hdu_computed_once(self):
         from weightmask import bad as bad_mod
@@ -150,6 +199,113 @@ class TestProcessImageConfigIsolation(unittest.TestCase):
         self.assertNotIn("read_noise", cfg["variance"])
 
 
+def _detector_prior_config():
+    return {"saturation": {"mask_bleed_trails": False}, "streak_masking": {"enable": True}}
+
+
+def _run_with_detector_prior(detector_result, detector_prior, bad_mask=None):
+    from weightmask.process import process_image
+
+    shape = (8, 8)
+    seen = {}
+
+    def capture(_data_sub, _bkg_rms_map, existing_mask, _streak_cfg):
+        seen["exclude"] = np.array(existing_mask, copy=True)
+        return np.array(detector_result, copy=True)
+
+    zero_mask = np.zeros(shape, dtype=bool)
+    background = (np.zeros(shape, dtype=np.float32), np.ones(shape, dtype=np.float32))
+    with (
+        patch("weightmask.process.detect_saturated_pixels", return_value=(100.0, "test", zero_mask.copy())),
+        patch("weightmask.process.estimate_background", return_value=background),
+        patch("weightmask.process.detect_cosmic_rays", return_value=zero_mask.copy()),
+        patch("weightmask.process.detect_objects", return_value=zero_mask.copy()),
+        patch("weightmask.process.calculate_inverse_variance", return_value=np.ones(shape, dtype=np.float32)),
+        patch(
+            "weightmask.process.generate_weight_and_confidence",
+            return_value=(np.ones(shape, dtype=np.float32), np.ones(shape, dtype=np.float32), None),
+        ),
+        patch("weightmask.process.detect_streaks", side_effect=capture),
+    ):
+        result = process_image(
+            np.zeros(shape, dtype=np.float32),
+            {},
+            np.ones(shape, dtype=np.float32),
+            _detector_prior_config(),
+            detector_prior=detector_prior,
+            bad_mask=bad_mask,
+        )
+    return result, seen
+
+
+class TestDetectorPriorContract(unittest.TestCase):
+    def test_shape_mismatch_is_rejected_explicitly(self):
+        from weightmask.process import process_image
+
+        with self.assertRaisesRegex(ValueError, "detector prior shape"):
+            process_image(
+                np.zeros((8, 8), dtype=np.float32),
+                {},
+                np.ones((8, 8), dtype=np.float32),
+                _detector_prior_config(),
+                detector_prior=np.zeros((7, 8), dtype=bool),
+            )
+
+    def test_non_contiguous_prior_is_accepted_and_propagated(self):
+        base = np.zeros((8, 16), dtype=bool)
+        base[2, 6] = True
+        prior = base[:, ::2]
+
+        _result, seen = _run_with_detector_prior(np.zeros((8, 8), dtype=bool), prior)
+
+        self.assertFalse(prior.flags.c_contiguous)
+        np.testing.assert_array_equal(seen["exclude"], prior)
+
+    def test_prior_is_not_mutated(self):
+        storage = np.zeros((8, 16), dtype=bool)
+        prior = storage[:, ::2]
+        prior[2, 3] = 1
+        before = storage.copy()
+
+        _run_with_detector_prior(np.zeros((8, 8), dtype=bool), prior)
+
+        self.assertFalse(prior.flags.c_contiguous)
+        np.testing.assert_array_equal(storage, before)
+
+    def test_prior_is_added_to_existing_streak_exclusion(self):
+        prior = np.zeros((8, 8), dtype=bool)
+        prior[2, 3] = True
+        bad_mask = np.zeros((8, 8), dtype=bool)
+        bad_mask[5, 6] = True
+
+        _result, seen = _run_with_detector_prior(np.zeros((8, 8), dtype=bool), prior, bad_mask=bad_mask)
+
+        self.assertTrue(seen["exclude"][2, 3])
+        self.assertTrue(seen["exclude"][5, 6])
+
+    def test_prior_only_pixels_do_not_receive_streak_bits(self):
+        prior = np.zeros((8, 8), dtype=bool)
+        prior[2, 3] = True
+
+        mask, _ivar, weight, _confidence, _sky, _header = _run_with_detector_prior(np.zeros((8, 8), dtype=bool), prior)[
+            0
+        ]
+
+        self.assertEqual(int(mask[2, 3] & int(QualityBit.STREAK)), 0)
+        self.assertGreater(weight[2, 3], 0.0)
+
+    def test_detector_overlap_with_prior_is_not_reported_as_a_streak(self):
+        prior = np.zeros((8, 8), dtype=bool)
+        prior[2, 3] = True
+        confirmed = prior.copy()
+        confirmed[5, 6] = True
+
+        mask, *_rest = _run_with_detector_prior(confirmed, prior)[0]
+
+        self.assertEqual(int(mask[2, 3] & int(QualityBit.STREAK)), 0)
+        self.assertNotEqual(int(mask[5, 6] & int(QualityBit.STREAK)), 0)
+
+
 class TestElixirKeepMap(unittest.TestCase):
     def test_keep_map_zero_sets_bad_bit(self):
         shape = (48, 48)
@@ -236,7 +392,14 @@ class TestConfidenceGlobalHookup(unittest.TestCase):
             with fitsio.FITS(sp, "rw") as f:
                 f.write(s1)
                 f.write(s2)
-            fitsio.write(fp, np.ones((64, 64), dtype=np.float32), clobber=True)
+            # The flat must mirror the science layout (empty primary, then one
+            # image HDU per science HDU). A flat written as a single image sits
+            # at index 0 and is off by one against science HDUs 1 and 2, which
+            # used to fall through to a silent unit flat.
+            fitsio.write(fp, None, clobber=True)
+            with fitsio.FITS(fp, "rw") as f:
+                f.write(np.ones((64, 64), dtype=np.float32))
+                f.write(np.ones((64, 64), dtype=np.float32))
             paths = {
                 "out_map_path": os.path.join(tmp, "o.conf.fits"),
                 "out_mask_path": None,
@@ -304,13 +467,11 @@ class TestGlobalConfidenceRescale(unittest.TestCase):
             hdul = [None, None, None]
             w = _StreamingMapWriter(path, hdul, None)
             hdr = {}
-            # HDU1 weights ~1.0 -> conf 1.0; HDU2 weights ~10.0 -> conf 1.0 (per-HDU norm)
+            # Global normalization runs once on raw weights, before any clipping.
             w.write(1, np.ones((8, 8), dtype=np.float32), hdr, "C1")
-            w.write(2, np.ones((8, 8), dtype=np.float32), hdr, "C2")
-            s1 = np.full(64, 1.0)
-            s2 = np.full(64, 10.0)
+            w.write(2, np.full((8, 8), 10.0, dtype=np.float32), hdr, "C2")
             cfg = {"output_params": {"output_map_format": "confidence"}}
-            _rescale_confidence_to_global({"out_map_path": path}, {"map": w}, {1: s1, 2: s2}, {1: 1.0, 2: 10.0}, cfg)
+            _rescale_confidence_to_global({"out_map_path": path}, {"map": w}, cfg)
             import fitsio
 
             with fitsio.FITS(path) as f:
@@ -325,14 +486,12 @@ class TestGlobalConfidenceRescale(unittest.TestCase):
         _rescale_confidence_to_global(
             {"out_map_path": "/nonexistent.fits"},
             {},
-            {1: np.ones(8)},
-            {1: 1.0},
             {"output_params": {"output_map_format": "weight"}},
         )
 
 
 class TestFlatNoiseVariance(unittest.TestCase):
-    def test_term_lowes_vignetted_more(self):
+    def test_term_raises_calibrated_variance_more_below_median(self):
         from weightmask.variance import _calculate_inverse_variance_theoretical as f
 
         sky = np.full((32, 32), 2700.0, dtype=np.float64)
@@ -340,10 +499,8 @@ class TestFlatNoiseVariance(unittest.TestCase):
         flat[:, :8] = 0.7
         base = f(sky, flat, 1.5, 5.0, 1e-9)
         with_term = f(sky, flat, 1.5, 5.0, 1e-9, 0.003)
-        self.assertTrue(bool(((with_term < base) & (base > 0)).all()))
-        rc = float(with_term[16, 16] / base[16, 16])
-        re = float(with_term[16, 2] / base[16, 2])
-        self.assertLess(re, rc)  # vignette scaling bites harder at low flat
+        added_variance = np.reciprocal(with_term) - np.reciprocal(base)
+        np.testing.assert_allclose(added_variance[16, [16, 2]], [65.61, 93.72857142857143], rtol=1e-5)
         same = f(sky, flat, 1.5, 5.0, 1e-9, 0.0)
         np.testing.assert_array_equal(same, base)
 

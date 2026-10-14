@@ -43,6 +43,8 @@ Environment knobs:
 
 - Synthetic benchmarks (`--with-baselines`) are the statistics-principled gate
   for mask quality — injected defects must be recovered at stated rates.
+  The full gates have not been requalified after the 0.2.1 generator and recall
+  fixes; earlier scores are historical (see [usage.md](../docs/usage.md)).
 - Sessions are append-only logs (provenance); reuse a session id to continue a
   durable conversation with persistent bash state.
 - `cordis.patch.yml`: 10-minute bash timeout + durable full-text session search.

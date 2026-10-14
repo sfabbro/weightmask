@@ -4,6 +4,10 @@
 **Scope:** astronomical imaging, multi-extension FITS, calibration frames, and 2-D spectra
 **Primary principle:** preserve the measured pixels and attach a calibrated defect/noise model; do not silently replace scientific data with a neural reconstruction.
 
+This is a dated research proposal, not a description of the released API.
+The product, configuration, and Python sketches below are proposed additions.
+For the supported 0.2.1 surface, see [../api.md](../api.md).
+
 ## Executive summary
 
 weightmask already provides a useful classical pipeline for astronomical FITS images: background estimation, bad-pixel and saturation handling, cosmic-ray detection, satellite-trail detection, object masks, inverse-variance maps, confidence maps, bitmasks, MEF processing, and synthetic/real-data benchmarks. The next step should not be “a larger denoising network.” It should be a **calibration-conditioned, probabilistic detector-quality and empirical-likelihood system** that can operate when the upstream detrending pipeline is unavailable or opaque.
@@ -140,7 +144,7 @@ The practical representation should be a diagonal variance plane plus a local co
 
 ---
 
-## 3. Current weightmask baseline
+## 3. Weightmask baseline at the plan date
 
 The existing code is a good classical foundation and should remain usable without Torch. It already exposes:
 
@@ -154,7 +158,10 @@ The existing code is a good classical foundation and should remain usable withou
 - SEP-based background and source segmentation;
 - synthetic and real-data benchmark harnesses.
 
-The current `WeightMapGenerator.process` interface returns `weight_map`, `flag_map`, `inv_variance_map`, `confidence_map`, `sky_map`, and individual masks. This API should be extended rather than replaced.
+At the plan date, the `WeightMapGenerator.process` prototype described these
+outputs. That prototype is now removed. The supported single-array entry point
+is `weightmask.process.process_image`, returning `(mask, ivar, weight,
+confidence, sky, header_info)` with individual masks in `header_info`.
 
 ### 3.1 Main limitations to address
 

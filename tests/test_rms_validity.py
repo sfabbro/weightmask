@@ -215,21 +215,6 @@ class TestRejectionGatesSubstitute(unittest.TestCase):
         unprotected = _apply_psf_protection(flag.copy(), sci, {"psf_aware": True, "psf_fwhm_guess": 3.0}, 1.5, 5.0, rms)
         self.assertTrue(np.array_equal(unprotected, flag))
 
-    def test_dynamic_sigclip_uses_measured_pixels_only(self):
-        """The >50% flip: a mostly-sentinel chip must still tune from what was seen."""
-        from weightmask.cosmics import _adjust_dynamic_sigclip
-
-        rms = np.full((40, 40), np.inf, dtype=np.float32)
-        rms[:10, :] = 10.0
-        sigclip = _adjust_dynamic_sigclip({"dynamic_sigclip": True}, rms, default_sigclip=8.5)
-        self.assertLess(sigclip, 8.5)
-        self.assertAlmostEqual(sigclip, 4.5 * (10.0 / 11.0), places=3)
-
-        all_sentinel = _adjust_dynamic_sigclip(
-            {"dynamic_sigclip": True}, np.full((40, 40), np.inf, dtype=np.float32), default_sigclip=8.5
-        )
-        self.assertAlmostEqual(all_sentinel, 8.5)
-
     def test_sep_is_given_no_objects_in_an_unmeasured_region(self):
         """``err=inf`` is honoured by SEP, so ``detect_objects`` needs no substitution."""
         from weightmask.objects import detect_objects

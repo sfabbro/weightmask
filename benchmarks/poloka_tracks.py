@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Faithful emulation of poloka-core MakeSatellite (SFabbro/poloka-core).
 
-Pipeline: zero weight-bad + saturated pixels -> connected components above
+Pipeline: exclude weight-bad + saturated pixels -> connected components above
 sky + 1*sigma (recursive flood fill; restarts at +0.1 sigma on enormous
 clusters) -> keep components with size >= diag/10, elongation >= 2,
 major axis >= diag/50 -> mask kept pixels, NBRSATEL count.
@@ -16,21 +16,50 @@ restart to correct it - see review notes).
 import numpy as np
 
 
+def finite_robust_rms(rms):
+    """Return a representative positive RMS from finite map values."""
+    values = np.asarray(rms, dtype=np.float64)
+    values = values[np.isfinite(values) & (values > 0)]
+    if values.size == 0:
+        raise ValueError("no finite positive RMS values")
+    center = float(np.median(values))
+    deviations = np.abs(values - center)
+    scale = float(1.4826 * np.median(deviations))
+    if np.isfinite(scale) and scale > 0:
+        values = values[np.abs(values - center) <= 3.0 * scale]
+        if values.size:
+            center = float(np.median(values))
+    if not np.isfinite(center) or center <= 0:
+        raise ValueError("no finite positive RMS values")
+    return center
+
+
 def poloka_satellite_mask(data, sky_map, sigma, existing_mask=None, sat_mask=None,
                           nsigma=1.0, min_elong=2.0, min_axis_frac=0.02):
     """Return (bool mask, n_tracks, details). Mirrors ClusterList/Cut/Mask."""
     from scipy.ndimage import label
 
-    img = np.where(np.isfinite(data), data, 0.0).astype(np.float64)
-    if existing_mask is not None:
-        img = np.where(existing_mask, 0.0, img)
-    if sat_mask is not None:
-        img = np.where(sat_mask, 0.0, img)
-    sky = np.nanmedian(sky_map) if np.ndim(sky_map) else float(sky_map)
+    img = np.asarray(data, dtype=np.float64)
+    if np.ndim(sky_map):
+        sky_values = np.asarray(sky_map, dtype=np.float64)
+        sky_values = sky_values[np.isfinite(sky_values)]
+        if sky_values.size == 0:
+            raise ValueError("no finite sky values")
+        sky = float(np.median(sky_values))
+    else:
+        sky = float(sky_map)
+    sigma = float(sigma)
+    if not np.isfinite(sigma) or sigma <= 0:
+        raise ValueError("sigma must be finite and positive")
     thresh = sky + nsigma * sigma
     h, w = img.shape
     diag = float(np.hypot(h, w))
-    lab, n = label(img > thresh)
+    candidates = np.isfinite(img) & (img > thresh)
+    if existing_mask is not None:
+        candidates &= ~np.asarray(existing_mask, dtype=bool)
+    if sat_mask is not None:
+        candidates &= ~np.asarray(sat_mask, dtype=bool)
+    lab, n = label(candidates)
     kept = np.zeros(img.shape, dtype=bool)
     details = []
     # C++ pushes only npixels > 20; skip noise specks vectorized (else the

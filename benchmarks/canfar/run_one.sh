@@ -1,4 +1,6 @@
 #!/bin/bash
+RUN_ONE_VERSION="wm27-provenance-v2"
+export RUN_ONE_VERSION
 # CANFAR headless measurement wrapper for one experiment job.
 #
 # Invoked INSIDE the container with a plain argv (no shell metachars at the
@@ -26,10 +28,23 @@ BOOTSTRAP="$(cd "$(dirname "$0")/../.." && pwd)"
 MANIFEST_SHA="${MANIFEST_SHA:?set MANIFEST_SHA to the manifest pinned_sha}"
 CHECKOUT_REF="${CHECKOUT_REF:-$MANIFEST_SHA}"
 REPO_URL="${REPO_URL:-https://github.com/astroai/weightmask.git}"
+PROJECT_MOUNT="${PROJECT_MOUNT:-/arc/projects/mlao/cfhtcast}"
 WORK_ROOT="$PROJECT_MOUNT/weightmask-perf"
 PIXI_CACHE_DIR="${PIXI_CACHE_DIR:-$WORK_ROOT/pixi-cache}"
 KEEP_ALL="${KEEP_ALL:-0}"
 RESULTS_DIR="$WORK_ROOT/results/$EXP_ID-$JOB_TAG"
+RUNNER_PATH="$(cd "$(dirname "$0")" && pwd)/$(basename "$0")"
+if [ -n "${RUNNER_VERSION:-}" ] && [ "$RUNNER_VERSION" != "$RUN_ONE_VERSION" ]; then
+    echo "runner version mismatch: env=$RUNNER_VERSION script=$RUN_ONE_VERSION" >&2
+    exit 1
+fi
+if [ -n "${RUNNER_SHA256:-}" ]; then
+    ACTUAL_RUNNER_SHA256="$(python3 -c "import hashlib; print(hashlib.sha256(open('$RUNNER_PATH','rb').read()).hexdigest())")"
+    if [ "$RUNNER_SHA256" != "$ACTUAL_RUNNER_SHA256" ]; then
+        echo "runner SHA mismatch: env=$RUNNER_SHA256 script=$ACTUAL_RUNNER_SHA256" >&2
+        exit 1
+    fi
+fi
 
 if [ -d /scratch ]; then SCR_BASE=/scratch; else SCR_BASE=/tmp; fi
 JOB_DIR="$SCR_BASE/wm-$EXP_ID-$JOB_TAG-$$"
@@ -37,17 +52,37 @@ REPO_DIR="$JOB_DIR/repo"
 DATA_NOTE=""
 
 echo "== run_one $EXP_ID/$JOB_TAG =="
-echo "bootstrap=$BOOTSTRAP sha=$MANIFEST_SHA checkout=$CHECKOUT_REF scratch=$SCR_BASE keep_all=$KEEP_ALL"
+echo "bootstrap=$BOOTSTRAP code_sha=$MANIFEST_SHA checkout_ref=$CHECKOUT_REF scratch=$SCR_BASE keep_all=$KEEP_ALL"
 mkdir -p "$JOB_DIR" "$RESULTS_DIR"
 # Job-local pixi cache (forced: images may export a read-only shared one;
 # a shared cache also deadlocks across containers via stale locks).
 export PIXI_CACHE_DIR="$JOB_DIR/pixi-cache"
 mkdir -p "$PIXI_CACHE_DIR"
 export PYTHONUNBUFFERED=1
-# Thread env is unset by default so runs see full OpenBLAS/MKL threading.
-# The E5 pinned twin re-exports OMP/MKL=1 via its job env.
+# Ignore image defaults; explicit manifest settings are restored below.
 unset OMP_NUM_THREADS MKL_NUM_THREADS
-MANIFEST="$BOOTSTRAP/benchmarks/canfar_experiments/manifest.json"
+MANIFEST="${MANIFEST_PATH:-$BOOTSTRAP/benchmarks/canfar_experiments/manifest.json}"
+VALIDATOR_PATH="$BOOTSTRAP/benchmarks/canfar/manifest.py"
+if [ -n "${VALIDATOR_SHA256:-}" ]; then
+    ACTUAL_VALIDATOR_SHA256="$(python3 -c "import hashlib; print(hashlib.sha256(open('$VALIDATOR_PATH','rb').read()).hexdigest())")"
+    if [ "$VALIDATOR_SHA256" != "$ACTUAL_VALIDATOR_SHA256" ]; then
+        echo "validator SHA mismatch: env=$VALIDATOR_SHA256 script=$ACTUAL_VALIDATOR_SHA256" >&2
+        exit 1
+    fi
+fi
+python3 "$VALIDATOR_PATH" "$MANIFEST" "$EXP_ID"
+MANIFEST_CODE_SHA="$(python3 -c "import json; print(json.load(open('$MANIFEST'))['code']['pinned_sha'])")"
+if [ "$MANIFEST_SHA" != "$MANIFEST_CODE_SHA" ]; then
+    echo "manifest code SHA mismatch: env=$MANIFEST_SHA manifest=$MANIFEST_CODE_SHA" >&2
+    exit 1
+fi
+EXPECTED_MANIFEST_FILE_SHA="${MANIFEST_FILE_SHA:-}"
+MANIFEST_FILE_SHA="$(python3 -c "import hashlib; print(hashlib.sha256(open('$MANIFEST','rb').read()).hexdigest())")"
+if [ -n "$EXPECTED_MANIFEST_FILE_SHA" ] && [ "$EXPECTED_MANIFEST_FILE_SHA" != "$MANIFEST_FILE_SHA" ]; then
+    echo "manifest file SHA mismatch: env=$EXPECTED_MANIFEST_FILE_SHA manifest=$MANIFEST_FILE_SHA" >&2
+    exit 1
+fi
+echo "manifest_sha256=$MANIFEST_FILE_SHA"
 GROUP_JSON="$JOB_DIR/group.json"
 # Prefer a modern system pixi (needs >= 0.44 for `[workspace]`); otherwise
 # install a job-local one. The skaha fallback path predates workspace.
@@ -68,13 +103,41 @@ manifest_path, exp_id, job_tag, out = sys.argv[1:5]
 m = json.load(open(manifest_path))
 g = next(x for x in m["groups"] if x["exp_id"] == exp_id)
 job = next(j for j in g["jobs"] if j["tag"] == job_tag)
-json.dump({"group": g, "job": job, "image": m["defaults"]["image"]}, open(out, "w"), indent=2)
-print("group:", exp_id, "exposures:", g["safe_ids"], "workers:", job["workers"])
+if not g["safe_ids"] or "TBD" in g["safe_ids"]:
+    raise ValueError("experiment exposure IDs are not resolved; fill winner inputs before submitting")
+for ids_key, publisher_key in (("safe_ids", "publisherIDs"), ("flat_safe_ids", "flat_publisherIDs")):
+    if len(g.get(ids_key, [])) != len(g.get(publisher_key, [])):
+        raise ValueError(f"{exp_id} {ids_key}/{publisher_key} cardinality mismatch")
+if len(g.get("flat_safe_ids", [])) > 1:
+    raise ValueError("multiple flats require an explicit per-exposure mapping; this wrapper accepts one flat")
+json.dump({"group": g, "job": job, "image": m["defaults"]["image"],
+           "manifest_sha256": __import__("hashlib").sha256(open(manifest_path, "rb").read()).hexdigest(),
+           "manifest_status": m.get("status", "current"),
+           "code_pinned_sha": m["code"]["pinned_sha"]}, open(out, "w"), indent=2)
+print("group:", exp_id, "exposures:", g["safe_ids"], "workers:", job["workers"], "manifest_status:", m.get("status", "current"))
 EOF
+
+while IFS= read -r kv; do export "$kv"; done < <(python3 - "$GROUP_JSON" <<'EOF'
+import json, sys
+record = json.load(open(sys.argv[1]))
+env = dict(record["group"].get("env", {}))
+env.update(record["job"].get("env", {}))
+for key in ("OMP_NUM_THREADS", "MKL_NUM_THREADS"):
+    if key in env:
+        print(key + "=" + str(env[key]))
+EOF
+)
 
 git clone "$REPO_URL" "$REPO_DIR"
 git -C "$REPO_DIR" checkout "$CHECKOUT_REF"
-git -C "$REPO_DIR" rev-parse HEAD
+CHECKOUT_SHA="$(git -C "$REPO_DIR" rev-parse HEAD)"
+CHECKOUT_EXPECTED_SHA="$(git -C "$REPO_DIR" rev-parse "$CHECKOUT_REF^{commit}")"
+if [ "$CHECKOUT_SHA" != "$CHECKOUT_EXPECTED_SHA" ]; then
+    echo "checkout SHA mismatch: ref=$CHECKOUT_REF actual=$CHECKOUT_SHA expected=$CHECKOUT_EXPECTED_SHA" >&2
+    exit 1
+fi
+export CHECKOUT_SHA
+echo "checkout_sha=$CHECKOUT_SHA"
 cd "$REPO_DIR"
 if [ ! -x "$PIXI" ]; then
     export PIXI_HOME="$JOB_DIR/pixi-home"
@@ -99,10 +162,18 @@ def fetch(url, out):
         print("exists:", out)
         return
     print("fetch:", url)
-    urllib.request.urlretrieve(url, out)
+    partial = out + ".part"
+    try:
+        urllib.request.urlretrieve(url, partial)
+        os.replace(partial, out)
+    finally:
+        if os.path.exists(partial):
+            os.remove(partial)
 
 PUB = "https://www.cadc-ccda.hia-iha.nrc-cnrc.gc.ca/data/pub/CFHT"
 recs = []
+if len(grp["publisherIDs"]) != len(grp["safe_ids"]):
+    raise ValueError("safe_ids/publisherIDs cardinality mismatch before download")
 for pid, safe in zip(grp["publisherIDs"], grp["safe_ids"]):
     if safe == "TBD":
         continue
@@ -122,8 +193,8 @@ for fsafe in grp.get("flat_safe_ids", []):
             break
         except Exception as e:
             print("flat variant miss:", variant, str(e)[:120])
-    if not got and os.path.exists(dest):
-        flats[fsafe] = dest
+    if not got:
+        raise RuntimeError("no usable flat downloaded for " + fsafe)
 json.dump({"records": recs, "flats": flats}, open(os.path.join(job_dir, "staged.json"), "w"), indent=2)
 EOF
 
@@ -238,61 +309,83 @@ cpu_percent = (cpu_s / wall * 100.0) if wall else None
 masks = sorted(glob.glob(os.path.join(repo, "test_outputs", "perf", "*.mask.fits")))
 ctrl_dir = os.path.join(os.path.dirname(res_dir), "E0-w8")
 diff = {"mode": None}
+checksums = {}
 try:
+    import hashlib
     import numpy as np
     from astropy.io import fits as _fits
 
-    def frac(path):
+    def read_mask(path):
         with _fits.open(path) as h:
-            d = None
-            for hdu in h:
-                if getattr(hdu, "data", None) is not None and hdu.data.size > 1:
-                    d = np.asarray(hdu.data)
-                    break
-        return (None if d is None else float(np.count_nonzero(d)) / d.size,
-                None if d is None else d)
+            arrays = [(i, np.array(hdu.data)) for i, hdu in enumerate(h)
+                      if getattr(hdu, "data", None) is not None and hdu.data.ndim == 2]
+        if not arrays:
+            raise ValueError(f"no mask image HDUs in {path}")
+        return arrays
 
-    same = [p for p in masks if os.path.basename(p).startswith(tuple(
-        json.load(open(os.path.join(job_dir, "group.json")))["group"]["safe_ids"]))]
+    safe_ids = json.load(open(os.path.join(job_dir, "group.json")))["group"]["safe_ids"]
+    same = {os.path.basename(p).split(".")[0]: p for p in masks
+            if os.path.basename(p).split(".")[0] in safe_ids and f".w{workers}." in os.path.basename(p)}
     ctrl = sorted(glob.glob(os.path.join(ctrl_dir, "*.mask.fits")))
-    ctrl_same = [p for p in ctrl if os.path.basename(p).split(".")[0] in
-                 json.load(open(os.path.join(job_dir, "group.json")))["group"]["safe_ids"]]
-    if same and ctrl_same and os.path.abspath(same[0]) != os.path.abspath(ctrl_same[0]):
-        f1, d1 = frac(same[0])
-        f0, d0 = frac(ctrl_same[0])
-        if d1 is not None and d0 is not None and d1.shape == d0.shape:
-            b1, b0 = d1.astype(bool), d0.astype(bool)
-            union = int(np.count_nonzero(b1 | b0))
-            diff = {"mode": "pixel", "control": os.path.basename(ctrl_same[0]),
-                    "kept": int(np.count_nonzero(b1 & b0)), "lost": int(np.count_nonzero(b0 & ~b1)),
-                    "gained": int(np.count_nonzero(b1 & ~b0)), "union": union,
-                    "identical": bool(np.array_equal(b1, b0))}
-        else:
-            diff = {"mode": "fraction", "control_frac": f0, "exp_frac": f1}
+    ctrl_same = {os.path.basename(p).split(".")[0]: p for p in ctrl if ".w8." in os.path.basename(p)}
+    fractions, comparisons = {}, {}
+    for exposure, path in same.items():
+        arrays = read_mask(path)
+        fractions[exposure] = sum(np.count_nonzero(a) for _, a in arrays) / sum(a.size for _, a in arrays)
+        digest = hashlib.sha256()
+        for index, array in arrays:
+            digest.update(str((index, array.shape, array.dtype.str)).encode())
+            digest.update(np.ascontiguousarray(array).tobytes())
+        checksums[exposure] = digest.hexdigest()
+        if exposure not in ctrl_same:
+            continue
+        control = read_mask(ctrl_same[exposure])
+        if [(i, a.shape) for i, a in arrays] != [(i, a.shape) for i, a in control]:
+            raise ValueError(f"mask HDU layout mismatch for {exposure}")
+        counts = dict(kept=0, lost=0, gained=0, union=0, identical=True)
+        for (_, a1), (_, a0) in zip(arrays, control):
+            b1, b0 = a1.astype(bool), a0.astype(bool)
+            for key, pixels in (("kept", b1 & b0), ("lost", b0 & ~b1),
+                                ("gained", b1 & ~b0), ("union", b1 | b0)):
+                counts[key] += int(np.count_nonzero(pixels))
+            counts["identical"] &= bool(np.array_equal(a1, a0))
+        comparisons[exposure] = counts
+    if comparisons:
+        diff = {"mode": "pixel", "per_exposure": comparisons,
+                **{key: sum(c[key] for c in comparisons.values()) for key in ("kept", "lost", "gained", "union")},
+                "unmatched": sorted(set(same) - set(comparisons)),
+                "identical": len(comparisons) == len(same) and all(c["identical"] for c in comparisons.values())}
     else:
-        diff = {"mode": "fraction-self", "exp_fracs": {os.path.basename(p): frac(p)[0] for p in same}}
+        diff = {"mode": "fraction-self", "exp_fracs": fractions}
 except Exception as e:
     diff = {"mode": "error", "note": str(e)[:200]}
+    checksums = {}
 
-import hashlib
-checksums = {}
-for p in masks:
-    try:
-        h = hashlib.sha1()
-        with _fits.open(p) as fh:
-            for hdu in fh:
-                if getattr(hdu, "data", None) is not None and hdu.data.size > 1:
-                    h.update(np.ascontiguousarray(hdu.data).tobytes())
-                    break
-        checksums[os.path.basename(p)] = h.hexdigest()[:16]
-    except Exception as e:
-        checksums[os.path.basename(p)] = "error:" + str(e)[:60]
-
+record = json.load(open(os.path.join(job_dir, "group.json")))
+checkout_sha = os.environ.get("CHECKOUT_SHA")
+try:
+    import subprocess
+    if checkout_sha is None:
+        checkout_sha = subprocess.check_output(["git", "-C", repo, "rev-parse", "HEAD"], text=True).strip()
+except (OSError, subprocess.CalledProcessError):
+    pass
 metrics = {"exp_id": exp_id, "job_tag": job_tag, "wall_s": wall,
            "max_rss_kb": max_rss, "cpu_percent": cpu_percent,
-           "parallel_efficiency": (cpu_percent / 800.0) if cpu_percent else None,
+           "workers": int(workers),
+           "parallel_efficiency": (cpu_percent / (100.0 * int(workers))) if cpu_percent is not None else None,
            "mpix": mpix, "mpix_s": (mpix / wall) if wall else None,
-           "mask_checksums": checksums, "source": source, "cpu_basis": cpu_basis,
+           "nhdus": nhdus, "per_stage": per_stage, "mask_diff": diff,
+           "mask_checksums": checksums, "mask_checksum_scope": "all-image-hdus-v1",
+           "manifest_sha256": record.get("manifest_sha256"),
+           "manifest_status": record.get("manifest_status"),
+           "code_pinned_sha": record.get("code_pinned_sha"),
+           "run_one_version": os.environ.get("RUN_ONE_VERSION"),
+           "checkout_ref": os.environ.get("CHECKOUT_REF"),
+           "checkout_sha": checkout_sha,
+           "source": source, "cpu_basis": cpu_basis,
+           "input_key": {"safe_ids": sorted(json.load(open(os.path.join(job_dir, "group.json")))["group"]["safe_ids"]),
+                         "flat_safe_ids": sorted(json.load(open(os.path.join(job_dir, "group.json")))["group"].get("flat_safe_ids", [])),
+                         "workers": int(workers), "nhdus": nhdus},
            "harness_report": f"megacam_perf_{tag}.json"}
 json.dump(metrics, open(os.path.join(res_dir, "metrics.json"), "w"), indent=2)
 

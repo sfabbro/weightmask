@@ -169,6 +169,8 @@ class TestBoundedHduWindow(unittest.TestCase):
                 patch.object(mef, "_store_output_maps"),
                 patch.object(mef, "_make_output_writers", return_value={}),
                 patch.object(mef, "_flush_hdu_output", side_effect=lambda *a, **k: held_at_flush.append(live["now"])),
+                patch.object(mef._ProductPublication, "validate"),
+                patch.object(mef._ProductPublication, "promote"),
             ):
                 with fitsio.FITS(in_path) as hdul_in, fitsio.FITS(flat_path) as hdul_flat:
                     n = process_all_hdus(

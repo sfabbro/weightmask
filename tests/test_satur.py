@@ -1,15 +1,110 @@
 import unittest
+import unittest.mock
 
 import numpy as np
 
-from weightmask.satur import detect_saturated_pixels, grow_bleed_trails
+from weightmask.satur import (
+    _tail_histogram,
+    detect_saturated_pixels,
+    estimate_saturation_robust_clump,
+    grow_bleed_trails,
+)
+
+
+class TestTailHistogram(unittest.TestCase):
+    """``_tail_histogram`` must be indistinguishable from ``np.histogram``."""
+
+    def test_matches_numpy_on_a_realistic_sparse_tail(self):
+        rng = np.random.default_rng(0)
+        values = (1000.0 + 30.0 * rng.standard_normal(2_000_000)).astype(np.float32)
+        values[rng.integers(0, values.size, 400)] = 68_000.0
+        edges = np.linspace(30_000.0, 69_000.0, 100)
+
+        expected, _ = np.histogram(values, bins=edges)
+        got, got_edges = _tail_histogram(values, edges)
+
+        np.testing.assert_array_equal(got, expected)
+        self.assertEqual(got.dtype, expected.dtype)
+        np.testing.assert_array_equal(got_edges, edges)
+
+    def test_matches_numpy_on_fuzzed_bin_edges_including_exact_hits(self):
+        rng = np.random.default_rng(7)
+        for _ in range(300):
+            edges = np.sort(rng.uniform(0.0, 10.0, 7))
+            edges[0] = 0.0
+            # Include values sitting exactly on edges, plus out-of-range ones,
+            # which numpy drops rather than clipping into the end bins.
+            values = rng.choice(
+                np.concatenate([edges, rng.uniform(-1.0, 11.0, 60)]),
+                size=200,
+            )
+            expected, _ = np.histogram(values, bins=edges)
+            got, _ = _tail_histogram(values, edges)
+            np.testing.assert_array_equal(got, expected)
+
+    def test_empty_tail_returns_all_zero_counts(self):
+        edges = np.linspace(10.0, 20.0, 8)
+        got, _ = _tail_histogram(np.array([0.0, 1.0, 99.0], dtype=np.float32), edges)
+        np.testing.assert_array_equal(got, np.zeros(7, dtype=np.intp))
+
+    def test_non_monotonic_edges_still_raise(self):
+        edges = np.array([10.0, 5.0, 1.0])
+        with self.assertRaises(ValueError):
+            _tail_histogram(np.array([1.0, 2.0]), edges)
+
+    def test_clump_result_is_identical_with_the_original_histogram(self):
+        """The fast histogram must not move the detected level."""
+        rng = np.random.default_rng(3)
+        data = (1000.0 + 25.0 * rng.standard_normal(200_000)).astype(np.float32)
+        data[rng.integers(0, data.size, 300)] = 65_000.0
+
+        fast = estimate_saturation_robust_clump(data)
+        # Put the original np.histogram call back and re-run the same input.
+        with unittest.mock.patch(
+            "weightmask.satur._tail_histogram",
+            side_effect=lambda values, edges: np.histogram(values, bins=edges),
+        ):
+            reference = estimate_saturation_robust_clump(data)
+        self.assertEqual(fast, reference)
 
 
 class TestSaturation(unittest.TestCase):
-    def test_detect_saturated_pixels_histogram_method(self):
-        """Test saturation detection using histogram method."""
+    def setUp(self):
+        self.config = {
+            "keyword": "SATURATE",
+            "effective_full_scale": 65535.0,
+            "fallback_level": 65000.0,
+            "histogram_params": {
+                "hist_min_adu": 30000.0,
+                "hist_max_adu": None,
+                "guard_fraction": 0.75,
+                "max_upper_factor": 1.05,
+                "min_tail_pixels": 8,
+            },
+        }
+
+    def test_retired_method_selector_is_rejected(self):
+        data = np.ones((16, 16), dtype=np.float32)
+        for method in ("histogram", "header", "invalid", None):
+            with self.subTest(method=method), self.assertRaisesRegex(ValueError, "saturation.method"):
+                detect_saturated_pixels(data, {}, {"method": method})
+
+    def test_integer_full_scale_saturation_needs_no_header(self):
+        for dtype in (np.int16, np.uint8, np.uint16):
+            with self.subTest(dtype=dtype):
+                maximum = np.iinfo(dtype).max
+                data = np.full((32, 32), 10, dtype=dtype)
+                data[10:20, 10:20] = maximum
+                level, _, mask = detect_saturated_pixels(data, {}, {})
+                self.assertLessEqual(level, maximum)
+                self.assertTrue(mask[10:20, 10:20].all())
+                self.assertFalse(mask[:10].any())
+
+    def test_detect_saturated_pixels_histogram_cascade(self):
+        """Test saturation detection using the histogram cascade."""
         # Create test science data
-        sci_data = np.random.poisson(100, (100, 100)).astype(np.float32)
+        rng = np.random.default_rng(0)
+        sci_data = rng.poisson(100, (100, 100)).astype(np.float32)
 
         # Add some saturated pixels
         sci_data[10:20, 10:20] = 65000.0
@@ -18,7 +113,6 @@ class TestSaturation(unittest.TestCase):
         sci_hdr = {}
 
         config = {
-            "method": "histogram",
             "keyword": "SATURATE",
             "fallback_level": 65000.0,
         }
@@ -33,10 +127,11 @@ class TestSaturation(unittest.TestCase):
         # Check that saturated pixels are identified
         self.assertTrue(np.any(mask[10:20, 10:20]))
 
-    def test_detect_saturated_pixels_header_method(self):
+    def test_detect_saturated_pixels_advisory_header(self):
         """Test that header values are advisory, not the primary saturation source."""
         # Create test science data
-        sci_data = np.random.poisson(100, (100, 100)).astype(np.float32)
+        rng = np.random.default_rng(1)
+        sci_data = rng.poisson(100, (100, 100)).astype(np.float32)
 
         # Add some saturated pixels
         sci_data[10:20, 10:20] = 65000.0
@@ -44,7 +139,7 @@ class TestSaturation(unittest.TestCase):
         # Create a header with saturation keyword
         sci_hdr = {"SATURATE": 60000.0}
 
-        config = {"method": "header", "keyword": "SATURATE", "fallback_level": 65000.0}
+        config = {"keyword": "SATURATE", "fallback_level": 65000.0}
 
         saturation_level, sat_method_used, mask = detect_saturated_pixels(sci_data, sci_hdr, config)
 
@@ -59,7 +154,8 @@ class TestSaturation(unittest.TestCase):
     def test_detect_saturated_pixels_fallback(self):
         """Test saturation detection fallback to default level."""
         # Create test science data
-        sci_data = np.random.poisson(100, (100, 100)).astype(np.float32)
+        rng = np.random.default_rng(2)
+        sci_data = rng.poisson(100, (100, 100)).astype(np.float32)
 
         # Add some saturated pixels above fallback level
         sci_data[10:20, 10:20] = 70000.0
@@ -67,7 +163,7 @@ class TestSaturation(unittest.TestCase):
         # Create a header without saturation keyword
         sci_hdr = {}
 
-        config = {"method": "header", "keyword": "SATURATE", "fallback_level": 65000.0}
+        config = {"keyword": "SATURATE", "fallback_level": 65000.0}
 
         saturation_level, sat_method_used, mask = detect_saturated_pixels(sci_data, sci_hdr, config)
 
@@ -82,9 +178,9 @@ class TestSaturation(unittest.TestCase):
         """Test saturation detection with no saturated pixels."""
         # Create test science data with no saturation - use a narrow distribution
         # with values well below what would be considered saturated
-        np.random.seed(42)  # For reproducible results
         # Use a distribution that clearly doesn't have saturation
-        sci_data = np.random.normal(100, 5, (100, 100)).astype(np.float32)
+        rng = np.random.default_rng(42)
+        sci_data = rng.normal(100, 5, (100, 100)).astype(np.float32)
         # Clip to ensure no extreme values that might be interpreted as saturation
         sci_data = np.clip(sci_data, 0, 200)
 
@@ -92,7 +188,6 @@ class TestSaturation(unittest.TestCase):
         sci_hdr = {}
 
         config = {
-            "method": "header",  # Use header method to avoid histogram issues
             "keyword": "SATURATE",
             "fallback_level": 65000.0,
         }
@@ -109,6 +204,120 @@ class TestSaturation(unittest.TestCase):
         self.assertGreaterEqual(saturation_level, 65000.0)
         self.assertEqual(sat_method_used, "default guarded fallback")
         self.assertEqual(np.sum(mask), 0)
+
+    def test_sparse_repeated_plateau_is_not_moved_by_one_outlier(self):
+        data = np.full((32, 32), 100.0, dtype=np.float32)
+        data.flat[:8] = 50000.0
+        data.flat[8] = 65000.0
+
+        level, method, mask = detect_saturated_pixels(data, {}, self.config)
+
+        self.assertEqual(level, 50000.0)
+        self.assertEqual(method, "plateau-tail fallback")
+        self.assertEqual(np.count_nonzero(mask), 9)
+
+    def test_fallback_selects_the_highest_qualifying_repeated_plateau(self):
+        data = np.full((32, 32), 100.0, dtype=np.float32)
+        data.flat[:9] = 50000.0
+        data.flat[9:17] = 60000.0
+        data.flat[17] = 65000.0
+
+        level, method, mask = detect_saturated_pixels(data, {}, self.config)
+
+        self.assertEqual(level, 60000.0)
+        self.assertEqual(method, "plateau-tail fallback")
+        self.assertEqual(np.count_nonzero(mask), 9)
+
+    def test_smooth_upper_tail_is_not_a_saturation_plateau(self):
+        data = np.full((32, 32), 100.0, dtype=np.float32)
+        data.flat[:16] = np.linspace(49000.0, 64000.0, 16)
+
+        level, method, mask = detect_saturated_pixels(data, {}, self.config)
+
+        self.assertEqual(level, 65000.0)
+        self.assertEqual(method, "default guarded fallback")
+        self.assertFalse(mask.any())
+
+    def test_isolated_upper_tail_outlier_is_not_a_saturation_plateau(self):
+        data = np.full((32, 32), 100.0, dtype=np.float32)
+        data.flat[0] = 64000.0
+
+        level, method, mask = detect_saturated_pixels(data, {}, self.config)
+
+        self.assertEqual(level, 65000.0)
+        self.assertEqual(method, "default guarded fallback")
+        self.assertFalse(mask.any())
+
+    def test_plateau_smaller_than_minimum_repetition_is_ignored(self):
+        data = np.full((32, 32), 100.0, dtype=np.float32)
+        data.flat[:7] = 50000.0
+        data.flat[7] = 64000.0
+
+        level, method, mask = detect_saturated_pixels(data, {}, self.config)
+
+        self.assertEqual(level, 65000.0)
+        self.assertEqual(method, "default guarded fallback")
+        self.assertFalse(mask.any())
+
+    def test_min_tail_pixels_requires_a_strict_positive_integer(self):
+        data = np.full((32, 32), 100.0, dtype=np.float32)
+        data.flat[:8] = 50000.0
+        data.flat[8] = 65000.0
+
+        for value in (0, -1, True, False, 8.0, 8.5, "8"):
+            with self.subTest(value=value):
+                config = {
+                    **self.config,
+                    "histogram_params": {**self.config["histogram_params"], "min_tail_pixels": value},
+                }
+                with self.assertRaisesRegex(ValueError, "min_tail_pixels.*positive integer"):
+                    detect_saturated_pixels(data, {}, config)
+
+    def test_invalid_min_tail_pixels_is_rejected_without_finite_data(self):
+        data = np.full((4, 4), np.nan, dtype=np.float32)
+        config = {
+            **self.config,
+            "histogram_params": {**self.config["histogram_params"], "min_tail_pixels": 0},
+        }
+
+        with self.assertRaisesRegex(ValueError, "min_tail_pixels.*positive integer"):
+            detect_saturated_pixels(data, {}, config)
+
+    def test_valid_header_precedes_sparse_plateau_fallback(self):
+        data = np.full((32, 32), 100.0, dtype=np.float32)
+        data.flat[:8] = 50000.0
+        data.flat[8] = 65000.0
+
+        level, method, mask = detect_saturated_pixels(data, {"SATURATE": 62000.0}, self.config)
+
+        self.assertEqual(level, 62000.0)
+        self.assertEqual(method, "header advisory fallback")
+        self.assertEqual(np.count_nonzero(mask), 1)
+
+    def test_well_supported_plateau_precedes_nearby_valid_header(self):
+        data = np.full((32, 32), 100.0, dtype=np.float32)
+        data.flat[:20] = 64750.0
+        config = {
+            **self.config,
+            "histogram_params": {**self.config["histogram_params"], "hist_max_adu": 40000.0},
+        }
+
+        level, method, mask = detect_saturated_pixels(data, {"SATURATE": 65000.0}, config)
+
+        self.assertEqual(level, 64750.0)
+        self.assertEqual(method, "plateau-tail fallback")
+        self.assertEqual(np.count_nonzero(mask), 20)
+
+    def test_invalid_header_does_not_override_sparse_plateau(self):
+        data = np.full((32, 32), 100.0, dtype=np.float32)
+        data.flat[:8] = 50000.0
+        data.flat[8] = 65000.0
+
+        level, method, mask = detect_saturated_pixels(data, {"SATURATE": "invalid"}, self.config)
+
+        self.assertEqual(level, 50000.0)
+        self.assertEqual(method, "plateau-tail fallback")
+        self.assertEqual(np.count_nonzero(mask), 9)
 
 
 class TestGrowBleedTrails(unittest.TestCase):

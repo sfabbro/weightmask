@@ -1,8 +1,8 @@
 """Optional adapter for the public :mod:`torchfits` image I/O API.
 
-Torchfits is deliberately not a WeightMask dependency.  This adapter imports
-only ``torchfits.read`` and ``torchfits.write`` at use time and never touches
-private torchfits modules.
+Torchfits is deliberately not a WeightMask dependency. This adapter imports
+torchfits at use time, calls its root ``read`` and ``write`` functions, and
+never touches private torchfits modules.
 """
 
 from __future__ import annotations
@@ -11,6 +11,8 @@ import importlib
 from typing import Any, Mapping
 
 import numpy as np
+
+__all__ = ["TorchfitsArrayHeaderIO", "TorchfitsUnavailableError", "torchfits_available"]
 
 
 class TorchfitsUnavailableError(ImportError):
@@ -25,7 +27,7 @@ def _load_torchfits() -> Any:
 
 
 def torchfits_available() -> bool:
-    """Return whether the optional adapter can perform a real tensor I/O call."""
+    """Return whether the optional torchfits and torch dependencies import."""
     try:
         _load_torchfits()
     except TorchfitsUnavailableError:

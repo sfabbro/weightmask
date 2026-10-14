@@ -11,6 +11,11 @@ from weightmask.objects import detect_objects
 from weightmask.satur import detect_saturated_pixels, grow_bleed_trails
 from weightmask.streaks import detect_streaks
 
+# Scores made before these revisions used a fixed noise-scaled injection and
+# counted tolerated halo pixels as recovered truth; they are not comparable.
+GENERATOR_REVISION = "streak-flux-v3-supported-truth"
+METRIC_REVISION = "centerline-along-coverage-v3"
+
 
 def _f1(precision, recall):
     if precision + recall <= 0:
@@ -121,10 +126,23 @@ def _add_cosmic_rays(data, gt, size, rng):
             gt["cr"][cr_y + i, cr_x] = True
 
 
-def _add_streaks(data, gt, size, noise_level, regime_type):
+def _add_streaks(data, gt, size, streak_flux, regime_type):
     from skimage.draw import line
 
-    s_flux = 10.0 * noise_level
+    def mark(i, j, radius, component, centerline=False):
+        gt["streak"][max(0, i - radius) : min(size, i + radius + 1), max(0, j - radius) : min(size, j + radius + 1)] = (
+            True
+        )
+        components = gt.get("streak_components")
+        if components is not None:
+            components[
+                max(0, i - radius) : min(size, i + radius + 1), max(0, j - radius) : min(size, j + radius + 1)
+            ] = component
+        centerlines = gt.get("streak_centerlines")
+        if centerline and centerlines is not None:
+            centerlines[i, j] = component
+
+    s_flux = streak_flux
     rr, cc = line(100, 100, size - 100, size - 200)
 
     if regime_type in {"thick_streak", "variable_width_streak"}:
@@ -135,24 +153,20 @@ def _add_streaks(data, gt, size, noise_level, regime_type):
                     flux_scale = 0.8
                     if regime_type == "variable_width_streak":
                         flux_scale *= 0.5 + 0.5 * np.sin((i + j) / 60.0)
-                    data[i, j] += s_flux * flux_scale
-                    gt["streak"][
-                        max(0, i - 2) : min(size, i + 3),
-                        max(0, j - 2) : min(size, j + 3),
-                    ] = True
+                    flux = s_flux * flux_scale
+                    data[i, j] += flux
+                    if flux > 0:
+                        mark(i, j, 2, 1, centerline=w == 0)
     else:
         for i, j in zip(rr, cc):
             if 0 <= i < size and 0 <= j < size:
                 data[i, j] += s_flux
-                gt["streak"][max(0, i - 1) : min(size, i + 2), max(0, j - 1) : min(size, j + 2)] = True
+                mark(i, j, 1, 1, centerline=True)
 
-    dot_flux = 20.0 * noise_level
+    dot_flux = 2.0 * streak_flux
     dots_y0, dots_x0 = int(0.2 * size), int(0.8 * size)
     dots_yf, dots_xf = int(0.8 * size), int(0.2 * size)
     rr, cc = line(dots_y0, dots_x0, dots_yf, dots_xf)
-    for i, j in zip(rr, cc):
-        if 0 <= i < size and 0 <= j < size:
-            gt["streak"][max(0, i - 1) : min(size, i + 2), max(0, j - 1) : min(size, j + 2)] = True
 
     if regime_type != "normal":
         cycle_len = 40
@@ -167,22 +181,21 @@ def _add_streaks(data, gt, size, noise_level, regime_type):
 
             if flux > 0 and 0 <= i < size and 0 <= j < size:
                 data[i, j] += flux
+                mark(i, j, 1, 2, centerline=True)
 
         dots_y0_2, dots_x0_2 = int(0.1 * size), int(0.9 * size)
         dots_yf_2, dots_xf_2 = int(0.9 * size), int(0.1 * size)
         rr2, cc2 = line(dots_y0_2, dots_x0_2, dots_yf_2, dots_xf_2)
-        faint_flux = 5.0 * noise_level
-        for i, j in zip(rr2, cc2):
-            if 0 <= i < size and 0 <= j < size:
-                gt["streak"][max(0, i - 1) : min(size, i + 2), max(0, j - 1) : min(size, j + 2)] = True
-
+        faint_flux = 0.5 * streak_flux
         for i, j in zip(rr2[::15], cc2[::15]):
             if 0 <= i < size and 0 <= j < size:
                 data[i, j] += faint_flux
+                mark(i, j, 1, 3, centerline=True)
     else:
         for i, j in zip(rr[::10], cc[::10]):
             if 0 <= i < size and 0 <= j < size:
                 data[i, j] += dot_flux
+                mark(i, j, 1, 2, centerline=True)
 
 
 def _inject_dark_defects(data, gt, size, noise_level, rng):
@@ -214,13 +227,15 @@ def create_simulated_data(size=1024, noise_level=10.0, num_stars=50, streak_flux
         "sat": np.zeros((size, size), dtype=bool),
         "cr": np.zeros((size, size), dtype=bool),
         "streak": np.zeros((size, size), dtype=bool),
+        "streak_components": np.zeros((size, size), dtype=np.int16),
+        "streak_centerlines": np.zeros((size, size), dtype=np.int16),
         "defects": np.zeros((size, size), dtype=bool),
     }
 
     _add_stars(data, gt, size, x, y, num_stars, regime_type, rng)
     _add_saturated_stars(data, gt, size, x, y, regime_type)
     _add_cosmic_rays(data, gt, size, rng)
-    _add_streaks(data, gt, size, noise_level, regime_type)
+    _add_streaks(data, gt, size, streak_flux, regime_type)
     if regime_type in {"complex", "extreme_gradient", "amplifier_step", "variable_width_streak"}:
         _inject_dark_defects(data, gt, size, noise_level, rng)
     data, bkg_rms = _apply_noise(data, bkg_map, size, noise_level, regime_type, rng)
@@ -265,10 +280,10 @@ def evaluate_mask(pred_mask, gt_mask, name, pre_mask=None):
     false_negatives = np.sum((~p_mask) & g_mask)  # Keep original GT for FN
 
     precision = true_positives / (true_positives + false_positives + 1e-9)
-    recall = true_positives / (true_positives + false_negatives + 1e-9)
-
-    # Cap recall at 1.0 (dilation might cause TP > GTSum)
-    recall = min(recall, 1.0)
+    # A tolerated halo can improve precision, but only original truth pixels
+    # measure recovery. Mixing halo TP with core FN inflated recall.
+    core_hits = np.sum(p_mask & g_mask)
+    recall = core_hits / (core_hits + false_negatives + 1e-9)
 
     print(
         f"  [{name}] Precision: {precision:.3f} | Recall: {recall:.3f} | F1: {_f1(precision, recall):.3f} "
@@ -283,6 +298,10 @@ def _benchmark_gate_failures(results):
     object_f1 = [_f1(*metrics.get("Objects", (0.0, 0.0))) for metrics in results.values()]
 
     failures = []
+    for name, metrics in results.items():
+        for label in ("Saturation", "Cosmics", "Objects", "Streaks"):
+            if not np.all(np.isfinite(metrics.get(label, (0.0, 0.0)))):
+                failures.append(f"{name}: {label} precision/recall is nonfinite")
     avg_streak_f1 = float(np.mean(list(streak_f1.values()))) if streak_f1 else 0.0
     if avg_streak_f1 < 0.65:
         failures.append(f"Average streak F1 {avg_streak_f1:.3f} < 0.650")
@@ -328,7 +347,7 @@ def run_masking_test(config_path, args, save_fits=True, return_products=False):
         noise_level=args.noise,
         num_stars=args.stars,
         streak_flux=args.streak,
-        regime_type=getattr(args, "regime_type", "normal"),
+        regime_type=getattr(args, "regime_type", "complex" if getattr(args, "complex_mode", False) else "normal"),
         seed=getattr(args, "seed", None),
     )
     existing_mask = np.zeros_like(sci_data, dtype=bool)
@@ -348,7 +367,7 @@ def run_masking_test(config_path, args, save_fits=True, return_products=False):
     initial_mask = np.zeros_like(sci_data, dtype=bool)
     if hasattr(args, "mask_pct") and args.mask_pct > 0:
         # Create a heavy pre-mask (e.g. 85% of pixels)
-        initial_mask = np.random.random(sci_data.shape) < args.mask_pct
+        initial_mask = np.random.default_rng(getattr(args, "seed", None)).random(sci_data.shape) < args.mask_pct
         existing_mask |= initial_mask
         print(f"  Pre-masking {args.mask_pct * 100:.1f}% of image for background robustness test...")
 
@@ -368,13 +387,12 @@ def run_masking_test(config_path, args, save_fits=True, return_products=False):
     existing_mask |= sat_mask
 
     # 2. Test Cosmics
-    avg_read_noise = float(np.median(bkg_rms))
     cr_mask = detect_cosmic_rays(
         sci_data,
         existing_mask,
         sat_level,
         gain=1.0,
-        read_noise=avg_read_noise,
+        read_noise=float(args.noise),  # Known injected read noise; RMS also includes Poisson noise.
         config=config.get("cosmic_ray", {}),
         bkg_rms_map=bkg_rms,
     )
@@ -397,10 +415,11 @@ def run_masking_test(config_path, args, save_fits=True, return_products=False):
     # 3. Test Objects
     sky_map, _ = estimate_background(sci_data, existing_mask, config.get("sep_background", {}))
     data_sub = sci_data - sky_map
+    object_prior_mask = existing_mask.copy()
     # Use initial_mask here to avoid losing objects that were wrongly flagged as CRs/Saturation
     # to get cleaner metrics on object detection itself.
     obj_mask = detect_objects(data_sub, bkg_rms, initial_mask, config.get("sep_objects", {}))
-    metrics["Objects"] = evaluate_mask(obj_mask, gt["stars"], "Objects", pre_mask=initial_mask)
+    metrics["Objects"] = evaluate_mask(obj_mask, gt["stars"], "Objects", pre_mask=object_prior_mask)
     if save_fits:
         fitsio.write(
             os.path.join(output_dir, "mask_obj.fits"),
@@ -433,12 +452,13 @@ def run_masking_test(config_path, args, save_fits=True, return_products=False):
                 "objects": obj_mask,
                 "streaks": streak_mask,
             },
+            "streak_exclusion_mask": existing_mask.copy(),
         }
 
     return metrics
 
 
-def run_auto_sweep(report_file=None):
+def run_auto_sweep(report_file=None, seed=0):
     print("==================================================")
     print("  RUNNING WEIGHTMASK ALGORITHM BENCHMARK SWEEP")
     print("==================================================")
@@ -537,7 +557,7 @@ def run_auto_sweep(report_file=None):
     ]
 
     results = {}
-    for r in regimes:
+    for index, r in enumerate(regimes):
         print(f"\n>>> REGIME: {r['name']}")
         print(
             f"Noise: {r['noise']} | Stars: {r['stars']} | Streak Flux: {r['streak']} | Regime: {r.get('regime', 'normal')}"
@@ -554,6 +574,7 @@ def run_auto_sweep(report_file=None):
         args.streak = r["streak"]
         args.mask_pct = r.get("mask_pct", 0.0)
         args.regime_type = r.get("regime", "normal")
+        args.seed = seed + index
 
         try:
             metrics = run_masking_test("weightmask.yml", args, save_fits=False)
@@ -576,6 +597,7 @@ def run_auto_sweep(report_file=None):
         )
 
     failures = _benchmark_gate_failures(results)
+    failures.extend(f"Missing regime: {regime['name']}" for regime in regimes if regime["name"] not in results)
     if failures:
         print("\nBenchmark gate failures:")
         for failure in failures:
@@ -587,6 +609,7 @@ def run_auto_sweep(report_file=None):
         print(f"\nGenerating Markdown report: {report_file}")
         with open(report_file, "w") as f:
             f.write("# Weightmask Benchmark Report\n\n")
+            f.write(f"Generator: {GENERATOR_REVISION}; metrics: {METRIC_REVISION}; seed: {seed}.\n\n")
             f.write(
                 "| Regime | Saturation P | Saturation R | Saturation F1 | "
                 "Cosmics P | Cosmics R | Cosmics F1 | "
@@ -615,6 +638,7 @@ def run_auto_sweep(report_file=None):
                     f.write(f"- {failure}\n")
             else:
                 f.write("\n## Benchmark Gate\n\nPassed.\n")
+    return int(bool(failures))
 
 
 if __name__ == "__main__":
@@ -626,9 +650,10 @@ if __name__ == "__main__":
     parser.add_argument("--stars", type=int, default=50)
     parser.add_argument("--streak", type=float, default=30.0)
     parser.add_argument("--complex_mode", action="store_true")
+    parser.add_argument("--seed", type=int, default=0)
     args = parser.parse_args()
 
     if args.auto_sweep:
-        run_auto_sweep(report_file=args.report)
+        raise SystemExit(run_auto_sweep(report_file=args.report, seed=args.seed))
     else:
         run_masking_test("weightmask.yml", args, save_fits=True)

@@ -6,6 +6,8 @@ being present, current or writable, so these tests pin the key sensitivity and
 each fallback path.
 """
 
+import contextlib
+import io
 import os
 import tempfile
 import unittest
@@ -56,7 +58,7 @@ class TestFlatBadMaskCache(unittest.TestCase):
         base = self._cache_file()
         self.assertEqual(base, self._cache_file())
         self.assertNotEqual(base, self._cache_file(hdu_index=4))
-        self.assertNotEqual(base, self._cache_file(tile_size=512))
+        self.assertEqual(base, self._cache_file(tile_size=512))
         self.assertNotEqual(base, self._cache_file(shape=(64, 97)))
         self.assertNotEqual(base, self._cache_file(flat_cfg={**self.cfg, "local_low_thresh": 0.6}))
         self.assertIsNone(self._cache_file(flat_path=None))
@@ -78,6 +80,31 @@ class TestFlatBadMaskCache(unittest.TestCase):
         self.assertEqual(spy.call_count, 1)
         np.testing.assert_array_equal(first, second)
         self.assertTrue(os.path.exists(self._cache_file()))
+
+    def test_cache_is_reused_across_tile_sizes(self):
+        flat = _flat()
+        with mock.patch.object(bad, "compute_flat_bad_mask", side_effect=bad.compute_flat_bad_mask) as spy:
+            first = bad.compute_flat_bad_mask_cached(flat, self.cfg, 16, flat_path=self.flat_path, hdu_index=3)
+            second = bad.compute_flat_bad_mask_cached(flat, self.cfg, 32, flat_path=self.flat_path, hdu_index=3)
+        self.assertEqual(spy.call_count, 1)
+        np.testing.assert_array_equal(first, second)
+
+    def test_unwritable_cache_dir_warns_instead_of_failing_silently(self):
+        """A read-only cache location must not hide a repeated ~20 s/HDU cost.
+
+        The usual cause is a read-only mount (VOSpace) where the cache cannot
+        live next to the flat. The result is still correct, so nothing failed --
+        but every later run recomputes, and used to say nothing at all.
+        """
+        flat = _flat()
+        cfg = {**self.cfg, "bad_mask_cache_dir": "/proc/definitely-not-writable"}
+        buf = io.StringIO()
+        with contextlib.redirect_stdout(buf):
+            mask = bad.compute_flat_bad_mask_cached(flat, cfg, 1024, flat_path=self.flat_path, hdu_index=3)
+        log = buf.getvalue()
+        self.assertEqual(mask.shape, flat.shape)
+        self.assertIn("could not cache the flat bad-pixel mask", log)
+        self.assertIn("bad_mask_cache_dir", log)
 
     def test_disabled_cache_recomputes(self):
         flat = _flat()
@@ -131,6 +158,16 @@ class TestFlatBadMaskCache(unittest.TestCase):
         cfg = {**self.cfg, "bad_mask_cache_dir": os.path.join(blocker, "cache")}
         mask = bad.compute_flat_bad_mask_cached(flat, cfg, 1024, flat_path=self.flat_path, hdu_index=3)
         np.testing.assert_array_equal(mask, bad.compute_flat_bad_mask(flat, self.cfg, 1024))
+
+
+class TestEffectiveTileSize(unittest.TestCase):
+    def test_requested_size_caps_the_tiles(self):
+        from weightmask.process import _effective_tile_size
+
+        for size in (16, 128, 1024):
+            self.assertEqual(_effective_tile_size(size, (4644, 2112)), size)
+        self.assertEqual(_effective_tile_size(1024, (32, 32)), 16)
+        self.assertEqual(_effective_tile_size(1024, (1, 7)), 1)
 
 
 if __name__ == "__main__":

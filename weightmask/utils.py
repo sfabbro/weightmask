@@ -1,6 +1,21 @@
+import os
 import re
 
 import numpy as np
+
+from . import config as _config
+
+clean_config_dict = _config.clean_config_dict
+
+
+def paths_alias(first, second):
+    """Whether filenames refer to the same destination, including links."""
+    if os.path.realpath(first) == os.path.realpath(second):
+        return True
+    try:
+        return os.path.samefile(first, second)
+    except OSError:
+        return False
 
 
 def rms_valid_mask(rms):
@@ -15,8 +30,7 @@ def rms_valid_mask(rms):
     Callers must choose, deliberately, between the two legitimate readings:
 
     * a *detection threshold* cannot be asserted without an RMS, so those
-      pixels must be inert -- see ``_detect_streaks_mrt_like`` and
-      ``_refine_trail_mask``;
+      pixels must be inert -- see ``_refine_trail_mask``;
     * a *rejection / quality gate* still has to judge what it can, so it
       substitutes a robust value -- see ``rms_or_robust`` and
       ``cosmics._post_filter_components``.
@@ -107,56 +121,3 @@ def create_binary_mask(mask_data, bit_flag):
     # This avoids allocating unnecessary intermediate arrays and executes
     # significantly faster.
     return ((mask_data & bit_flag) > 0).astype(np.uint8)
-
-
-def _parse_config_value(val):
-    """
-    Parse a single configuration value, converting strings to
-    bool/int/float if applicable.
-    """
-    if isinstance(val, (bytes, bytearray)):
-        try:
-            val = val.decode("utf-8")
-        except UnicodeDecodeError:
-            return val
-    if not isinstance(val, str):
-        return val
-
-    lowered = val.lower()
-    if lowered in ("true", "yes", "on"):
-        return True
-    elif lowered in ("false", "no", "off"):
-        return False
-    else:
-        try:
-            if "." in val or "e" in lowered:
-                return float(val)
-            else:
-                return int(val)
-        except ValueError:
-            return val
-
-
-def clean_config_dict(config: dict) -> dict:
-    """
-    Recursively clean a configuration dictionary, converting numeric strings
-    and boolean strings into their proper types.
-    """
-    clean_dict = {}
-    if not config:
-        return clean_dict
-
-    for k, v in config.items():
-        if isinstance(v, dict):
-            clean_dict[k] = clean_config_dict(v)
-        elif isinstance(v, list):
-            clean_list = []
-            for item in v:
-                if isinstance(item, dict):
-                    clean_list.append(clean_config_dict(item))
-                else:
-                    clean_list.append(_parse_config_value(item))
-            clean_dict[k] = clean_list
-        else:
-            clean_dict[k] = _parse_config_value(v)
-    return clean_dict

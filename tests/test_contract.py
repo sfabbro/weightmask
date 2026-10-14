@@ -1,4 +1,5 @@
 import sys
+import warnings
 from types import ModuleType
 
 import numpy as np
@@ -14,6 +15,7 @@ from weightmask.contract import (
     ArtifactMetadata,
     ProducerMetadata,
     QualityBit,
+    WeightMaskProduct,
     build_weight_product,
     quality_bit_names,
     quality_bits_from_names,
@@ -60,6 +62,259 @@ def test_confidence_percentile_is_deterministically_bounded(monkeypatch):
     np.testing.assert_array_equal(first, second)
 
 
+def test_priority_sampling_is_invariant_to_hdu_reordering_above_cap():
+    from weightmask.contract import _BoundedPrioritySampler
+
+    populations = {
+        "CCD-A": np.ones(50_500, dtype=np.float32),
+        "CCD-B": np.full(50_501, 100, dtype=np.float32),
+    }
+    samples = []
+    for identities in (("CCD-A", "CCD-B"), ("CCD-B", "CCD-A")):
+        sampler = _BoundedPrioritySampler()
+        for identity in identities:
+            sampler.update(identity, populations[identity])
+        samples.append(sampler.sample())
+
+    assert samples[0].size == MAX_CONFIDENCE_SAMPLES
+    np.testing.assert_array_equal(samples[0], samples[1])
+    assert np.percentile(samples[0], 99) == np.percentile(samples[1], 99)
+
+
+def test_priority_sampling_is_invariant_to_splitting_one_hdu_above_cap():
+    from weightmask.contract import _BoundedPrioritySampler
+
+    values = np.linspace(1, 200_001, 200_001, dtype=np.float32)
+    unsplit = _BoundedPrioritySampler()
+    unsplit.update("CCD-A", values)
+    split = _BoundedPrioritySampler()
+    for chunk in np.array_split(values, [17_123, 99_999, 150_007]):
+        split.update("CCD-A", chunk)
+
+    np.testing.assert_array_equal(unsplit.sample(), split.sample())
+    assert np.percentile(unsplit.sample(), 99) == np.percentile(split.sample(), 99)
+
+
+def test_priority_collisions_are_resolved_independently_of_update_order(monkeypatch):
+    from weightmask.contract import _BoundedPrioritySampler
+
+    monkeypatch.setattr(
+        "weightmask.contract._priority_keys",
+        lambda _identity_key, pixel_indices: np.zeros(pixel_indices.size, dtype=np.uint64),
+    )
+    populations = {
+        "CCD-A": np.arange(1, 9, dtype=np.float32),
+        "CCD-B": np.arange(101, 109, dtype=np.float32),
+    }
+    samples = []
+    for identities in (("CCD-A", "CCD-B"), ("CCD-B", "CCD-A")):
+        sampler = _BoundedPrioritySampler(max_samples=7)
+        for identity in identities:
+            sampler.update(identity, populations[identity])
+        samples.append(sampler.sample())
+
+    np.testing.assert_array_equal(samples[0], samples[1])
+
+
+def test_priority_sampling_uses_bounded_chunks(monkeypatch):
+    from weightmask.contract import _CONFIDENCE_SAMPLE_CHUNK_SIZE, _BoundedPrioritySampler
+
+    concatenated_sizes = []
+    finite_input_sizes = []
+    mask_sizes = []
+    original_concatenate = np.concatenate
+    original_flatnonzero = np.flatnonzero
+    original_isfinite = np.isfinite
+
+    def bounded_concatenate(arrays, *args, **kwargs):
+        concatenated_sizes.append(sum(array.size for array in arrays))
+        return original_concatenate(arrays, *args, **kwargs)
+
+    def bounded_flatnonzero(mask):
+        mask_sizes.append(mask.size)
+        return original_flatnonzero(mask)
+
+    def bounded_isfinite(values):
+        finite_input_sizes.append(values.size)
+        return original_isfinite(values)
+
+    monkeypatch.setattr("weightmask.contract.np.concatenate", bounded_concatenate)
+    monkeypatch.setattr("weightmask.contract.np.flatnonzero", bounded_flatnonzero)
+    monkeypatch.setattr("weightmask.contract.np.isfinite", bounded_isfinite)
+    sampler = _BoundedPrioritySampler()
+    values = np.ones((2 * MAX_CONFIDENCE_SAMPLES, 2), dtype=np.float32)[:, ::2]
+    assert not values.flags.c_contiguous
+    sampler.update("CCD-A", values)
+
+    assert sampler.sample().size == MAX_CONFIDENCE_SAMPLES
+    assert max(finite_input_sizes) <= _CONFIDENCE_SAMPLE_CHUNK_SIZE
+    assert max(mask_sizes) <= MAX_CONFIDENCE_SAMPLES + _CONFIDENCE_SAMPLE_CHUNK_SIZE
+    assert max(concatenated_sizes) <= MAX_CONFIDENCE_SAMPLES + _CONFIDENCE_SAMPLE_CHUNK_SIZE
+
+
+def test_bounded_percentile_handles_empty_and_nonfinite_values_without_warnings():
+    from weightmask.contract import _bounded_percentile
+
+    with warnings.catch_warnings():
+        warnings.simplefilter("error")
+        assert np.isnan(_bounded_percentile(np.array([], dtype=np.float32), 50))
+        assert _bounded_percentile(np.array([np.nan, -1, 0, 1, 3, np.inf]), 50) == 2
+
+
+@pytest.mark.parametrize("percentile", [True, np.bool_(True)])
+def test_confidence_percentile_rejects_boolean(percentile):
+    from weightmask.contract import _bounded_percentile
+
+    with pytest.raises(ValueError, match="confidence_percentile"):
+        _bounded_percentile(np.ones(4), percentile)
+    with pytest.raises(ValueError, match="confidence_percentile"):
+        build_weight_product(np.ones(4), confidence_percentile=percentile)
+
+
+def test_build_weight_product_does_not_mutate_the_callers_quality_mask():
+    """A uint32 input must not be aliased by the product's INVALID_VARIANCE pass."""
+    inverse_variance = np.array([[1.0, 0.0], [4.0, np.nan]], dtype=np.float64)
+    callers_mask = np.zeros((2, 2), dtype=np.uint32)
+    before = callers_mask.copy()
+
+    product = build_weight_product(inverse_variance, callers_mask)
+
+    np.testing.assert_array_equal(callers_mask, before)
+    assert product.quality_mask is not callers_mask
+    # The product itself must still carry the INVALID_VARIANCE marks.
+    assert (product.quality_mask[0, 1] & QualityBit.INVALID_VARIANCE) != 0
+    assert (product.quality_mask[1, 1] & QualityBit.INVALID_VARIANCE) != 0
+
+
+def test_quality_mask_wider_than_uint32_is_refused_not_truncated():
+    """A flag at bit >= 32 must not be laundered into a full-weight pixel."""
+    wide = np.array([[0, 1 << 40]], dtype=np.int64)
+    with pytest.raises(ValueError, match="wider than uint32"):
+        build_weight_product(np.ones((1, 2)), wide)
+    # uint32 and narrower are still fine.
+    narrow = np.array([[0, 1]], dtype=np.uint8)
+    assert build_weight_product(np.ones((1, 2)), narrow).quality_mask[0, 1] == 1
+
+
+@pytest.mark.parametrize("dtype", [np.int8, np.int16, np.int32, np.int64])
+def test_negative_signed_quality_mask_values_are_rejected_before_conversion(dtype):
+    with pytest.raises(ValueError, match="non-negative"):
+        build_weight_product(np.ones(2), np.array([0, -1], dtype=dtype))
+
+
+def test_nonnegative_signed_quality_mask_values_are_bounded_and_preserved():
+    mask = np.array([0, 1 << 31, (1 << 32) - 1], dtype=np.int64)
+
+    product = build_weight_product(np.ones(3), mask)
+
+    assert product.quality_mask.dtype == np.uint32
+    np.testing.assert_array_equal(product.quality_mask, mask.astype(np.uint32))
+
+
+@pytest.mark.parametrize(
+    "mask",
+    [
+        np.array([True]),
+        np.array([1.0]),
+        np.array([1], dtype=object),
+    ],
+)
+def test_quality_mask_rejects_non_integer_values(mask):
+    with pytest.raises(TypeError, match="integer dtype"):
+        build_weight_product(np.ones(mask.shape), mask)
+
+
+@pytest.mark.parametrize("mask", [np.array([1 << 32], dtype=np.uint64), np.array([1 << 32], dtype=np.int64)])
+def test_quality_mask_rejects_oversized_integer_values(mask):
+    with pytest.raises(ValueError, match="uint32"):
+        build_weight_product(np.ones(mask.shape), mask)
+
+
+def test_quality_mask_normalizes_byte_order_and_noncontiguous_input_without_mutation():
+    source = np.array([0, 1 << 31, (1 << 32) - 1, 7], dtype=">u4")
+    mask = source[::2]
+    before = source.copy()
+
+    product = build_weight_product(np.ones(2), mask)
+
+    assert product.quality_mask.dtype == np.uint32
+    assert product.quality_mask.flags.c_contiguous
+    np.testing.assert_array_equal(product.quality_mask, mask)
+    np.testing.assert_array_equal(source, before)
+
+
+@pytest.mark.parametrize("dtype", [np.int8, np.uint8, np.int64, bool])
+def test_direct_product_requires_canonical_uint32_quality_mask(dtype):
+    mask = np.zeros(1, dtype=dtype)
+    with pytest.raises(TypeError, match="uint32"):
+        WeightMaskProduct(mask, np.ones(1, np.float32), np.ones(1, np.float32), np.ones(1, np.float32), {})
+
+
+@pytest.mark.parametrize("mask", [[np.uint32(0)], (np.uint32(0),)])
+def test_direct_product_rejects_non_array_quality_mask(mask):
+    with pytest.raises(TypeError, match="uint32"):
+        WeightMaskProduct(mask, np.ones(1, np.float32), np.ones(1, np.float32), np.ones(1, np.float32), {})
+
+
+def test_direct_product_preserves_future_uint32_bits():
+    mask = np.array([np.uint32(1 << 31)], dtype=np.uint32)
+
+    product = WeightMaskProduct(mask, np.ones(1, np.float32), np.ones(1, np.float32), np.ones(1, np.float32), {})
+
+    assert product.quality_mask[0] == np.uint32(1 << 31)
+
+
+def test_non_finite_weight_and_confidence_are_rejected():
+    """`x < 0` is False for NaN, so the range test alone lets it through."""
+    shape = (2, 2)
+    for bad in (np.nan, np.inf):
+        with pytest.raises(ValueError, match="weight must be finite"):
+            WeightMaskProduct(
+                np.zeros(shape, np.uint32),
+                np.zeros(shape, np.float32),
+                np.full(shape, bad, np.float32),
+                np.zeros(shape, np.float32),
+                {},
+            )
+        with pytest.raises(ValueError, match="confidence must be finite"):
+            WeightMaskProduct(
+                np.zeros(shape, np.uint32),
+                np.zeros(shape, np.float32),
+                np.zeros(shape, np.float32),
+                np.full(shape, bad, np.float32),
+                {},
+            )
+
+
+def test_undecodable_provenance_warns_instead_of_becoming_version_unknown():
+    """A truncated provenance payload must not masquerade as a real 'unknown'.
+
+    `from_header` collapsed any decode failure to an empty payload, so a
+    truncated or perturbed FITS header produced a plausible
+    ProducerMetadata(version="unknown") indistinguishable from a genuine one.
+    """
+    artifact = ArtifactMetadata("quality_mask", ProducerMetadata(version="1.0"), {"k": "v"})
+    good = artifact.to_header()
+
+    with warnings.catch_warnings(record=True) as caught:
+        warnings.simplefilter("always")
+        assert ArtifactMetadata.from_header(good).producer.version == "1.0"
+    assert not caught, "a clean round trip must not warn"
+
+    truncated = {**good, "WMPVCNT": "1"}  # reassembles to invalid JSON
+    with pytest.warns(RuntimeWarning, match="could not be decoded"):
+        restored = ArtifactMetadata.from_header(truncated)
+    assert restored.producer.version == "unknown"
+
+    # Absent provenance is legitimate -- not every product carries it -- so it
+    # stays quiet rather than warning about a foreign producer.
+    absent = {k: v for k, v in good.items() if not k.startswith("WMPV") and k != "WMPVCNT"}
+    with warnings.catch_warnings(record=True) as caught:
+        warnings.simplefilter("always")
+        assert ArtifactMetadata.from_header(absent).producer.version == "unknown"
+    assert not caught, "absent provenance is not an error"
+
+
 def test_quality_bits_round_trip_through_integer_mask():
     bits = QualityBit.BAD_PIXEL | QualityBit.COSMIC_RAY | QualityBit.STREAK
     restored = QualityBit(np.uint32(bits))
@@ -96,8 +351,10 @@ def test_producer_and_artifact_metadata_round_trip_with_ml_fields_reserved():
     assert restored.mask_polarity == MASK_POLARITY
     assert "WMQDCNT" in artifact.to_header()
     assert CONFIDENCE_SEMANTICS == "normalized_weight_0_to_1"
-    assert INVERSE_VARIANCE_SEMANTICS == "elixir_style_flat2_coadd_weight"
-    assert weightmask.__version__ == "0.1.0"
+    assert INVERSE_VARIANCE_SEMANTICS == "inverse_variance_adu^-2"
+    from weightmask._version import __version__ as _declared
+
+    assert weightmask.__version__ == _declared
 
 
 def test_torchfits_adapter_uses_only_present_public_root_api():

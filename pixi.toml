@@ -4,13 +4,22 @@ channels = ["conda-forge"]
 platforms = ["osx-arm64", "linux-64"]
 
 [tasks]
+streak-sweep = "python benchmarks/streak_stage_sweep.py --stride 1 --out test_outputs/perf/streak_stage_sweep.json"
+# Stage marginal-value grid. Pass extra args through, e.g.
+#   pixi run streak-recall-floor -- --disable contours
+#   pixi run streak-recall-floor -- --disable ransac
+streak-recall-floor = "python benchmarks/streak_recall_floor.py --out test_outputs/perf/recall_floor_dashed.json"
+exposure-time = "python benchmarks/exposure_time.py"
+ci-local = "python benchmarks/ci_local.py"
+release-check = "python benchmarks/release_check.py"
 lint = "ruff check ."
 format = "ruff format ."
 test = "pytest"
 benchmark-synthetic = "python -m tests.benchmarks.run --suite synthetic_v2 --with-baselines"
 benchmark-megacam = "python -m tests.benchmarks.run --suite megacam_real"
 benchmark-acs = "python -m tests.benchmarks.run --suite acs_compare"
-example-complex = "python examples/complex_simulation_example.py"
+example-complex = "python -m examples.complex_simulation_example"
+science-gate = "python benchmarks/science_gate.py"
 
 [dependencies]
 python = "3.13.*"

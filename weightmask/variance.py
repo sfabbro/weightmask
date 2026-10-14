@@ -2,7 +2,12 @@ import warnings
 
 import numpy as np
 from astropy.stats import mad_std
-from scipy.stats import linregress
+from scipy.stats import iqr, linregress
+
+from .bad import _parse_section
+from .utils import rms_valid_mask
+
+_OBSOLETE_VARIANCE_KEYS = frozenset({"unbias_variance", "flat_fielded_poisson", "readnoise_keyword"})
 
 
 def _calculate_empirical_noise_params(sci_data, obj_mask, patch_size, robust_sigma_clip):
@@ -29,7 +34,7 @@ def _calculate_empirical_noise_params(sci_data, obj_mask, patch_size, robust_sig
     n_patches_y = ny_trunc // patch_size
     n_patches_x = nx_trunc // patch_size
 
-    # ⚡ Bolt: Vectorize patch calculation by reshaping views to avoid explicit Python loops over coordinates
+    # Vectorize patch calculation by reshaping views to avoid explicit Python loops over coordinates
     if n_patches_y > 0 and n_patches_x > 0:
         sci_blocks = (
             sci_data[:ny_trunc, :nx_trunc]
@@ -55,8 +60,7 @@ def _calculate_empirical_noise_params(sci_data, obj_mask, patch_size, robust_sig
         if valid_sci_blocks.shape[0] > 0:
             patch_medians_arr = np.nanmedian(valid_sci_blocks, axis=1)
             # Vectorized MAD calculation using nanmedian
-            abs_dev = np.abs(valid_sci_blocks - patch_medians_arr[:, np.newaxis])
-            patch_stds_arr = np.nanmedian(abs_dev, axis=1) * 1.4826022185056018
+            patch_stds_arr = mad_std(valid_sci_blocks, axis=1, ignore_nan=True)
 
             valid_var_mask = patch_stds_arr > 1e-6
             patch_variances.extend((patch_stds_arr[valid_var_mask] ** 2).tolist())
@@ -115,6 +119,8 @@ def _calculate_empirical_noise_params(sci_data, obj_mask, patch_size, robust_sig
         # Derive gain and read noise from fit parameters
         empirical_gain = 1.0 / slope
         # Read noise in ADU is sqrt of intercept (variance at zero signal)
+        if intercept < 0:
+            print(f"    WARNING: variance fit intercept {intercept:.4g} is negative; clamping read noise to 0.")
         read_noise_adu = np.sqrt(max(0, intercept))
         # Convert read noise to electrons
         empirical_read_noise_e = read_noise_adu * empirical_gain
@@ -129,37 +135,116 @@ def _calculate_empirical_noise_params(sci_data, obj_mask, patch_size, robust_sig
         return None, None
 
 
-def _calculate_inverse_variance_theoretical(sky_map, flat_map, gain, read_noise_e, epsilon, flat_rel_noise=0.0):
-    """Elixir-style F² coadd weight, in ADU⁻².
+def amplifier_gain_map(header, shape, fallback):
+    """Per-pixel gain when both amplifiers and their sections are in the header.
 
-    Frozen 0.1 formula (sky ``S`` in ADU, flat ``F``, gain ``g`` in e⁻/ADU,
+    Returns ``None`` unless ``GAINA`` and ``GAINB`` are both present and a
+    section pair (``DETSEC*``, ``DATASEC*``, or ``AMPSEC*``) splits the HDU.
+    Otherwise the caller keeps the single first-present gain keyword.
+    """
+    if header is None or shape is None or len(shape) != 2:
+        return None
+    get = getattr(header, "get", None)
+    if not callable(get):
+        return None
+
+    def _value(key):
+        try:
+            return get(key, None)
+        except Exception:
+            return None
+
+    try:
+        gain_a = float(_value("GAINA"))
+        gain_b = float(_value("GAINB"))
+    except (TypeError, ValueError):
+        return None
+    if not np.isfinite(gain_a) or not np.isfinite(gain_b) or gain_a <= 0 or gain_b <= 0:
+        return None
+
+    h, w = shape
+    sec_a = sec_b = None
+    for prefix in ("DETSEC", "DATASEC", "AMPSEC"):
+        sec_a = _parse_section(_value(prefix + "A"))
+        sec_b = _parse_section(_value(prefix + "B"))
+        if sec_a is None or sec_b is None:
+            continue
+        # DETSEC can use mosaic coordinates. Only an in-image, disjoint pair
+        # identifies these HDU pixels; otherwise try the local section cards.
+        in_image = all(0 <= r0 < r1 <= h and 0 <= c0 < c1 <= w for r0, r1, c0, c1 in (sec_a, sec_b))
+        overlap = max(sec_a[0], sec_b[0]) < min(sec_a[1], sec_b[1]) and max(sec_a[2], sec_b[2]) < min(
+            sec_a[3], sec_b[3]
+        )
+        if in_image and not overlap:
+            break
+        sec_a = sec_b = None
+    if sec_a is None or sec_b is None:
+        return None
+    try:
+        base = float(fallback)
+    except (TypeError, ValueError):
+        base = gain_a
+    if not np.isfinite(base) or base <= 0:
+        base = gain_a
+    gain = np.full(shape, base, dtype=np.float32)
+    for section, value in ((sec_a, gain_a), (sec_b, gain_b)):
+        r0, r1, c0, c1 = section
+        r0, r1 = max(int(r0), 0), min(int(r1), h)
+        c0, c1 = max(int(c0), 0), min(int(c1), w)
+        if r1 > r0 and c1 > c0:
+            gain[r0:r1, c0:c1] = value
+    return gain
+
+
+def _mask_unmeasured_rms(inv_var, bkg_rms_map):
+    """Zero inverse variance where the background RMS was never measured.
+
+    The ``+inf`` sentinel means detection cannot judge those pixels. Leaving
+    them a full theoretical weight would still coadd an unmeasured column.
+    """
+    if inv_var is None or bkg_rms_map is None:
+        return inv_var
+
+    valid = rms_valid_mask(bkg_rms_map)
+    if valid is None or valid.shape != np.shape(inv_var) or bool(np.all(valid)):
+        return inv_var
+    out = np.array(inv_var, copy=True)
+    out[~valid] = 0
+    return out
+
+
+def _calculate_inverse_variance_theoretical(sky_map, flat_map, gain, read_noise_e, epsilon, flat_rel_noise=0.0):
+    """Flat-fielded Poisson and read-noise inverse variance, in ADU⁻².
+
+    For sky ``S`` in ADU, flat ``F``, gain ``g`` in e⁻/ADU,
     read noise ``r`` in e⁻)::
 
-        ivar = g² F² / (S g + r²)
+        ivar = g² F² / (S g F + r²)
 
-    At ``F = 1`` this is Poisson + read noise. At ``F ≠ 1`` it is a sensitivity
-    weight (``F²`` in the numerator, Poisson term from the flattened sky), not
-    the flat-fielded identity ``g² F² / (S g F + r²)``.
+    ``flat_rel_noise`` is the dimensionless fractional flat uncertainty. It
+    adds ``(S g F · rel)²`` to the pre-division electron variance, equivalent
+    to ``(S · rel)²`` in calibrated ADU². ``rel`` is boosted where the flat is
+    below its median. Zero disables it.
 
-    ``flat_rel_noise`` is an optional extra term ``(S g · rel)²`` in the
-    electron denominator, with ``rel`` boosted where the flat is below its
-    median. Zero disables it.
     """
     valid_flat_mask = flat_map > epsilon
     safe_flat = np.where(valid_flat_mask, flat_map, epsilon)
     safe_sky = np.maximum(sky_map, 0.0)
+    gain = np.asarray(gain, dtype=np.float64)
 
-    # Frozen 0.1: ivar = g² F² / (S g + RN²). Exact Poisson+RN at F=1.
-    sky_e = safe_sky * gain
-    denom = sky_e + read_noise_e**2
+    poisson = safe_sky * gain * safe_flat
+    denom = poisson + read_noise_e**2
     if flat_rel_noise > 0:
         med_flat = float(np.median(safe_flat[valid_flat_mask])) if np.any(valid_flat_mask) else 1.0
         rel_map = flat_rel_noise / np.sqrt(np.clip(safe_flat / max(med_flat, epsilon), 0.1, None))
+        sky_e = safe_sky * gain * safe_flat
         denom = denom + (sky_e * rel_map) ** 2
     inv_variance = np.zeros_like(denom)
 
     valid_variance = denom > epsilon
-    inv_variance[valid_variance] = (gain**2 * safe_flat[valid_variance] ** 2) / denom[valid_variance]
+    gain2 = np.square(gain)
+    numer = gain2 * safe_flat**2
+    np.divide(numer, denom, out=inv_variance, where=valid_variance)
 
     # Mask out invalid regions
     inv_variance[~valid_flat_mask] = 0.0
@@ -187,12 +272,11 @@ def _rescale_variance_robust(inv_variance, sci_data, sky_map, obj_mask, epsilon)
     if snr.size < 100:
         return inv_variance
 
-    # ⚡ Bolt: Subsample large arrays before calculating global robust statistics
+    # Subsample large arrays before calculating global robust statistics
     step = max(1, snr.size // 100000)
 
     # Use Interquartile Range for robust stdev
-    q1, q3 = np.percentile(snr[::step], (25, 75))
-    robust_stdev = 0.7413 * (q3 - q1)
+    robust_stdev = 0.7413 * iqr(snr[::step])
 
     if robust_stdev > 0:
         scale_factor = 1.0 / (robust_stdev**2)
@@ -200,36 +284,6 @@ def _rescale_variance_robust(inv_variance, sci_data, sky_map, obj_mask, epsilon)
         return inv_variance * scale_factor
 
     return inv_variance
-
-
-def _unbias_variance(inv_variance, sci_data, sky_map, gain, epsilon):
-    """
-    Internal: Remove signal-dependent Poisson noise to get background-only variance.
-    Mimics LSST remove_signal_from_variance.
-    """
-    if inv_variance is None or gain <= 0:
-        return inv_variance
-
-    # Signal is (sci_data - sky_map)
-    signal = np.maximum(sci_data - sky_map, 0.0)
-
-    # Work in variance space
-    with np.errstate(divide="ignore", invalid="ignore"):
-        valid = (inv_variance > epsilon) & np.isfinite(inv_variance)
-        var_total = np.where(valid, 1.0 / inv_variance, np.inf)
-        var_bg = var_total - (signal / gain)
-
-        # If var_bg is positive, unbiasing succeeded.
-        # If var_bg <= epsilon, var_total was already background-only; retain var_total.
-        effective_var = np.where(var_bg > epsilon, var_bg, var_total)
-        new_inv_variance = np.where(
-            valid & np.isfinite(effective_var) & (effective_var > 0),
-            1.0 / effective_var,
-            0.0,
-        )
-
-    new_inv_variance[~np.isfinite(new_inv_variance)] = 0.0
-    return new_inv_variance.astype(np.float32)
 
 
 def _calculate_inverse_variance_rms(bkg_rms_map, epsilon):
@@ -251,13 +305,15 @@ def _calculate_inverse_variance_rms(bkg_rms_map, epsilon):
     return inv_variance.astype(np.float32)
 
 
-def _handle_empirical_fit(variance_cfg, sky_map, flat_map, sci_data, obj_mask, gain, read_noise_e, epsilon):
+def _handle_empirical_fit(
+    variance_cfg, sky_map, flat_map, sci_data, obj_mask, gain, read_noise_e, epsilon, bkg_rms_map=None
+):
     if sci_data is None or obj_mask is None:
         warnings.warn(
             "Empirical fit method requires science data and object mask.",
             RuntimeWarning,
         )
-        return None, gain
+        return None
 
     patch_size = variance_cfg.get("empirical_patch_size", 128)
     clip_sigma = variance_cfg.get("empirical_clip_sigma", 3.0)
@@ -266,38 +322,26 @@ def _handle_empirical_fit(variance_cfg, sky_map, flat_map, sci_data, obj_mask, g
 
     if emp_gain is None or emp_rn_e is None:
         print("  WARNING: Empirical fit failed. Falling back to theoretical method with default/header values.")
-        inv_var = _calculate_inverse_variance_theoretical(
-            sky_map, flat_map, gain, read_noise_e, epsilon, variance_cfg.get("flat_rel_noise", 0.0)
-        )
     else:
-        inv_var = _calculate_inverse_variance_theoretical(
-            sky_map, flat_map, emp_gain, emp_rn_e, epsilon, variance_cfg.get("flat_rel_noise", 0.0)
-        )
-        gain = emp_gain  # For unbiasing below
-    return inv_var, gain
+        gain, read_noise_e = emp_gain, emp_rn_e
+    inv_var = _calculate_inverse_variance_theoretical(
+        sky_map,
+        flat_map,
+        gain,
+        read_noise_e,
+        epsilon,
+        variance_cfg.get("flat_rel_noise", 0.0),
+    )
+    return _mask_unmeasured_rms(inv_var, bkg_rms_map)
 
 
-def _handle_theoretical(variance_cfg, sky_map, flat_map, gain, read_noise_e, epsilon):
+def _handle_theoretical(variance_cfg, sky_map, flat_map, gain, read_noise_e, epsilon, bkg_rms_map=None):
     if flat_map is None or sky_map is None:
         warnings.warn("Theoretical method requires flat and sky maps.", RuntimeWarning)
         return None
     rel = variance_cfg.get("flat_rel_noise", 0.0)
-    return _calculate_inverse_variance_theoretical(sky_map, flat_map, gain, read_noise_e, epsilon, rel)
-
-
-def _apply_variance_post_processing(inv_var, variance_cfg, sci_data, sky_map, obj_mask, gain, epsilon):
-    if inv_var is None:
-        return None
-
-    # 1. Option to rescale variance to match observed noise (SNR=1 check)
-    if variance_cfg.get("rescale_variance", False) and sci_data is not None and obj_mask is not None:
-        inv_var = _rescale_variance_robust(inv_var, sci_data, sky_map, obj_mask, epsilon)
-
-    # 2. Option to unbias variance (remove Poisson contribution of objects)
-    if variance_cfg.get("unbias_variance", False) and sci_data is not None:
-        inv_var = _unbias_variance(inv_var, sci_data, sky_map, gain, epsilon)
-
-    return inv_var
+    inv_var = _calculate_inverse_variance_theoretical(sky_map, flat_map, gain, read_noise_e, epsilon, rel)
+    return _mask_unmeasured_rms(inv_var, bkg_rms_map)
 
 
 def calculate_inverse_variance(variance_cfg, sky_map, flat_map, bkg_rms_map, sci_data=None, obj_mask=None):
@@ -315,6 +359,11 @@ def calculate_inverse_variance(variance_cfg, sky_map, flat_map, bkg_rms_map, sci
     Returns:
         ndarray or None: Inverse variance map, or None if method is invalid or prerequisites missing.
     """
+    obsolete = sorted(_OBSOLETE_VARIANCE_KEYS & variance_cfg.keys())
+    if obsolete:
+        raise ValueError(
+            "Unsupported variance keys: " + ", ".join(obsolete) + "; variance is flat-fielded and background-only"
+        )
     method = variance_cfg.get("method", "theoretical").lower()
     epsilon = variance_cfg.get("epsilon", 1e-9)
     print(f"  Calculating Inverse Variance using method: '{method}'")
@@ -325,7 +374,7 @@ def calculate_inverse_variance(variance_cfg, sky_map, flat_map, bkg_rms_map, sci
 
     inv_var = None
     if method == "empirical_fit":
-        inv_var, gain = _handle_empirical_fit(
+        inv_var = _handle_empirical_fit(
             variance_cfg,
             sky_map,
             flat_map,
@@ -334,13 +383,18 @@ def calculate_inverse_variance(variance_cfg, sky_map, flat_map, bkg_rms_map, sci
             gain,
             read_noise_e,
             epsilon,
+            bkg_rms_map=bkg_rms_map,
         )
     elif method == "theoretical":
-        inv_var = _handle_theoretical(variance_cfg, sky_map, flat_map, gain, read_noise_e, epsilon)
+        inv_var = _handle_theoretical(
+            variance_cfg, sky_map, flat_map, gain, read_noise_e, epsilon, bkg_rms_map=bkg_rms_map
+        )
     elif method == "rms_map":
         inv_var = _calculate_inverse_variance_rms(bkg_rms_map, epsilon)
     else:
         warnings.warn(f"Invalid variance calculation method '{method}'.", RuntimeWarning)
         return None
 
-    return _apply_variance_post_processing(inv_var, variance_cfg, sci_data, sky_map, obj_mask, gain, epsilon)
+    if variance_cfg.get("rescale_variance", False):
+        inv_var = _rescale_variance_robust(inv_var, sci_data, sky_map, obj_mask, epsilon)
+    return inv_var

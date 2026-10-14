@@ -7,6 +7,11 @@ repos:
       - id: trailing-whitespace
       - id: end-of-file-fixer
       - id: check-yaml
+        exclude: ^\.dsh/cordis\.patch\.yml$
+      - id: check-yaml
+        name: Check Cordis YAML syntax
+        files: ^\.dsh/cordis\.patch\.yml$
+        args: [--unsafe]
       - id: check-added-large-files
       - id: check-ast
       - id: debug-statements
@@ -22,9 +27,25 @@ repos:
 
   - repo: local
     hooks:
-      - id: ci-parity-pre-push
-        name: CI parity (lint + tests)
-        entry: bash -lc 'pixi run lint && pixi run test'
+      - id: ci-parity-inplace
+        name: CI parity, in place (lint, the command CI runs)
+        entry: bash benchmarks/run_with_pixi.sh lint
+        language: system
+        pass_filenames: false
+        always_run: true
+        require_serial: true
+        stages: [pre-push]
+      - id: ci-parity-inplace-tests
+        name: CI parity, in place (tests, the command CI runs)
+        entry: bash benchmarks/run_with_pixi.sh test -q
+        language: system
+        pass_filenames: false
+        always_run: true
+        require_serial: true
+        stages: [pre-push]
+      - id: ci-parity-clean-export
+        name: CI parity, clean export (what the runner actually sees)
+        entry: bash benchmarks/run_with_pixi.sh ci-local
         language: system
         pass_filenames: false
         always_run: true

@@ -1,8 +1,9 @@
 # Installation
 
-weightmask needs Python 3.10 or newer. CI tests 3.13 on linux-64. Runtime
-dependencies: numpy, astropy, fitsio, scipy, scikit-image, sep, PyYAML,
-astroscrappy.
+weightmask supports Python 3.10 or newer on Linux. CI runs the package smoke
+test on Python 3.10 through 3.13 and the full test suite on Linux with Python
+3.13. Runtime dependency floors are numpy 1.25, astropy 5.0, fitsio 1.3.0,
+scipy 1.9, scikit-image 0.20, sep 1.2, PyYAML 6.0, and astroscrappy 1.2.
 
 ## pip (PyPI)
 
@@ -11,8 +12,21 @@ pip install weightmask
 weightmask --help
 ```
 
-Copy [`weightmask.yml`](../weightmask.yml) from the source tree; it is not
-installed with the package.
+The optional torchfits adapter can be installed with:
+
+```bash
+pip install "weightmask[torchfits]"
+```
+
+The default configuration is included in the package. Copy it into a working
+directory without depending on the source tree:
+
+```bash
+python -c "from weightmask.config import copy_default_config; copy_default_config('weightmask.yml')"
+```
+
+The same resource is available to Python callers as
+`weightmask.config.default_config_resource()`.
 
 ## Pixi (development)
 
@@ -20,9 +34,34 @@ installed with the package.
 git clone https://github.com/astroai/weightmask.git
 cd weightmask
 pixi install
-pixi run weightmask --help
 pixi run test
+# the CLI entry point, from the environment
+pixi run python -m weightmask.cli --help
 ```
+
+Pixi's own executable lives outside this repository, typically in
+`~/.pixi/bin`, which is on the PATH in a login shell but *not* in the
+non-interactive shell pre-commit uses for its hooks. That mismatch is why
+git pre-push hooks here go through `benchmarks/run_with_pixi.sh`, which
+searches the PATH and then `~/.pixi/bin/pixi` before failing with an install
+hint rather than a bare "command not found". Calling `pixi run …` from an
+ordinary shell needs no wrapper.
+
+A push runs three parity gates by default: in-place lint, in-place tests, and
+`benchmarks/ci_local.py`'s clean export of `HEAD` — what the GitHub runner
+actually sees. The in-place pair together take the suite's full runtime; the
+clean export adds the same again. When you need a faster iteration loop on a
+push you have already validated, skip specific hooks deliberately rather than
+bypassing them all:
+
+```bash
+SKIP=ci-parity-inplace-tests,ci-parity-clean-export git push
+```
+
+pre-commit prints `Skipped` for each named hook id; the remaining gates still
+run. To bypass every hook for one push, use `git push --no-verify` — CI will
+still run everything the skipped hooks would have. Both are local conveniences:
+skipping does not change what CI requires on the pushed commit.
 
 ## pip from a clone
 
@@ -40,7 +79,7 @@ conda create -n weightmask python=3.10
 conda activate weightmask
 conda install numpy astropy fitsio scipy scikit-image sep pyyaml
 pip install astroscrappy
-pip install -e .
+pip install weightmask
 weightmask --help
 ```
 

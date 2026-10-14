@@ -9,9 +9,21 @@ import numpy as np
 
 def _get_global_median(flat_data):
     """Calculate a robust global median of valid pixels."""
-    valid_flat = flat_data[flat_data > 0]
-    step = max(1, valid_flat.size // 100000)
-    global_med = np.nanmedian(valid_flat[::step]) if valid_flat.size > 0 else 1.0
+    flat = np.asarray(flat_data).reshape(-1)
+    chunk_size = 100000
+    valid_count = sum(
+        np.count_nonzero(flat[start : start + chunk_size] > 0) for start in range(0, flat.size, chunk_size)
+    )
+    step = max(1, valid_count // 100000)
+    samples = []
+    seen = 0
+    for start in range(0, flat.size, chunk_size):
+        valid = flat[start : start + chunk_size]
+        valid = valid[valid > 0]
+        sample_start = (-seen) % step
+        samples.append(valid[sample_start::step])
+        seen += valid.size
+    global_med = np.nanmedian(np.concatenate(samples)) if valid_count > 0 else 1.0
     if not np.isfinite(global_med):
         global_med = 1.0
     return global_med
@@ -24,9 +36,9 @@ def _detect_bad_pixels_local(flat_data, config, global_med):
     try:
         from scipy.ndimage import median_filter
 
-        filter_size = config.get("local_filter_size", config.get("filter_size", 15))
-        local_low_thresh = config.get("local_low_thresh", config.get("low_thresh", 0.5))
-        local_high_thresh = config.get("local_high_thresh", config.get("high_thresh", 2.0))
+        filter_size = config.get("local_filter_size", 15)
+        local_low_thresh = config.get("local_low_thresh", 0.5)
+        local_high_thresh = config.get("local_high_thresh", 2.0)
 
         with warnings.catch_warnings():
             warnings.simplefilter("ignore", category=RuntimeWarning)
@@ -53,7 +65,7 @@ def _detect_bad_pixels_local(flat_data, config, global_med):
             f"    Found {np.count_nonzero(pixel_mask_bool)} bad pixels (Ratio < {local_low_thresh:.2f} or > {local_high_thresh:.2f})."
         )
 
-    except Exception as e:
+    except (ValueError, KeyError, TypeError) as e:
         print(f"  WARNING: Local pixel thresholding failed: {e}. Skipping.")
         pixel_mask_bool.fill(False)
 
@@ -61,12 +73,12 @@ def _detect_bad_pixels_local(flat_data, config, global_med):
 
 
 def _detect_bad_columns_derivative(flat_data, config, global_med):
-    """Detect bad columns via horizontal derivatives."""
-    column_mask_bool = np.zeros(flat_data.shape, dtype=bool)
+    """Return indices of bad columns found via horizontal derivatives."""
+    bad_columns = np.empty(0, dtype=int)
 
     if not config.get("col_enable", True):
         print("  Bad column detection disabled in config.")
-        return column_mask_bool
+        return bad_columns
 
     print("  Detecting bad columns via horizontal derivatives...")
     try:
@@ -76,19 +88,19 @@ def _detect_bad_columns_derivative(flat_data, config, global_med):
 
         with warnings.catch_warnings():
             warnings.simplefilter("ignore", category=RuntimeWarning)
-            column_medians = np.nanmedian(flat_data, axis=0)
+            column_medians = np.array([np.nanmedian(flat_data[:, column]) for column in range(flat_data.shape[1])])
 
         # Mask entirely NaN/Inf columns immediately
         invalid_cols = ~np.isfinite(column_medians)
-        column_mask_bool[:, invalid_cols] = True
         num_invalid = np.count_nonzero(invalid_cols)
+        bad_columns = np.flatnonzero(invalid_cols)
 
         if num_invalid < len(column_medians):
             # Calculate horizontal derivative (difference between adjacent columns)
             valid_medians = column_medians.copy()
             valid_medians[invalid_cols] = np.nanmedian(valid_medians)  # Patch for diff
 
-            col_diffs = np.abs(np.diff(valid_medians, prepend=valid_medians[0]))
+            col_diffs = np.abs(np.diff(valid_medians))
 
             # Robust statistics of the differences
             med_diff = np.nanmedian(col_diffs)
@@ -100,16 +112,28 @@ def _detect_bad_columns_derivative(flat_data, config, global_med):
             thresh = med_diff + sigma_thresh * mad_diff
 
             # Columns where the jump from the neighbor is huge
-            jump_cols_idx = np.where(col_diffs > thresh)[0]
+            jump_edges = np.where(col_diffs > thresh)[0]
+            radius = max(2, int(config.get("local_filter_size", 15)) // 2)
+            local_baseline = np.empty_like(valid_medians)
+            for column in range(len(valid_medians)):
+                start = max(0, column - radius)
+                stop = min(len(valid_medians), column + radius + 1)
+                neighbors = np.concatenate((valid_medians[start:column], valid_medians[column + 1 : stop]))
+                local_baseline[column] = np.nanmedian(neighbors) if neighbors.size else valid_medians[column]
+            deviations = np.abs(valid_medians - local_baseline)
+            jump_cols_idx = []
+            for edge in jump_edges:
+                left, right = edge, edge + 1
+                jump_cols_idx.append(left if deviations[left] > deviations[right] else right)
 
             # Also catch columns that are completely dead (very close to 0)
-            dead_thresh = config.get("col_dead_thresh", config.get("col_median_dev_factor", 0.1)) * global_med
+            dead_thresh = config.get("col_dead_thresh", 0.1) * global_med
             dead_cols_idx = np.where(valid_medians < dead_thresh)[0]
 
-            bad_cols_combined = np.unique(np.concatenate([jump_cols_idx, dead_cols_idx]))
+            bad_cols_combined = np.unique(np.concatenate([jump_cols_idx, dead_cols_idx])).astype(int)
+            bad_columns = np.union1d(bad_columns, bad_cols_combined)
 
             if len(bad_cols_combined) > 0:
-                column_mask_bool[:, bad_cols_combined] = True
                 print(
                     f"    Found {len(bad_cols_combined)} bad columns (Deriv > {thresh:.3g} or Med < {dead_thresh:.3g})"
                 )
@@ -119,12 +143,9 @@ def _detect_bad_columns_derivative(flat_data, config, global_med):
                 print("    No bad columns detected.")
 
     except Exception as e:
-        import traceback
-
         print(f"  WARNING: Bad column detection failed: {e}. Skipping.")
-        print(traceback.format_exc())
 
-    return column_mask_bool
+    return bad_columns
 
 
 def detect_bad_pixels(flat_data, config, using_unit_flat=False):
@@ -145,8 +166,8 @@ def detect_bad_pixels(flat_data, config, using_unit_flat=False):
         ndarray: Boolean mask of bad pixels and columns (True = bad).
     """
     if not np.isfinite(flat_data).any():
-        warnings.warn("Flat data contains no finite values. Returning empty mask.", RuntimeWarning)
-        return np.zeros(flat_data.shape, dtype=bool)
+        warnings.warn("Flat data contains no finite values. Masking the entire flat.", RuntimeWarning)
+        return np.ones(flat_data.shape, dtype=bool)
 
     if using_unit_flat:
         print("  Skipping bad pixel/column detection (using unit flat).")
@@ -158,39 +179,69 @@ def detect_bad_pixels(flat_data, config, using_unit_flat=False):
     pixel_mask_bool = _detect_bad_pixels_local(flat_data, config, global_med)
 
     # --- 2. Derivative-Based Column Detection ---
-    column_mask_bool = _detect_bad_columns_derivative(flat_data, config, global_med)
+    bad_columns = _detect_bad_columns_derivative(flat_data, config, global_med)
 
     # --- 3. Combine Masks ---
-    final_mask_bool = pixel_mask_bool | column_mask_bool
-    total_bad = np.count_nonzero(final_mask_bool)
+    pixel_mask_bool[:, bad_columns] = True
+    total_bad = np.count_nonzero(pixel_mask_bool)
     print(f"  Total BAD pixels/columns identified in flat: {total_bad}")
 
-    return final_mask_bool
+    return pixel_mask_bool
 
 
 def compute_flat_bad_mask(flat_data, config, tile_size=1024):
     """Compute the full bad-pixel/column mask for one flat HDU, tiled.
 
-    Runs ``detect_bad_pixels`` over the same 1024x1024 tiles used by
-    ``process_image`` and ORs the results into a full-HDU mask. The result
-    depends only on the flat HDU, the tile size and the ``flat_masking``
-    settings; ``compute_flat_bad_mask_cached`` reuses it across every exposure
-    that shares a flat instead of recomputing the expensive 15x15 median
-    filter each time.
+    Local filtering uses halo-expanded tiles and writes only their cores, while
+    column statistics are computed once over the full HDU. The result depends
+    only on the flat HDU and the ``flat_masking`` settings;
+    ``compute_flat_bad_mask_cached`` reuses it across every exposure that shares
+    a flat instead of recomputing the expensive median filter each time.
     """
     bad_mask = np.zeros(flat_data.shape, dtype=bool)
+    global_med = _get_global_median(flat_data)
+    filter_size = config.get("local_filter_size", 15)
+    try:
+        halo = max(0, int(filter_size) // 2)
+    except (TypeError, ValueError):
+        halo = 0
     for y in range(0, flat_data.shape[0], tile_size):
         for x in range(0, flat_data.shape[1], tile_size):
-            tile = (slice(y, y + tile_size), slice(x, x + tile_size))
-            flat_tile = flat_data[tile]
-            if not np.isfinite(flat_tile).any():
-                continue
-            bad_mask[tile] = detect_bad_pixels(flat_tile, config, using_unit_flat=False)
+            y_stop = min(y + tile_size, flat_data.shape[0])
+            x_stop = min(x + tile_size, flat_data.shape[1])
+            expanded_y = slice(max(0, y - halo), min(flat_data.shape[0], y_stop + halo))
+            expanded_x = slice(max(0, x - halo), min(flat_data.shape[1], x_stop + halo))
+            expanded = flat_data[expanded_y, expanded_x]
+            expanded_mask = _detect_bad_pixels_local(expanded, config, global_med)
+            core_y = slice(y - expanded_y.start, y_stop - expanded_y.start)
+            core_x = slice(x - expanded_x.start, x_stop - expanded_x.start)
+            bad_mask[y:y_stop, x:x_stop] = expanded_mask[core_y, core_x]
+    bad_columns = _detect_bad_columns_derivative(flat_data, config, global_med)
+    bad_mask[:, bad_columns] = True
     return bad_mask
 
 
+def detect_dark_hot_pixels(dark_data, config):
+    """Upper-tail hot pixels in a mostly healthy, bias-subtracted dark HDU."""
+    if set(config) - {"hot_sigma"}:
+        raise ValueError("dark_masking accepts only hot_sigma")
+    hot_sigma = float(config.get("hot_sigma", 8.0))
+    if isinstance(config.get("hot_sigma"), bool) or not np.isfinite(hot_sigma) or hot_sigma <= 0:
+        raise ValueError("dark_masking.hot_sigma must be finite and positive")
+    valid = np.isfinite(dark_data)
+    if not np.any(valid):
+        return ~valid
+    values = dark_data[valid]
+    # ponytail: one global median/MAD assumes a uniform dark pedestal and a
+    # healthy majority; use per-amplifier/local baselines for structured darks.
+    center = np.median(values)
+    scatter = 1.4826 * np.median(np.abs(values - center))
+    threshold = center + hot_sigma * scatter
+    return (~valid) | (dark_data > threshold)
+
+
 # Bump when the cache layout or the mask computation changes incompatibly.
-_FLAT_BAD_CACHE_VERSION = 1
+_FLAT_BAD_CACHE_VERSION = 4
 # flat_masking keys that configure the cache rather than the mask.
 _FLAT_BAD_CACHE_CONTROL_KEYS = ("bad_mask_cache", "bad_mask_cache_dir")
 
@@ -214,8 +265,10 @@ def flat_bad_mask_cache_file(flat_cfg, flat_path, hdu_index, shape, tile_size):
     """Cache file for one flat HDU, or None when caching does not apply.
 
     The identity covers the flat's absolute path, byte size and nanosecond
-    mtime, the HDU index, its shape, the tile size and the flat_masking
-    settings, so a replaced flat or retuned masking cannot read a stale mask.
+    mtime, the HDU index, its shape and the flat_masking settings, so a replaced
+    flat or retuned masking cannot read a stale mask. ``tile_size`` remains an
+    accepted argument for compatibility but does not affect the tile-invariant
+    mask identity.
     """
     if not isinstance(flat_cfg, dict) or not flat_cfg.get("bad_mask_cache", True):
         return None
@@ -236,7 +289,6 @@ def flat_bad_mask_cache_file(flat_cfg, flat_path, hdu_index, shape, tile_size):
             str(stat.st_mtime_ns),
             str(hdu_index),
             "x".join(str(int(d)) for d in shape),
-            str(int(tile_size)),
             _flat_bad_settings(flat_cfg),
         )
     )
@@ -277,8 +329,16 @@ def compute_flat_bad_mask_cached(flat_data, flat_cfg, tile_size=1024, *, flat_pa
         with open(tmp_path, "wb") as handle:
             np.save(handle, bad_mask)
         os.replace(tmp_path, cache_file)  # atomic: concurrent readers see one or the other
-    except OSError:
-        pass
+    except OSError as exc:
+        # Results are still correct, but the ~20 s/HDU median filter will be
+        # recomputed on every run from here on. The usual cause is a read-only
+        # mount (VOSpace), where the cache cannot live next to the flat, so
+        # say so instead of failing silently.
+        print(
+            f"    WARNING: could not cache the flat bad-pixel mask ({exc}). "
+            f"Set flat_masking.bad_mask_cache_dir to a writable path, or expect this "
+            f"computation to repeat on every run."
+        )
     return bad_mask
 
 

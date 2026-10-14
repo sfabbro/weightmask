@@ -2,6 +2,7 @@ import argparse
 import json
 import os
 import shutil
+import tempfile
 from pathlib import Path
 from urllib.request import urlretrieve
 
@@ -61,7 +62,10 @@ def _quarantine_invalid_file(path):
     invalid_path = f"{path}.invalid"
     try:
         if os.path.exists(invalid_path):
-            os.remove(invalid_path)
+            with tempfile.NamedTemporaryFile(
+                prefix=Path(invalid_path).name + ".", dir=Path(path).parent, delete=False
+            ) as sibling:
+                invalid_path = sibling.name
         shutil.move(path, invalid_path)
         print(f"  Moved invalid file to {invalid_path}")
     except Exception as e:
@@ -75,7 +79,11 @@ def download_http(url, out_path):
 
     print(f"  Downloading from {url} ...")
     try:
-        urlretrieve(url, out_path)
+        # Download beside the destination and only publish completed bytes.
+        with tempfile.TemporaryDirectory(dir=Path(out_path).parent) as tmp:
+            pending = Path(tmp) / "download"
+            urlretrieve(url, pending)
+            os.replace(pending, out_path)
         print(f"  Saved to {out_path}")
         return True
     except Exception as e:
@@ -193,6 +201,7 @@ def download_mast(mast_id, product_name, out_path, proposal_id=None):
 def process_suite(suite_name):
     print(f"\nProcessing suite: {suite_name}")
     manifest = load_manifest(suite_name)
+    succeeded = bool(manifest["cases"])
 
     for case in manifest["cases"]:
         case_id = case["case_id"]
@@ -224,10 +233,12 @@ def process_suite(suite_name):
             )
         else:
             print(f"  No automated download source for {case_id}")
+            succeeded = False
             continue
 
         if not success:
             print(f"  FAILED to download data for {case_id}")
+            succeeded = False
             continue
 
         valid, reason = validate_case_file(case, out_path)
@@ -235,19 +246,21 @@ def process_suite(suite_name):
             print(f"  Downloaded file failed validation: {reason}")
             _quarantine_invalid_file(out_path)
             print(f"  FAILED to download valid data for {case_id}")
+            succeeded = False
+    return succeeded
 
 
-def main():
+def main(argv=None):
     parser = argparse.ArgumentParser(description="Download real benchmark data for WeightMask.")
     parser.add_argument("--suite", choices=["megacam_real", "acs_compare", "all"], default="all")
-    args = parser.parse_args()
+    args = parser.parse_args(argv)
 
     if args.suite == "all":
-        for s in ["megacam_real", "acs_compare"]:
-            process_suite(s)
+        succeeded = [process_suite(s) for s in ("megacam_real", "acs_compare")]
+        return int(not all(succeeded))
     else:
-        process_suite(args.suite)
+        return int(not process_suite(args.suite))
 
 
 if __name__ == "__main__":
-    main()
+    raise SystemExit(main())

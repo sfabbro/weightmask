@@ -37,14 +37,11 @@ def generate_weight_and_confidence(inv_variance_map, final_mask_int, config):
     if mask_detected:
         print("    NOTE: Detected objects will be masked (zero weight).")
 
-    # The legacy API used an out-of-range percentile to request max-based
-    # normalization.  Keep that behavior while the contract API stays strict.
-    contract_percentile = normalize_percentile if 0 < normalize_percentile <= 100 else 100.0
     product = build_weight_product(
         inv_variance_map,
         final_mask_int,
         exclude_detected=mask_detected,
-        confidence_percentile=contract_percentile,
+        confidence_percentile=normalize_percentile,
         producer=ProducerMetadata(version=__version__),
     )
     weight_map = product.weight
@@ -54,7 +51,11 @@ def generate_weight_and_confidence(inv_variance_map, final_mask_int, config):
     # --- 2. Create Confidence Map (Normalized Weight Map) ---
     print("  Calculating continuous confidence map (normalized weight map)...")
     conf_dtype_str = conf_cfg.get("dtype", "float32")
-    conf_dtype = getattr(np, conf_dtype_str, np.float32)  # Default to float32
+    conf_dtype = {
+        "float16": np.float16,
+        "float32": np.float32,
+        "float64": np.float64,
+    }.get(conf_dtype_str, np.float32)  # whitelist; default float32
 
     confidence_map = product.confidence
     if np.any(weight_map > 0):
@@ -68,6 +69,6 @@ def generate_weight_and_confidence(inv_variance_map, final_mask_int, config):
         print("    WARNING: No positive weights found. Confidence map will be zeros.")
 
     # Ensure final map has the correct dtype
-    confidence_map = confidence_map.astype(conf_dtype)
+    confidence_map = confidence_map.astype(conf_dtype, copy=False)
 
     return weight_map, confidence_map, product

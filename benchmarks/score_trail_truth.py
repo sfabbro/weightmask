@@ -26,18 +26,24 @@ from __future__ import annotations
 
 import argparse
 import contextlib
+import hashlib
 import io
 import json
+import math
 import os
 import sys
 import time
 from concurrent.futures import ProcessPoolExecutor
 
+import fitsio
 import numpy as np
+import yaml
 
 MODULE_DIR = os.path.dirname(os.path.abspath(__file__))
 if MODULE_DIR not in sys.path:
     sys.path.insert(0, MODULE_DIR)
+
+from production_inputs import capture_detector_inputs, streak_config  # noqa: E402
 
 DEFAULT_FIXTURE = os.path.join("benchmarks", "trail_truth", "megacam_real_labels.json")
 DEFAULT_REPORT = os.path.join("benchmarks", "trail_truth", "megacam_real_labels.score.json")
@@ -83,12 +89,15 @@ def run_detector(detector, science, data_sub, rms, existing, header, streak_cfg)
         mask, _, _ = _detect_streaks_houghpeaks(data_sub, rms, existing, streak_cfg)
         return mask
     if detector == "poloka":
-        from poloka_tracks import poloka_satellite_mask
+        from poloka_tracks import finite_robust_rms, poloka_satellite_mask
 
+        finite_science = science[np.isfinite(science)]
+        if finite_science.size == 0:
+            raise ValueError("no finite science values for Poloka comparison")
         mask, _, _ = poloka_satellite_mask(
             science,
-            np.full(science.shape, float(np.median(science)), dtype=np.float32),
-            float(np.median(rms)),
+            np.full(science.shape, float(np.median(finite_science)), dtype=np.float32),
+            finite_robust_rms(rms),
             existing_mask=existing,
             sat_mask=science >= float(header.get("SATURATE", 0.0) or np.inf),
         )
@@ -99,11 +108,9 @@ def run_detector(detector, science, data_sub, rms, existing, header, streak_cfg)
 def score_hdu(job):
     """Run every detector on one (exposure, HDU) and score the entries there."""
     import fitsio
-    import yaml
 
-    from weightmask.background import estimate_background
-
-    path, hdu, entries, config_path, detectors, corridor_px, quiet = job
+    path, hdu, entries, config_path, detectors, corridor_px, quiet = job[:7]
+    apply_persistence = bool(job[7]) if len(job) > 7 else False
     out = {"exposure": entries[0]["exposure"], "hdu": int(hdu), "results": {}, "error": None}
     try:
         with fitsio.FITS(path) as handle:
@@ -111,11 +118,9 @@ def score_hdu(job):
             header = handle[hdu].read_header()
         with contextlib.redirect_stdout(io.StringIO()) if quiet else contextlib.nullcontext():
             config = yaml.safe_load(open(config_path))
-            streak_cfg = dict(config["streak_masking"])
-            streak_cfg["enable"] = True
-            existing = np.zeros(science.shape, dtype=bool)
-            sky, rms = estimate_background(science, existing, config["sep_background"])
-            data_sub = science - sky
+            streak_cfg = streak_config(config)
+            prior = _persistence_prior(path, header, science.shape) if apply_persistence else None
+            data_sub, rms, existing = capture_detector_inputs(science, header, config, detector_prior=prior)
         # Rasterise every band once: the detectors share them.
         bands = [labelled_band(entry, science.shape, corridor_px) for entry in entries]
         for detector in detectors:
@@ -153,6 +158,62 @@ def score_hdu(job):
     return out
 
 
+def _ccd_name(header):
+    for key in ("CCDNAME", "CCDNAM"):
+        if key in header and str(header[key]).strip():
+            return str(header[key]).strip()
+    return None
+
+
+def _calibration_frame(header):
+    kinds = {"FLAT", "DARK", "BIAS", "ZERO", "DOMEFLAT", "SKYFLAT", "TWILIGHTFLAT"}
+    return any(
+        kinds.intersection(str(header.get(key, "")).upper().replace("_", " ").replace("-", " ").split())
+        for key in ("OBSTYPE", "IMAGETYP", "EXPTYPE")
+    )
+
+
+def _persistence_prior(path, header, shape):
+    """Columns and rows bright on two distinct other science files of this CCD."""
+    from weightmask.streaks import persistent_axis_mask
+    from weightmask.utils import paths_alias
+
+    name = _ccd_name(header)
+    if not name:
+        return None
+    directory = os.path.dirname(os.path.abspath(path))
+    frames = []
+    distinct_paths = []
+    for fname in sorted(os.listdir(directory)):
+        lower = fname.lower()
+        if not lower.endswith((".fits", ".fz")) or lower.startswith(("flat_", "dark_", "bias_", "zero_")):
+            continue
+        other = os.path.join(directory, fname)
+        if paths_alias(other, path) or any(paths_alias(other, previous) for previous in distinct_paths):
+            continue
+        distinct_paths.append(other)
+        try:
+            with fitsio.FITS(other) as handle:
+                if _calibration_frame(handle[0].read_header()):
+                    continue
+                for ext in range(len(handle)):
+                    try:
+                        other_header = handle[ext].read_header()
+                    except Exception:
+                        continue
+                    if _ccd_name(other_header) != name or _calibration_frame(other_header):
+                        continue
+                    data = np.ascontiguousarray(handle[ext].read(), dtype=np.float32)
+                    if data.shape == shape:
+                        frames.append(data)
+                        break
+        except Exception:
+            continue
+    if len(frames) < 2:
+        return None
+    return persistent_axis_mask(frames, min_other=2)
+
+
 def entry_key(entry) -> str:
     return f"{entry['exposure']}:{entry['hdu']}:{entry['ccdname']}:{entry['geometry']['offset_px']}"
 
@@ -163,7 +224,6 @@ def _detected(row, min_coverage):
 
 def summarise(fixture, per_hdu, detectors, min_coverage, skip_px):
     """Aggregate per-HDU results into per-detector metrics."""
-    labels = {entry_key(entry): entry["label"] for entry in fixture["entries"]}
     totals = {
         detector: {
             "trail_entries": 0,
@@ -187,7 +247,7 @@ def summarise(fixture, per_hdu, detectors, min_coverage, skip_px):
             bucket["hdus_scored"] += 1
             bucket["seconds"] += result["seconds"]
             for row in result["rows"]:
-                label = labels.get(row["key"], row.get("label"))
+                label = row["label"]
                 if row.get("band_px", 0) < skip_px:
                     continue
                 if label == "trail":
@@ -225,11 +285,28 @@ def main(argv=None):
         "--min-trail-recall", type=float, default=0.0, help="gate on trail recall (vacuous while there are no trails)"
     )
     parser.add_argument("--exposures", help="comma-separated subset")
+    parser.add_argument(
+        "--hdu-list",
+        help="comma-separated exposure:hdu pairs to restrict scoring to, e.g. 1013719p:17,1013720p:5",
+    )
     parser.add_argument("--workers", type=int, default=4)
     parser.add_argument("--report", default=DEFAULT_REPORT)
+    parser.add_argument(
+        "--apply-persistence",
+        action="store_true",
+        help="Exclude columns/rows bright on two other same-CCD exposures in this directory.",
+    )
     parser.add_argument("--quiet", action="store_true", default=True)
     parser.add_argument("--verbose", dest="quiet", action="store_false")
     args = parser.parse_args(argv)
+
+    if any(
+        not math.isfinite(value) or not 0 <= value <= 1
+        for value in (args.min_coverage, args.max_artefact_fp_rate, args.min_trail_recall)
+    ):
+        parser.error("coverage and recall/FP thresholds must be finite and between 0 and 1")
+    if not math.isfinite(args.corridor_px) or args.corridor_px <= 0 or args.skip_px < 1:
+        parser.error("--corridor-px and --skip-px must be positive")
 
     detectors = args.detector or ["streaks"]
     with open(args.fixture) as handle:
@@ -243,15 +320,36 @@ def main(argv=None):
             continue
         grouped.setdefault((entry["exposure"], entry["hdu"]), []).append(entry)
 
+    if args.hdu_list:
+        requested = set()
+        for item in args.hdu_list.split(","):
+            item = item.strip()
+            if not item:
+                continue
+            exposure, _, hdu = item.rpartition(":")
+            if not exposure or not hdu.isdigit():
+                print(f"ERROR: --hdu-list entry {item!r} is not exposure:hdu", file=sys.stderr)
+                return 2
+            requested.add((exposure, int(hdu)))
+        absent = requested - set(grouped)
+        if absent:
+            print(f"WARNING: no labelled entries for {sorted(absent)}", file=sys.stderr)
+        grouped = {key: value for key, value in grouped.items() if key in requested}
+
     plan, jobs, missing = [], [], set()
     for (exposure, hdu), entries in sorted(grouped.items()):
         info = fixture["data_requirements"]["exposures"].get(exposure)
         path = info["path"] if info else os.path.join(data_root, exposure + ".fits")
+        if args.data_root:
+            path = os.path.join(data_root, os.path.basename(path))
         if not os.path.exists(path):
             missing.add(exposure)
             continue
         plan.append(((exposure, hdu), entries))
-        jobs.append((path, hdu, entries, args.config, detectors, args.corridor_px, args.quiet))
+        job = (path, hdu, entries, args.config, detectors, args.corridor_px, args.quiet)
+        if args.apply_persistence:
+            job = (*job, True)
+        jobs.append(job)
 
     if missing:
         print(f"WARNING: no science file for exposure(s): {', '.join(sorted(missing))}", file=sys.stderr)
@@ -269,11 +367,24 @@ def main(argv=None):
 
     totals, skipped = summarise(fixture, per_hdu, detectors, args.min_coverage, args.skip_px)
 
+    # Record the config that produced these numbers. The 2026-09-18 score
+    # artifact carried no config, so its timings could not be reconciled with a
+    # direct measurement and the baseline was not reproducible.
+    config_source = open(args.config).read()
+    config_record = {
+        "path": args.config,
+        "sha256": hashlib.sha256(config_source.encode()).hexdigest(),
+        "detector_inputs": "production (process_image streak stage)",
+        "streak_masking": yaml.safe_load(config_source).get("streak_masking", {}),
+    }
+
     lines = [
         "# Real-MegaCam label-set score",
         "",
         f"Fixture: `{args.fixture}` (schema {fixture['schema']}). Detectors: {', '.join(detectors)}.",
         f"Coverage threshold {args.min_coverage:.2f} of a {2 * args.corridor_px:.0f} px-wide labelled band.",
+        f"Config `{config_record['path']}` sha256 `{config_record['sha256'][:16]}`. Detector inputs are captured from the",
+        "`process_image` streak stage, so the exclusion mask matches production.",
         "",
         "| detector | trail recall | artefact entries | artefact FPs | FP rate | artefact pixel coverage | HDUs | seconds |",
         "|---|---|---|---|---|---|---|---|",
@@ -293,9 +404,12 @@ def main(argv=None):
             "Trail recall is `n/a`: the fixture carries no confirmed real trail. The line that can be scored is the",
             "false-positive rate on real clutter, which is what the audit's injected-trail suite cannot measure.",
         ]
-    failures = []
+    failures = [f"missing science exposure: {exposure}" for exposure in sorted(missing)]
+    failures.extend(f"unscored {record['exposure']}:{record['hdu']}: {record['reason']}" for record in skipped)
     for detector in detectors:
         bucket = totals[detector]
+        if bucket["hdus_scored"] != len(jobs) or not (bucket["trail_entries"] + bucket["artefact_entries"]):
+            failures.append(f"{detector}: incomplete labelled evidence ({bucket['hdus_scored']}/{len(jobs)} HDUs)")
         if bucket["artefact_fp_rate"] is not None and bucket["artefact_fp_rate"] > args.max_artefact_fp_rate:
             failures.append(
                 f"{detector}: artefact FP rate {bucket['artefact_fp_rate']:.3f} > {args.max_artefact_fp_rate:.3f}"
@@ -306,11 +420,13 @@ def main(argv=None):
         lines += ["", "## Gate failures", ""] + [f"- {item}" for item in failures]
 
     report = {
+        "metric_revision": "truth-band-recall-v2",
         "fixture": args.fixture,
         "detectors": detectors,
+        "config": config_record,
         "thresholds": {"min_coverage": args.min_coverage, "corridor_px": args.corridor_px, "skip_px": args.skip_px},
         "totals": totals,
-        "skipped": skipped,
+        "skipped": skipped + [{"exposure": exposure, "reason": "missing science file"} for exposure in sorted(missing)],
         "gate_failures": failures,
         "per_hdu": per_hdu,
     }

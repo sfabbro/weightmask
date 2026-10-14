@@ -65,6 +65,16 @@ class TestBackground(unittest.TestCase):
         self.assertIsNotNone(bkg_map)
         self.assertIsNotNone(bkg_rms_map)
 
+    def test_median_filter_ignores_masked_source_values(self):
+        data = np.full((40, 40), 100.0, dtype=np.float32)
+        mask = np.zeros(data.shape, dtype=bool)
+        mask[12:28, 12:28] = True
+        config = {"method": "median_filter", "median_kernel_size": 9}
+        expected, _ = estimate_background(data, mask, config)
+        data[mask] = 10000.0
+        actual, _ = estimate_background(data, mask, config)
+        np.testing.assert_array_equal(actual, expected)
+
     def test_estimate_background_all_masked(self):
         """Test background estimation with all pixels masked."""
         # Create test science data
@@ -80,6 +90,41 @@ class TestBackground(unittest.TestCase):
         # Check that we got results (fallback to global)
         self.assertIsNotNone(bkg_map)
         self.assertIsNotNone(bkg_rms_map)
+
+    def test_big_endian_fits_array_uses_sep_without_fallback(self):
+        """astropy.io.fits returns big-endian (>f4) arrays; SEP requires native byte order."""
+        from astropy.io import fits
+
+        from weightmask.process import process_image
+
+        rng = np.random.default_rng(7)
+        native = (1000.0 + rng.normal(0.0, 5.0, (128, 128))).astype(np.float32)
+        big_endian = native.astype(">f4")
+        mask = np.zeros((128, 128), dtype=bool)
+        diag = {}
+        bkg_be, rms_be = estimate_background(
+            big_endian,
+            mask,
+            {"method": "sep", "box_size": 32, "filter_size": 3, "_diagnostics": diag},
+        )
+        bkg_ne, rms_ne = estimate_background(
+            native,
+            mask,
+            {"method": "sep", "box_size": 32, "filter_size": 3},
+        )
+        self.assertEqual(diag.get("effective_method"), "sep")
+        self.assertIsNone(diag.get("fallback"))
+        np.testing.assert_allclose(bkg_be, bkg_ne, rtol=1e-6, atol=1e-6)
+        np.testing.assert_allclose(rms_be, rms_ne, rtol=1e-6, atol=1e-6)
+
+        hdr = fits.Header({"GAIN": 1.5, "RDNOISE": 5.0, "SATURATE": 60000.0})
+        cfg = {"streak_masking": {"enable": False}}
+        mask_be, ivar_be, w_be, _, sky_be, _ = process_image(big_endian, hdr, big_endian / 1000.0, dict(cfg))
+        mask_ne, ivar_ne, w_ne, _, sky_ne, _ = process_image(native, hdr, native / 1000.0, dict(cfg))
+        np.testing.assert_array_equal(mask_be, mask_ne)
+        np.testing.assert_allclose(ivar_be, ivar_ne, rtol=1e-6, atol=1e-6)
+        np.testing.assert_allclose(w_be, w_ne, rtol=1e-6, atol=1e-6)
+        np.testing.assert_allclose(sky_be, sky_ne, rtol=1e-6, atol=1e-6)
 
 
 class TestSkyMeshRoundtrip(unittest.TestCase):
@@ -107,6 +152,64 @@ class TestSkyMeshRoundtrip(unittest.TestCase):
         self.assertTrue(bool(np.allclose(reconstruct_sky_mesh(np.full((2, 2), 7.0), (64, 64), 32), 7.0)))
         with self.assertRaises(ValueError):
             parse_sky_mesh_header({"SKYH": 10, "SKYW": 10})
+
+    def test_mesh_header_requires_complete_consistent_positive_dimensions(self):
+        from weightmask.background import parse_sky_mesh_header
+
+        valid = {"SKYMESH": True, "MESHBW": 8, "MESHBH": 8, "SKYH": 32, "SKYW": 24}
+        invalid = (
+            {key: value for key, value in valid.items() if key != "MESHBH"},
+            {**valid, "MESHBW": 4},
+            {**valid, "MESHBH": 0},
+            {**valid, "SKYH": -1},
+            {**valid, "SKYW": 0},
+        )
+        for header in invalid:
+            with self.subTest(header=header), self.assertRaises(ValueError):
+                parse_sky_mesh_header(header)
+
+    def test_mesh_data_requires_rank_finiteness_and_implied_shape(self):
+        from weightmask.background import reconstruct_sky_mesh
+
+        invalid = (
+            np.ones(16, dtype=np.float32),
+            np.ones((4, 4, 1), dtype=np.float32),
+            np.ones((3, 4), dtype=np.float32),
+            np.ones((5, 4), dtype=np.float32),
+            np.full((4, 4), np.nan, dtype=np.float32),
+            np.full((4, 4), np.inf, dtype=np.float32),
+        )
+        for mesh in invalid:
+            with self.subTest(shape=mesh.shape), self.assertRaises(ValueError):
+                reconstruct_sky_mesh(mesh, (32, 32), 8)
+
+    def test_one_node_mesh_dimensions_roundtrip(self):
+        from weightmask.background import reconstruct_sky_from_header, sky_to_mesh
+
+        for shape in ((1, 1), (1, 7), (7, 1)):
+            with self.subTest(shape=shape):
+                sky = np.full(shape, 1234.0, dtype=np.float32)
+                mesh, cards = sky_to_mesh(sky, 8)
+                rebuilt = reconstruct_sky_from_header(mesh, cards)
+                self.assertEqual(mesh.shape, (1, 1))
+                self.assertEqual(rebuilt.shape, shape)
+                np.testing.assert_array_equal(rebuilt, sky)
+
+    def test_single_node_column_mesh_reconstructs_at_full_width(self):
+        """A mesh narrower than one box has one node column, not one output column.
+
+        Reachable whenever the HDU is narrower than the mesh box (a 30 px wide
+        HDU with box 32 gives a (125, 1) mesh). The reconstruction used to
+        return (h, 1), silently writing a wrong-shaped sky FITS product.
+        """
+        from weightmask.background import reconstruct_sky_mesh, sky_to_mesh
+
+        for shape, box in (((4000, 30), 32), ((4000, 200), 128), ((300, 200), 128)):
+            sky = np.full(shape, 1234.0, dtype=np.float32)
+            mesh, cards = sky_to_mesh(sky, box)
+            rec = reconstruct_sky_mesh(mesh, shape, box)
+            self.assertEqual(rec.shape, shape, f"shape={shape} box={box} mesh={mesh.shape}")
+            np.testing.assert_allclose(rec, 1234.0, atol=1e-3)
 
     def test_megaprime_scale_roundtrip_sub_adu(self):
         """Pin MegaPrime CCD geometry in CI (SEP back -> mesh -> reconstruct)."""
@@ -167,6 +270,17 @@ class TestSkyMeshRoundtrip(unittest.TestCase):
 
 
 class TestDipRepair(unittest.TestCase):
+    def test_unmeasured_rms_dip_is_not_repaired(self):
+        from weightmask.background import _repair_negative_dips
+
+        data = np.full((20, 20), 1000.0, dtype=np.float32)
+        sky = data.copy()
+        sky[10, 10] = -100.0
+        rms = np.full_like(sky, 10.0)
+        rms[10, 10] = np.inf
+        out = _repair_negative_dips(sky, data, rms, np.zeros_like(sky, dtype=bool), {})
+        self.assertEqual(float(out[10, 10]), -100.0)
+
     def test_overshoot_filled_blanks_untouched(self):
         from weightmask.background import _repair_negative_dips
 
@@ -196,7 +310,10 @@ class TestDipRepair(unittest.TestCase):
         tiny_data = np.full((10, 10), 1000.0, dtype=np.float32)
         tiny_rms = np.full((10, 10), 10.0, dtype=np.float32)
         out2 = _repair_negative_dips(
-            tiny_sky, tiny_data, tiny_rms, np.zeros((10, 10), bool),
+            tiny_sky,
+            tiny_data,
+            tiny_rms,
+            np.zeros((10, 10), bool),
             {"dip_repair_enable": False},
         )
         self.assertTrue(bool((out2 == -10.0).all()))  # disabled: untouched

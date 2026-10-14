@@ -35,7 +35,7 @@ def load_metrics(root):
 
 
 def legacy_cpu_s(root, name, m):
-    """Reconstruct true CPU seconds for pre-delta metrics.
+    """Estimate CPU seconds for pre-delta metrics.
 
     Legacy per-exposure cpu_s entries are process-cumulative snapshots, so a
     naive sum overcounts. Reload the sidecar/report series from the results
@@ -43,7 +43,7 @@ def legacy_cpu_s(root, name, m):
     by the median of the remaining deltas.
     """
     src = m.get("source", "")
-    if not src or m.get("cpu_basis") == "delta-v2":
+    if not src or str(m.get("cpu_basis", "")).startswith("delta-"):
         return None
     try:
         doc = json.load(open(os.path.join(root, name, src)))
@@ -131,12 +131,15 @@ def main(argv=None):
         rss = fmt(m.get("max_rss_kb"), 0, 1 / 1024)
         mps = fmt(m.get("mpix_s"), 2)
         hdu = stage_mean(m, "hdu_total")
-        dhdu = (e0_hdu - hdu) if (e0_hdu is not None and hdu is not None) else None
+        comparable = bool(m.get("input_key")) and m["input_key"] == e0.get("input_key")
+        dhdu = (e0_hdu - hdu) if (comparable and e0_hdu is not None and hdu is not None) else None
         floor, check = "-", "-"
         spec = FLOORS.get(exp)
         if spec:
             stage, need = spec
-            if need is None:  # E4: halve cosmics mean/HDU vs control
+            if not comparable:
+                check = "incomparable inputs"
+            elif need is None:  # E4: halve cosmics mean/HDU vs control
                 got = stage_mean(m, stage)
                 if got is not None and e0_cosmics:
                     check = "MET" if got <= 0.5 * e0_cosmics else "miss"
@@ -160,11 +163,15 @@ def main(argv=None):
     twins = [n for n in metrics if n.startswith("E5-")]
     if len(twins) >= 2 and all(not metrics[t].get("_error") for t in twins):
         sums = [metrics[t].get("mask_checksums", {}) for t in twins]
-        vals = [sorted(s.values()) for s in sums]
-        same = len(vals[0]) > 0 and all(v == vals[0] for v in vals[1:])
-        verdicts.append(f"- E5 twins mask-identical: {same} ({', '.join(twins)}).")
-        if not same:
-            verdicts.append("  WARNING: thread setting changed masks — do not promote E5.")
+        if not all(metrics[t].get("mask_checksum_scope") == "all-image-hdus-v1" for t in twins):
+            verdicts.append("- E5 twins identity unverified: archived checksums cover only the first image HDU.")
+        elif not sums[0] or any(not s or any(str(v).startswith("error:") for v in s.values()) for s in sums):
+            verdicts.append("- E5 twins identity unverified: missing or failed mask checksums.")
+        else:
+            same = all(s == sums[0] for s in sums[1:])
+            verdicts.append(f"- E5 twins mask-identical: {same} ({', '.join(twins)}).")
+            if not same:
+                verdicts.append("  WARNING: thread settings or inputs changed masks — do not promote E5.")
 
     e1 = metrics.get("E1-w8", {})
     if e1 and not e1.get("_error"):

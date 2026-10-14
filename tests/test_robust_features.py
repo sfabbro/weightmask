@@ -7,7 +7,7 @@ from weightmask.background import estimate_background
 from weightmask.cosmics import detect_cosmic_rays
 from weightmask.satur import grow_bleed_trails
 from weightmask.streaks import detect_streaks
-from weightmask.variance import _rescale_variance_robust, _unbias_variance
+from weightmask.variance import _rescale_variance_robust
 
 
 class TestRobustFeatures(unittest.TestCase):
@@ -16,7 +16,8 @@ class TestRobustFeatures(unittest.TestCase):
         self.size = 256
         self.shape = (self.size, self.size)
         self.noise = 10.0
-        self.data = np.random.normal(100, self.noise, self.shape).astype(np.float32)
+        self.rng = np.random.default_rng(0)
+        self.data = self.rng.normal(100, self.noise, self.shape).astype(np.float32)
 
     def test_background_tiered_retry(self):
         """Test that background estimation retries with larger box if it fails."""
@@ -45,7 +46,7 @@ class TestRobustFeatures(unittest.TestCase):
 
     def test_background_mask_fallback(self):
         """Test that high mask coverage triggers global fallback."""
-        data = np.random.normal(100, 10, self.shape).astype(np.float32)
+        data = self.rng.normal(100, 10, self.shape).astype(np.float32)
         mask = np.ones(self.shape, dtype=bool)
         # Only 5% unmasked
         mask[50:60, 50:60] = False
@@ -66,26 +67,13 @@ class TestRobustFeatures(unittest.TestCase):
         obj_mask = np.zeros(self.shape, dtype=bool)
 
         # Need sci_data with the noise
-        data = np.random.normal(100, 10, self.shape).astype(np.float32)
+        data = self.rng.normal(100, 10, self.shape).astype(np.float32)
 
         scaled_inv_var = _rescale_variance_robust(inv_var, data, sky, obj_mask, 1e-9)
 
         # Expected scale factor: 1.0 / (2.0^2) = 0.25
         # 0.04 * 0.25 = 0.01
         self.assertAlmostEqual(np.median(scaled_inv_var), 0.01, delta=0.005)
-
-    def test_variance_unbiasing(self):
-        """Test removal of signal-dependent Poisson noise."""
-        sky = np.full(self.shape, 0.0, dtype=np.float32)
-        gain = 1.0
-        # Variance = BG_var + Signal/Gain
-        # If Signal=100 and BG_var=25, Total_var=125, inv_var=0.008
-        # Unbiasing should return inv_var=1/25 = 0.04
-        data = np.full(self.shape, 100.0, dtype=np.float32)
-        inv_var = np.full(self.shape, 1.0 / 125.0, dtype=np.float32)
-
-        unbiased = _unbias_variance(inv_var, data, sky, gain, 1e-9)
-        self.assertAlmostEqual(np.median(unbiased), 0.04, delta=0.001)
 
     def test_psf_cr_protection(self):
         """Test that star cores are protected from CR detection."""
@@ -122,25 +110,6 @@ class TestRobustFeatures(unittest.TestCase):
         config = {
             "enable": True,
             "mode": "auto_ground",
-            "satdet_params": {
-                "rescale_percentiles": [1.0, 99.5],
-                "gaussian_sigma": 1.0,
-                "gaussian_sigmas": [1.0, 1.5],
-                "canny_low_threshold": 0.05,
-                "canny_high_threshold": 0.2,
-                "small_edge_perimeter": 3,
-                "hough_threshold": 5,
-                "hough_min_line_length": 30,
-                "hough_max_line_gap": 10,
-                "cluster_angle_tol_deg": 4.0,
-                "cluster_rho_tol_px": 12.0,
-                "min_cluster_segments": 1,
-                "edge_buffer": 16,
-                "min_edge_touches": 0,
-                "min_interior_span": 30.0,
-                "confidence_threshold": 0.15,
-            },
-            "mrt_rescue_params": {"peak_threshold_sig": 3.0, "confidence_threshold": 0.15},
             "mask_params": {
                 "strip_length": 128,
                 "strip_width": 32,
@@ -155,10 +124,10 @@ class TestRobustFeatures(unittest.TestCase):
                 "min_inliers": 5,
                 "min_length": 50,
                 "detect_thresh_sig": 5.0,
+                "dilation_radius": 1,
                 # Sparse dotted trails: inlier count / endpoint span is ~0.04 for this fixture
                 "min_line_density": 0.03,
             },
-            "dilation_radius": 1,
         }
 
         # Need background RMS for thresholding
