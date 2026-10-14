@@ -269,6 +269,20 @@ frame of round stars there is no mode to find and the veto does nothing.
 `tests/test_star_trail_family.py` pins both halves: family recovery on a trailed
 field, and bit-identical sidereal masks with the veto on and off.
 
+The window those two conditions draw is measured rather than asserted.
+`benchmarks/star_trail_veto_window.py` (`pixi run streak-veto-window`) sweeps
+both classes at the family's own angle on one frame: on a 55 px field, whose
+family measures 47 px, the veto's decision flips at 189 px -- 3.985x the measured
+family length, which is `length_factor` to within 0.4%, so the config sets
+exactly the boundary it claims to. A trail's length comes from its own angular
+rate, so a satellite flying parallel to the field's motion inside 3.4 star-trail
+lengths is a false negative by design rather than by accident. A chain whose
+star trails are separated by gaps -- the campaign's geometry -- is dropped at
+every span measured, up to 21x,
+because each gap leaves its own component at about 1.15x; a chain whose segments
+touch is a single component that behaves exactly like the satellite the window
+protects, so the length condition cannot separate those two classes on its own.
+
 The following is historical 0.2.0 chronology, retained to explain why the
 removed stage is not part of the current configuration. There used to be a
 third stage, an angle-binned Radon rescue

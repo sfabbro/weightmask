@@ -228,6 +228,66 @@ and belongs to the owner of the campaign, not to this plan.
 - Is `flat_08Bm01_r.fits.fz` the right flat for all seven exposures, or do some
   groups need a different one? `run_one.sh` stages flats per group, and the
   campaign's groups are visible in its staging records.
-- What happens on a frame where the field's trails and a satellite share a
+- ~~What happens on a frame where the field's trails and a satellite share a
   direction? P3's length condition is a design choice; no measurement yet exists
-  to set it.
+  to set it.~~ **Answered, §7.**
+
+## 7. P3's length window, measured 2026-10-14
+
+`benchmarks/star_trail_veto_window.py` (`pixi run streak-veto-window`), 1024-px
+synthetic non-sidereal fixture, 60 trailed stars, 55 px star trails through the
+production input path. The family is estimated from the frame and comes back at
+40.07 deg / 47.43 px / 59 of 86 elongated sources, so a rendered 55 px trail
+measures 0.86 of itself -- the window is quoted in *measured* family lengths and
+the geometric lengths are alongside.
+
+Both classes were swept at the family's own angle, which is where the length
+condition is the only thing deciding:
+
+| cell | geometric | measured | outcome |
+|---|---|---|---|
+| parallel satellite, 2.0x | 110 px | 2.32x | DROPPED, whole component (375 px) |
+| parallel satellite, 3.0x | 165 px | 3.48x | DROPPED |
+| parallel satellite, 3.5x | 192 px | 4.06x | kept |
+| parallel satellite, 8.0x | 440 px | 9.28x | kept |
+
+Bisecting the bracket puts the decision flip at **189.0 px = 3.985x the measured
+family length**, which is the configured `length_factor` 4.0 to within 0.4%: the
+knob sets exactly the boundary it claims to. Length follows the trail's own
+angular rate, so a satellite flying parallel to the field's motion inside ~3.4
+star-trail lengths is a false negative by design, and `length_factor` is the dial
+for it. The angle tolerance measures 9.13 deg inside and 11.14 deg outside its
+10 deg setting.
+
+The chain side, which P4 called the honest first measurement (2 to 12 segments,
+gap factors 1.0, 1.6 and 2.5 star-trail lengths):
+
+- **Gapped chains are dropped at every span measured, to 21.5x the family
+  length.** Each gap leaves a separate component, every one of them measuring
+  1.14-1.17x, so the veto removes all of it -- and on the 8-segment/1.6L case
+  through the stage, the 778 px of chain in the mask falls to 0 and the frame's
+  total STREAK footprint goes 14,123 -> 7,370 px.
+- **A contiguous chain is not.** With the segments touching it is one component
+  and grows without limit, so it is dropped inside the same window and survives
+  outside it: 3.47x dropped, 4.64x kept. Length alone cannot separate a touching
+  chain from the parallel satellite the window protects, so P3's docstring
+  argument -- "a chain of star trails cannot outgrow the trails it is made of" --
+  holds for the gapped geometry only. That is the limitation now recorded in the
+  CHANGELOG and in the config comment, not a defect to fix by turning the dial:
+  raising `length_factor` buys contiguous-chain coverage with parallel-satellite
+  recall on a one-for-one basis.
+- The injected parallel trail does not move the family it is judged against
+  (47.20-47.31 px, angle within 0.02 deg, at 2x, 4x and 8x), so the comparison
+  cannot close on the object it is meant to pass.
+
+Still open, and not answerable locally. The campaign's HDU 17 chain was recorded
+as a 931 px *contiguous* component against a 55 px family, i.e. ~20x -- outside
+the window -- so if that line reached the veto as one component, the length
+condition did not remove it, and the recorded 4,379 -> 0 px drop on that crop
+came from the other components the veto does catch. The competing reading is that
+the 4,379 px footprint was mostly per-segment trails (each ~1.15x, dropped) and
+detector bands, and the 931 px figure describes the mask *before* the fix rather
+than anything that survived into that number. Both readings fit the arithmetic
+above; only the crop separates them, the flat-less numbers come from the
+campaign's pods, and the real exposure is not on this machine. This belongs with
+§6's first question: re-measure it where the data is.
