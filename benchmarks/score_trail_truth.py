@@ -357,13 +357,20 @@ def main(argv=None):
         print(f"ERROR: nothing scoreable under {data_root}", file=sys.stderr)
         return 2
 
-    print(f"Scoring {len(detectors)} detector(s) on {len(jobs)} annotated HDU(s)")
+    print(f"Scoring {len(detectors)} detector(s) on {len(jobs)} annotated HDU(s)", flush=True)
     started = time.time()
     per_hdu = []
     with ProcessPoolExecutor(max_workers=max(1, args.workers)) as pool:
-        for _, record in zip(plan, pool.map(score_hdu, jobs, chunksize=1)):
+        for done, (_, record) in enumerate(zip(plan, pool.map(score_hdu, jobs, chunksize=1)), start=1):
             per_hdu.append(record)
-    print(f"Scored in {time.time() - started:.0f} s")
+            # One line per HDU as it lands. The label set is 89 real MegaCam
+            # HDUs, so this is the difference between a pod run that can be
+            # watched (and whose partial progress survives a timeout) and one
+            # that prints nothing for hours and cannot be told from a hang.
+            seconds = sum(item["seconds"] for item in record["results"].values())
+            outcome = record["error"] or f"scored in {seconds:.0f}s"
+            print(f"  [{done}/{len(jobs)}] {record['exposure']} HDU {record['hdu']}: {outcome}", flush=True)
+    print(f"Scored in {time.time() - started:.0f} s", flush=True)
 
     totals, skipped = summarise(fixture, per_hdu, detectors, args.min_coverage, args.skip_px)
 

@@ -70,12 +70,22 @@ def _mean(values):
 
 
 def _run(args):
+    """Run one stage, echoing its output as it arrives.
+
+    The stages are where this gate spends its time: the score stage covers every
+    annotated HDU and takes hours on real MegaCam frames, so its output is
+    streamed rather than buffered. A run killed by the pod's own timeout then
+    leaves the progress it had reached, and a live session log shows which stage
+    is running instead of an hour of silence.
+    """
     print("+ " + " ".join(args), flush=True)
-    proc = subprocess.run(args, cwd=ROOT, capture_output=True, text=True)
-    text = (proc.stdout or "") + (proc.stderr or "")
-    if text:
-        print(text, end="" if text.endswith("\n") else "\n")
-    return proc.returncode, text
+    proc = subprocess.Popen(args, cwd=ROOT, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, bufsize=1)
+    chunks = []
+    for line in proc.stdout:
+        chunks.append(line)
+        print(line, end="", flush=True)
+    code = proc.wait()
+    return code, "".join(chunks)
 
 
 def _write(path, lines):
@@ -147,7 +157,12 @@ def _skip(out_path, data_dir, manifest_path, version, command):
     return 0
 
 
-def _score(data_dir, out_dir, failures, notes):
+def _score(data_dir, out_dir, failures, notes, workers=4):
+    # This is the stage that costs the gate its wall time: one production streak
+    # pass per annotated HDU, 89 of them on the shipped MegaCam fixture. The
+    # worker count is a parameter rather than the scorer's default of 4 because
+    # the pod a release job gets can have far more cores than a laptop, and the
+    # default silently left half of an eight-core pod idle (measured 2026-10-13).
     code, text = _run(
         [
             sys.executable,
@@ -155,12 +170,14 @@ def _score(data_dir, out_dir, failures, notes):
             "--detector",
             "streaks",
             "--apply-persistence",
+            "--workers",
+            str(workers),
             *(["--data-root", data_dir] if data_dir is not None else []),
             "--report",
             os.path.join(out_dir, "trail_truth.score.json"),
         ]
     )
-    notes.append("score_trail_truth --detector streaks --apply-persistence")
+    notes.append(f"score_trail_truth --detector streaks --apply-persistence --workers {workers}")
     if code != 0:
         failures.append(f"score_trail_truth exited {code}")
     for line in text.splitlines():
@@ -269,7 +286,15 @@ def main(argv=None):
     parser.add_argument("--manifest", default=DEFAULT_MANIFEST)
     parser.add_argument("--version", default=None)
     parser.add_argument("--hdu", type=int, default=1)
+    parser.add_argument(
+        "--workers",
+        type=int,
+        default=4,
+        help="parallel workers for the score stage, which is where this gate spends its time",
+    )
     args = parser.parse_args(argv)
+    if args.workers < 1:
+        parser.error("--workers must be at least 1")
     version = args.version or "0.0.0"
     command = "pixi run science-gate" + (" " + " ".join(argv) if argv else "")
     manifest_path = _repo_path(args.manifest)
@@ -292,7 +317,7 @@ def main(argv=None):
     exposure = next((path for path in fits if "1013719p" in os.path.basename(path)), fits[0])
     failures = []
     notes = [f"data: `{exposure}`"]
-    _score(data_dir if args.data_dir is not None else None, out_dir, failures, notes)
+    _score(data_dir if args.data_dir is not None else None, out_dir, failures, notes, args.workers)
     _inject(exposure, args.hdu, out_dir, failures, notes)
     _cosmics(exposure, args.hdu, out_dir, failures, notes)
     _perf(exposure, out_dir, failures, notes)

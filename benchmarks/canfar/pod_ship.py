@@ -41,6 +41,29 @@ HTTP 500 (`Error calling /ac to augment subject`, `unexpected failure download
 certificate`) because its CADC dependency calls fail intermittently. Creates are
 retried until accepted.
 
+The platform's own `env` parameter is *lossy* for the values this harness
+sends. Carrying `WM_COMMAND` through it did not deliver the variable at all, so
+the runner reported `FATAL: WM_TREE and WM_COMMAND are both required` -- which
+reads exactly like a flaky control plane, and was recorded as one. That failure
+is pod behaviour, so it is certain; bisecting it on 2026-10-13 correlated with
+`=` in the value (a value containing one did not arrive, and one ending in `=`
+arrived with it stripped), which is how `--tb=short` and `-o flat=x` vanished.
+Treat that correlation as the working rule rather than the proven parser:
+absence was read from the log, and the log is not a faithful channel (see
+below). A `$` is separately rejected with `400 Illegal group reference`.
+
+Environment is therefore carried *inside the payload*: argv token 1 is
+`base64(json(env))` and the bootstrap applies it before the script runs, so no
+value is subject to the platform's parser. argv is proven lossless -- an 8-token
+base64 stage payload sha256-verified inside the pod.
+
+One caution when reading any of this back: **`canfar logs` rewrites the text it
+renders.** A pod that deliberately set `WM_SHORTCODE=a:b:c` prints `a:b:c`, and
+the log shows `a\U0001f171c` -- an emoji expansion applied to the rendering. That
+briefly looked like a transport fault here. To read an exact value back, have
+the payload print base64 taken inside the pod: the alphabet has no `:`, so the
+log has nothing to rewrite.
+
 Logs are fetched with the `canfar` CLI so this script does not depend on the
 exact log endpoint shape.
 
@@ -53,8 +76,17 @@ Usage
     --image IMAGE      container image
     --wait SECONDS     deadline for the pod to finish (default 900)
     --keep             do not delete the session
+    --delete-unfinished  delete the session even when the deadline expired while
+                       it was still running (default: leave it alone)
     --max-body BYTES   refuse to send a body larger than this (default 4 MiB)
     --dry-run          report the assembled body size, create nothing
+
+A deadline that expires while the pod is still running must not delete the
+session. On 2026-10-13 a fan-out of seven MegaCam exposures was launched with a
+fixed `--wait`; four finished and three were deleted mid-run, which left each of
+them with an unrenamed `.wm-tmp-*` mask and no per-HDU stats. The deletion was
+ours, not the platform's, and it looked exactly like a cluster fault. Long jobs
+are the expected case here, so the session now survives its harness.
 
 Exit status 0 when the pod ran and reported Completed.
 """
@@ -88,11 +120,20 @@ DEFAULT_IMAGE = os.environ.get("CANFAR_IMAGE", "images.canfar.net/astroai/base:l
 
 # MAX_ARG_STRLEN is 32 pages (128 KiB) on Linux; stay clear of the edge.
 MAX_ARG_CHARS = 120_000
-# Rejoins the base64 chunks in sys.argv into the payload and executes it. No
-# spaces, so it survives the server-side split as a single token.
+# Applies the environment, then rejoins argv[2:] into the payload and executes
+# it. It must contain no space, because a space is an argument boundary by the
+# time the server has re-split cmd and args -- which is also why the imports go
+# through `__import__` (`import a,b` needs one). `tests/test_canfar_scripts.py`
+# asserts the no-space property and drives the whole thing through a split.
+# argv[1] is the environment as base64 JSON; echoing it first makes the pod log
+# the record of what the job actually ran with.
 BOOTSTRAP = (
-    "exec(compile(__import__('lzma').decompress(__import__('base64')"
-    ".b64decode(''.join(__import__('sys').argv[1:]))),'payload','exec'))"
+    "_i=__import__;"
+    "_sys=_i('sys');_os=_i('os');"
+    "_env=_i('json').loads(_i('base64').b64decode(_sys.argv[1]));"
+    "_os.environ.update(_env);"
+    "print('WM_ENV',_i('json').dumps(_env,sort_keys=True),flush=True);"
+    "exec(compile(_i('lzma').decompress(_i('base64').b64decode(''.join(_sys.argv[2:]))),'payload','exec'))"
 )
 
 FAILURE_CLASSES = (
@@ -110,20 +151,40 @@ def classify(body: str) -> str:
     return "other"
 
 
-def build_args(script: bytes) -> tuple[str, dict]:
-    """Encode a script as one or more space-free argv tokens.
+def build_args(script: bytes, env: dict[str, str]) -> tuple[str, dict]:
+    """Encode the script and its environment as space-free argv tokens.
 
     Returns the args string and a small bookkeeping dict for reporting. The
-    payload is lzma+base64; a single token carries it when it fits under
-    MAX_ARG_STRLEN, otherwise it is split and the bootstrap rejoins it.
+    payload is lzma+base64 and is split whenever it exceeds MAX_ARG_STRLEN,
+    which the bootstrap rejoins; the environment rides along as argv[1] so it
+    never touches the platform's lossy `env` parser.
     """
     blob = base64.b64encode(lzma.compress(script, preset=9 | lzma.PRESET_EXTREME)).decode("ascii")
-    if len(blob) <= MAX_ARG_CHARS:
-        expr = "exec(__import__('lzma').decompress(__import__('base64').b64decode('" + blob + "')))"
-        return "-c " + expr, {"mode": "single-token", "tokens": 1, "blob": len(blob)}
     chunks = [blob[i : i + MAX_ARG_CHARS] for i in range(0, len(blob), MAX_ARG_CHARS)]
-    info = {"mode": "chunked", "tokens": len(chunks), "blob": len(blob)}
-    return "-c " + BOOTSTRAP + " " + " ".join(chunks), info
+    env_token = base64.b64encode(json.dumps(env, sort_keys=True).encode()).decode("ascii")
+    info = {"tokens": len(chunks) + 1, "blob": len(blob), "env_keys": sorted(env)}
+    return "-c " + BOOTSTRAP + " " + env_token + " " + " ".join(chunks), info
+
+
+def parse_env(pairs: list[str]) -> dict[str, str]:
+    """Turn repeated ``KEY=VALUE`` arguments into a map, rejecting bad input.
+
+    A value is free to contain `=` and `$` -- that is the whole reason this
+    does not go through the platform's `env` parameter -- but the key still has
+    to be a usable environment name, and a key given twice is a mistake rather
+    than a silent last-writer-wins.
+    """
+    env: dict[str, str] = {}
+    for pair in pairs:
+        key, sep, value = pair.partition("=")
+        if not sep:
+            raise SystemExit(f"--env needs KEY=VALUE, got {pair!r}")
+        if not key.isidentifier():
+            raise SystemExit(f"--env key {key!r} is not a valid environment name")
+        if key in env:
+            raise SystemExit(f"--env key {key!r} given twice")
+        env[key] = value
+    return env
 
 
 def http_session() -> tuple[ssl.SSLContext, object]:
@@ -188,6 +249,46 @@ def canfar_retry(*args: str, tries: int = 10, sleep: float = 5.0) -> str:
     return output + "\n<pod_ship: giving up after retrying the API>"
 
 
+def deletion_plan(status_text: str, keep: bool, delete_unfinished: bool) -> tuple[bool, str]:
+    """Decide whether to delete the session, and say why.
+
+    Returns ``(delete, reason)``. A session that is still running when the local
+    deadline expires is left in place: deleting it would destroy work the pod is
+    in the middle of, and the caller cannot tell that apart from a platform
+    fault. Split out from ``main`` so the rule is testable without a pod.
+    """
+    if keep:
+        return False, "--keep"
+    if status_text_is_finished(status_text):
+        return True, "the pod finished"
+    if delete_unfinished:
+        return True, "--delete-unfinished was given"
+    return False, "the deadline expired while the pod was still running"
+
+
+def status_text_is_finished(status_text: str) -> bool:
+    return any(word in status_text for word in ("Completed", "Succeeded", "Failed", "Error"))
+
+
+def build_params(options, args: str) -> dict:
+    """Assemble the create request.
+
+    Deliberately has no ``env`` key: the platform's ``env`` parameter drops any
+    entry whose value contains ``=``, so the environment travels in ``args``
+    instead. Split out from ``main`` so a test can assert that absence -- a
+    re-added ``params["env"]`` would silently start losing variables again.
+    """
+    return {
+        "name": options.name or "wm-ship-" + "".join(random.choices(string.ascii_lowercase, k=6)),
+        "image": options.image,
+        "cores": str(options.cpu),
+        "ram": str(options.ram),
+        "type": "headless",
+        "cmd": "python3",
+        "args": args,
+    }
+
+
 def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("script")
@@ -197,6 +298,11 @@ def main() -> int:
     parser.add_argument("--image", default=DEFAULT_IMAGE)
     parser.add_argument("--wait", type=int, default=900)
     parser.add_argument("--keep", action="store_true")
+    parser.add_argument(
+        "--delete-unfinished",
+        action="store_true",
+        help="delete the session even if the deadline expired while it was still running",
+    )
     parser.add_argument("--tries", type=int, default=30)
     parser.add_argument("--retry-sleep", type=float, default=6.0)
     parser.add_argument("--max-body", type=int, default=4 * 1024 * 1024)
@@ -205,30 +311,26 @@ def main() -> int:
         action="append",
         default=[],
         metavar="KEY=VALUE",
-        help="environment variable for the pod (repeatable); the shipped script reads these",
+        help=(
+            "environment variable for the pod (repeatable); the shipped script reads these. "
+            "Carried inside the payload, so values may contain '=' and '$'"
+        ),
     )
     parser.add_argument("--dry-run", action="store_true")
     options = parser.parse_args()
 
+    env = parse_env(options.env)
     source = Path(options.script).read_bytes()
-    args, encoding = build_args(source)
-    params = {
-        "name": options.name or "wm-ship-" + "".join(random.choices(string.ascii_lowercase, k=6)),
-        "image": options.image,
-        "cores": str(options.cpu),
-        "ram": str(options.ram),
-        "type": "headless",
-        "cmd": "python3",
-        "args": args,
-    }
-    if options.env:
-        params["env"] = list(options.env)
+    args, encoding = build_args(source, env)
+    params = build_params(options, args)
     body = urllib.parse.urlencode(params, doseq=True).encode()
     print(
         f"[pod_ship] script {len(source)} B -> lzma+b64 {encoding['blob']} B "
-        f"({encoding['mode']}, {encoding['tokens']} argv token(s)) -> form body {len(body)} B",
+        f"({encoding['tokens']} argv tokens incl. env) -> form body {len(body)} B",
         flush=True,
     )
+    for key in encoding["env_keys"]:
+        print(f"[pod_ship] env {key}={env[key]!r} (in-payload)", flush=True)
     if len(args) > 6000:
         print(
             "[pod_ship] note: this payload would NOT fit the query-string path "
@@ -292,7 +394,7 @@ def main() -> int:
             if "Status" in line:
                 status_text = line.strip().strip("│").strip()
                 break
-        if any(word in status_text for word in ("Completed", "Succeeded", "Failed", "Error")):
+        if status_text_is_finished(status_text):
             break
         time.sleep(10)
 
@@ -302,11 +404,18 @@ def main() -> int:
     print("[pod_ship] ===== end pod log =====", flush=True)
 
     ok = "Completed" in status_text or "Succeeded" in status_text
-    if not options.keep:
+    delete, reason = deletion_plan(status_text, options.keep, options.delete_unfinished)
+    if delete:
         # --force: without it the client prompts for confirmation and an
         # unattended harness would block on stdin until the shell is reclaimed.
         canfar_retry("delete", "--force", session_id, tries=3)
-        print(f"[pod_ship] session {session_id} delete requested", flush=True)
+        print(f"[pod_ship] session {session_id} delete requested ({reason})", flush=True)
+    else:
+        print(
+            f"[pod_ship] session {session_id} kept running ({reason}); "
+            f"its results land on the mount as it writes them, so it does not need this process",
+            flush=True,
+        )
     if classes:
         print("[pod_ship] create-failure classes:", flush=True)
         for label in sorted(set(classes)):

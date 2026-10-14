@@ -19,7 +19,7 @@ The destination is keyed by commit SHA so several candidates can coexist and a
 job can state exactly which tree it measured.
 
 Usage:
-    python3 benchmarks/canfar/stage_source.py [--ref REF] [--dest DIR] [--keep]
+    python3 benchmarks/canfar/stage_source.py [--ref REF] [--dest DIR] [--keep] [--worktree]
 
 Env:
     WM_STAGE_DEST   default /arc/projects/mlao/cfhtcast/weightmask-perf/repos
@@ -30,9 +30,11 @@ from __future__ import annotations
 import argparse
 import base64
 import hashlib
+import io
 import os
 import subprocess
 import sys
+import tarfile
 import tempfile
 from pathlib import Path
 
@@ -84,14 +86,54 @@ print("STAGE_END")
 '''
 
 
-def git_archive(ref: str) -> bytes:
-    proc = subprocess.run(["git", "archive", "--format=tar", ref], cwd=ROOT, capture_output=True, check=False)
-    if proc.returncode != 0:
-        raise SystemExit(f"git archive {ref} failed: {proc.stderr.decode(errors='replace')}")
-    packed = subprocess.run(["gzip", "-9"], input=proc.stdout, capture_output=True, check=False)
+def _gzip(data: bytes) -> bytes:
+    packed = subprocess.run(["gzip", "-9"], input=data, capture_output=True, check=False)
     if packed.returncode != 0:
         raise SystemExit("gzip failed")
     return packed.stdout
+
+
+def git_archive(ref: str, root: Path = ROOT) -> bytes:
+    proc = subprocess.run(["git", "archive", "--format=tar", ref], cwd=root, capture_output=True, check=False)
+    if proc.returncode != 0:
+        raise SystemExit(f"git archive {ref} failed: {proc.stderr.decode(errors='replace')}")
+    return _gzip(proc.stdout)
+
+
+def git_archive_worktree(root: Path = ROOT) -> bytes:
+    """Tar the working tree, uncommitted edits included.
+
+    `git archive` reads the object store, so a candidate that has not been
+    committed cannot be measured in a pod — and the measurements that need a pod
+    here (MegaCam-sized inputs, eight cores, hours of wall time) are exactly the
+    ones a candidate change has to survive. The path list comes from the index
+    plus untracked files that are not ignored; the bytes come from disk, so a
+    tracked file carries its uncommitted edit. Paths listed but missing on disk
+    are skipped rather than failing the tarball.
+
+    The archive is built with `tarfile` rather than the system tar: `git
+    archive` plus GNU extensions is not portable to the mac that stages these
+    trees.
+    """
+    listing = subprocess.run(
+        ["git", "ls-files", "-z", "--cached", "--others", "--exclude-standard"],
+        cwd=root,
+        capture_output=True,
+        check=False,
+    )
+    if listing.returncode != 0:
+        raise SystemExit(f"git ls-files failed: {listing.stderr.decode(errors='replace')}")
+    names = [name for name in listing.stdout.decode("utf-8", "surrogateescape").split("\0") if name]
+    if not names:
+        raise SystemExit("git ls-files listed no paths")
+    buffer = io.BytesIO()
+    with tarfile.open(fileobj=buffer, mode="w") as archive:
+        for name in names:
+            path = os.path.join(root, name)
+            if not os.path.exists(path):
+                continue
+            archive.add(path, arcname=name)
+    return _gzip(buffer.getvalue())
 
 
 def resolve_sha(ref: str) -> str:
@@ -108,18 +150,34 @@ def main() -> int:
     parser.add_argument("--cpu", type=int, default=1)
     parser.add_argument("--ram", type=int, default=4)
     parser.add_argument("--keep", action="store_true", help="keep the staging session")
+    parser.add_argument(
+        "--worktree",
+        action="store_true",
+        help="stage the working tree (uncommitted edits included) under a '-dirty' suffix",
+    )
     options = parser.parse_args()
 
     sha = resolve_sha(options.ref)
-    tarball = git_archive(options.ref)
-    target = os.path.join(options.dest, f"cand-{sha[:12]}")
+    if options.worktree:
+        # A separate destination on purpose: this tree is not the commit, and
+        # later jobs cite the directory they measured. Overwriting the clean
+        # tree of the same commit would silently change what a running job reads.
+        tarball = git_archive_worktree()
+        label = f"{sha[:12]}-dirty"
+    else:
+        tarball = git_archive(options.ref)
+        label = sha[:12]
+    target = os.path.join(options.dest, f"cand-{label}")
     payload_source = PAYLOAD_TEMPLATE.format(
         payload=base64.b64encode(tarball).decode("ascii"),
         dest=target,
         expect=hashlib.sha256(tarball).hexdigest(),
     )
-    print(f"[stage] ref {options.ref} -> {sha}")
+    source = "working tree" if options.worktree else f"ref {options.ref}"
+    print(f"[stage] {source} -> {sha}")
     print(f"[stage] tarball {len(tarball)} B -> payload script {len(payload_source)} B -> dest {target}")
+    if options.worktree:
+        print("[stage] NOT the commit: artifacts produced from this tree must be labelled as its working state")
 
     with tempfile.TemporaryDirectory(prefix="wm_stage_") as workdir:
         script = Path(workdir) / "stage_payload.py"

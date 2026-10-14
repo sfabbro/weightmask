@@ -8,11 +8,16 @@ covers the science gate, the pytest suite, and the benchmarks:
     WM_TREE           staged tree to work in (required)
     WM_COMMAND        shell command to run in that tree; the literal placeholder
                       `{py}` is replaced by the interpreter this runner selected
-                      (required). A literal `$` cannot be used: the platform runs
-                      env values through a regex expansion and rejects them with
-                      `400 Illegal group reference`.
+                      (required). Any character is allowed, `$` and `=` included:
+                      `pod_ship.py` carries the environment inside the payload
+                      because the platform's `env` parameter silently drops any
+                      value containing `=` (measured 2026-10-13).
     WM_STAGE_INPUTS   1 to place the fixture exposures under
                       benchmark_data/megacam/perf before running
+    WM_RESULTS_ROOT   the fetchable results root on the shared mount. A command
+                      may write under it directly (usually <root>/<tag>), which
+                      is what keeps an artifact reviewable after the session:
+                      everything on /scratch dies with the pod
     WM_RESULTS_TAG    copy test_outputs/harness outputs to
                       <results root>/<tag>
     WM_TIMEOUT        seconds allowed for WM_COMMAND (default 7200)
@@ -72,16 +77,33 @@ REQUIRED_IMPORTS = (
 )
 
 
-def sh(command, cwd=None, timeout=None, env=None):
-    """Run a shell command, echo it, return (rc, combined output)."""
+def sh(command, cwd=None, timeout=None, env=None, stream=False):
+    """Run a shell command, echo it, return (rc, combined output).
+
+    ``stream=True`` gives the child this process's stdout instead of a pipe, so
+    its output reaches the session log while it is produced. CANFAR's log
+    endpoint follows this process's stdout, and a stage that prints nothing for
+    an hour is indistinguishable from a stage that is stuck: on 2026-10-13 a
+    gate stage that runs for over 90 minutes left no evidence of how far it got,
+    because every long step here captured its output and printed it only once
+    the step had finished.
+    """
     print(f"+ {command}", flush=True)
     started = time.time()
     try:
-        proc = subprocess.run(command, shell=True, cwd=cwd, capture_output=True, text=True, timeout=timeout, env=env)
+        proc = subprocess.run(
+            command,
+            shell=True,
+            cwd=cwd,
+            text=True,
+            timeout=timeout,
+            env=env,
+            **({} if stream else {"capture_output": True}),
+        )
     except subprocess.TimeoutExpired:
         print(f"  !! timed out after {timeout}s", flush=True)
         return 124, "timeout"
-    text = (proc.stdout or "") + (proc.stderr or "")
+    text = "" if stream else (proc.stdout or "") + (proc.stderr or "")
     if text:
         print(text, end="" if text.endswith("\n") else "\n", flush=True)
     print(f"  rc={proc.returncode} in {time.time() - started:.1f}s", flush=True)
@@ -137,6 +159,7 @@ def fetch(url, dest, minutes=None):
             f"curl -sS -L --retry 5 --retry-delay 5 --retry-all-errors -C - "
             f"--connect-timeout 30 --max-time 1800 -o {tmp} {url}",
             timeout=1900,
+            stream=True,
         )
         if rc == 0 and os.path.exists(tmp) and os.path.getsize(tmp) > 1024 * 1024:
             os.replace(tmp, dest)
@@ -240,7 +263,7 @@ def prepare_environment(tree, env, skip_probe):
         print(f"using the surviving shared package cache: {shared_cache}", flush=True)
     rc = 1
     for attempt in range(1, tries + 1):
-        rc, _ = sh(f"{pixi} install", cwd=tree, timeout=3600, env=env)
+        rc, _ = sh(f"{pixi} install", cwd=tree, timeout=3600, env=env, stream=True)
         if rc == 0:
             print(f"pixi install succeeded on attempt {attempt}", flush=True)
             break
@@ -272,6 +295,26 @@ def prepare_environment(tree, env, skip_probe):
     return f"{pixi} run python"
 
 
+def thread_hygiene(env: dict, *, pin: bool = False) -> None:
+    """Drop image-exported thread defaults, or pin every pool to one thread.
+
+    The campaign found the image's ``OMP_NUM_THREADS``/``MKL_NUM_THREADS``
+    perturbing parallel-efficiency measurements, so they are dropped rather than
+    trusted. Dropping is not enough for a job that runs many workers: the
+    libraries then fall back to the *node's* CPU count -- 192 per worker on a
+    MegaCam pod, measured 2026-10-14 -- so 16 HDUs asked for 16x192 threads on
+    the 16 cores the pod was granted. ``WM_THREAD_PIN=1`` sets each pool to one
+    thread instead, which is the right shape when the parallelism is one HDU per
+    worker: measured on the same exposure and worker count, per-HDU wall fell
+    from 2.6-4.0 ks to 0.8-1.0 ks.
+    """
+    env.pop("OMP_NUM_THREADS", None)
+    env.pop("MKL_NUM_THREADS", None)
+    if pin:
+        for key in ("OMP_NUM_THREADS", "MKL_NUM_THREADS", "OPENBLAS_NUM_THREADS", "NUMEXPR_NUM_THREADS"):
+            env[key] = "1"
+
+
 def main():
     tree = os.environ.get("WM_TREE") or (sys.argv[1] if len(sys.argv) > 1 else "")
     command = os.environ.get("WM_COMMAND", "")
@@ -287,17 +330,15 @@ def main():
         print(f"FATAL: tree does not exist: {tree}", flush=True)
         return 2
 
-    # Thread hygiene: the campaign found image-exported OMP/MKL defaults perturb
-    # parallel-efficiency measurements, so they are dropped rather than trusted.
     env = dict(os.environ)
-    env.pop("OMP_NUM_THREADS", None)
-    env.pop("MKL_NUM_THREADS", None)
+    thread_hygiene(env, pin=os.environ.get("WM_THREAD_PIN") == "1")
     env["PYTHONUNBUFFERED"] = "1"
     env["PYTHONNOUSERSITE"] = "1"
     env.pop("PYTHONPATH", None)
     scratch = "/scratch" if os.path.isdir("/scratch") else "/tmp"
     env["PIXI_CACHE_DIR"] = os.path.join(scratch, "wm-pixi-cache")
     env["WM_TREE"] = tree
+    env["WM_RESULTS_ROOT"] = RESULTS_ROOT
     env["TMPDIR"] = scratch
 
     rc, _ = sh(f"git -C {tree} rev-parse HEAD", env=env)
@@ -318,6 +359,7 @@ def main():
             f"tar --exclude=./.pixi -C {tree} -cf - . | tar -C {scratch_tree} -xf -",
             timeout=1800,
             env=env,
+            stream=True,
         )
         if rc != 0 or not os.path.isdir(os.path.join(scratch_tree, "weightmask")):
             print("FATAL: could not copy the staged tree", flush=True)
@@ -348,7 +390,7 @@ def main():
         sh(f"ls -la {tree}/benchmark_data/megacam/perf", env=env)
 
     print("--- running WM_COMMAND ---", flush=True)
-    rc, _ = sh(command, cwd=tree, timeout=int(os.environ.get("WM_TIMEOUT", "7200")), env=env)
+    rc, _ = sh(command, cwd=tree, timeout=int(os.environ.get("WM_TIMEOUT", "7200")), env=env, stream=True)
 
     tag = os.environ.get("WM_RESULTS_TAG")
     if tag:

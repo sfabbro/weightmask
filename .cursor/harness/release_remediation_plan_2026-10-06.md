@@ -196,13 +196,513 @@ Measured in pods at `313cb43`:
 | check | result |
 |---|---|
 | `benchmark-synthetic` (`synthetic_v2 --with-baselines`) | **ran and reproduces WM-16** — `F1 0.000 (TP:0, FP:0, FN:1390)` and `average streak F1 0.149 < 0.200` |
-| `pytest -q -v`, bound by `timeout 1500` | **did not finish**: reached 71% (through `tests/test_rms_validity.py`) before the bound hit, `rc=124`. Three failures appeared first — two in `tests/test_perf_protocol.py`, one in `tests/test_release_machinery.py` — but the run was cut off before the failure summary, so the assertions were never captured. The same two modules pass locally in 45 s (81 passed, 12 subtests), and a re-run aimed at just those modules failed with `FATAL: WM_TREE and WM_COMMAND are both required`: the session was created but its env never arrived, which is a control-plane flake rather than a test result. **Treat the pod failure count as unexplained, not as product failures.** |
-| `science-gate` | **blocked** — its inputs are three 343 MB CADC exposures and `www.cadc-ccda…` is at 0/36 |
+| `pytest -q -v`, bound by `timeout 1500` | **did not finish**: reached 71% (through `tests/test_rms_validity.py`) before the bound hit, `rc=124`. Three failures appeared first — two in `tests/test_perf_protocol.py`, one in `tests/test_release_machinery.py` — but the run was cut off before the failure summary, so the assertions were never captured. The same two modules pass locally in 45 s (81 passed, 12 subtests), and a re-run aimed at just those modules failed with `FATAL: WM_TREE and WM_COMMAND are both required`: the session was created but its env never arrived, which is a control-plane flake rather than a test result. **Treat the pod failure count as unexplained, not as product failures.** Resolved 2026-10-13: it did not reproduce at the tip, and the `FATAL` blamed on a flake was a transport bug of ours — see the next section. |
+| `science-gate` | **blocked** — its inputs are three 343 MB CADC exposures and `www.cadc-ccda…` is at 0/36. Superseded 2026-10-13: egress is back, the inputs were staged in-pod in seconds, and what remains is a *budget* question, not an availability one — the gate's score stage is 89 real detector runs over the labelled HDUs and has no scope knob. See "The science gate in a pod" below. |
 
 A pod-side smoke run of the gate is possible against
 `…/cfhtcast-bench/downloads/2240997p.fits.fz`, which the mount already carries,
 but that exposure is not the fixture input set, so its numbers would not
 reproduce or contradict the release gate.
+
+### The science gate in a pod: available, but over budget (2026-10-13)
+
+With egress restored the gate's inputs stop being the blocker, so the pod run
+was attempted twice. The inputs themselves are cheap: three exposures of
+343,817,280 / 343,776,960 / 343,676,160 B plus the 389,885,760 B flat, each
+fetched in 5-7 s, and `stage_inputs` is idempotent — a later job found all four
+already present in the staged tree and downloaded nothing.
+
+| run | inputs | budget | result |
+|---|---|---|---|
+| `wm-gate` (session `dw3b82r2`) | shared mount | none set | reaped at the session cutoff after ~80 min, **no stage output** |
+| `wm-gate-scratch` (session `hnqi7hey`) | node-local `/scratch` | `WM_TIMEOUT=5400` | `!! timed out after 5400s`, `rc=124`, no gate artifacts — only a stale `benchmarks` dir was copied |
+
+The scratch run settles the question the mount run left open: the gate does not
+fit in 90 minutes even with its inputs node-local, so **I/O locality is not the
+constraint** — the score stage is. What that stage costs is not an accident of
+configuration: the fixture labels **89 (exposure, HDU) jobs** (25 + 26 + 27 for
+the three exposures, 11 more for `megacam_streak_case`), and `score_trail_truth`
+re-runs the production streak stage on each one. The gate exposes no scope knob
+for it either — `--hdu` bounds only the injection and cosmic-ray stages, while
+`_score` always walks the whole label set. So the gate's pod cost is
+89 detector runs plus three cheap stages, and the runner needs a budget sized
+from that rather than from the 90-minute default that was tried.
+
+Both attempts were also *unobservable*, which is the reason the first one can
+only be described as "reaped": every long step in the harness captured its
+child's output and printed it after the child finished, so a stage that runs for
+hours produced no lines at all, and a timeout discarded whatever it had
+printed. That is now fixed rather than worked around — `pod_run.py`,
+`science_gate._run` and the scorer's own pool loop all stream as they go (see
+"Streaming progress" below).
+
+### Streaming progress, so a long stage cannot be a black box (2026-10-13)
+
+Three changes, all in the direction of "a run that is killed still tells you what
+it did":
+
+- **`benchmarks/canfar/pod_run.py`**: `sh(..., stream=True)` hands the child the
+  pod's own stdout instead of a pipe, and the step has no output to lose at all.
+  It is used for the four steps that can outlast a coffee break — the tree copy,
+  the `pixi install`, the input downloads, and `WM_COMMAND` itself. The default
+  is unchanged (capture), because several callers still log `rc` from short
+  commands where interleaving would only add noise.
+- **`benchmarks/science_gate.py`**: `_run` streams each stage line and still
+  accumulates the same text the notes are parsed from, so the gate's own output
+  keeps identical content while `canfar logs` gains per-stage progress.
+- **`benchmarks/score_trail_truth.py`**: the pool loop prints one line per HDU as
+  it lands (`[17/89] 1013720p HDU 14: scored in 41s`), which is what makes the
+  89-job cost model visible while it is being paid rather than after.
+
+Verified with `pixi run lint` and 105 tests across `test_science_gate.py`,
+`test_benchmark_evidence.py`, `test_wm21_benchmarks.py` and
+`test_canfar_scripts.py`.
+
+### Seven non-sidereal exposures processed in pods (2026-10-13)
+
+Asked for: launch a headless CANFAR session per observation id, process on
+`/scratch`, and leave the result somewhere fetchable so it can be reviewed. The
+observation ids are non-sidereal-tracking MegaCam fields, i.e. the case the
+streak stage exists for: `1729091`, `1774908`, `1851368`, `1851960`, `1853217`,
+`1853221`, `1853389`.
+
+Contract, in `benchmarks/canfar/process_exposure.py`:
+
+- the exposure is downloaded to `/scratch` (275-345 MB per file) and processed
+there, because a pod's scratch is fast and everything on it dies with the pod;
+- the reviewable artifacts go to the shared mount **as the run proceeds**, not at
+the end: `<obsid>.mask.fits.fz` (one HDU per science HDU, written in index
+order), `<obsid>.hdu_stats.tsv` (per-bit pixel counts), `<obsid>.run.json`
+(what ran, with what digest, for how long). Full-resolution weight/invvar/sky
+maps stay on scratch: they are large, reproducible from the exposure plus the
+config, and no review of "what did the mask do" needs them beside the mask;
+- destination root is `/arc/projects/mlao/cfhtcast/weightmask-perf/results`,
+which survives the session (`pod_run.py` exports it as `WM_RESULTS_ROOT`).
+
+Result of the first fan-out, **4 of 7 complete**:
+
+| obsid | HDUs | holes | unreadable slots | STREAK px | HDUs with streaks | run.json->mask digest | stats->pixels |
+|---|---|---|---|---|---|---|---|
+| `1729091` | 36/36 | 0 | 0 | 1,902 | 2 | ok | ok |
+| `1853217` | 40/40 | 0 | 0 | 210,479 | 7 | ok | ok |
+| `1853221` | 40/40 | 0 | 0 | 385,059 | 12 | ok | ok |
+| `1853389` | 40/40 | 0 | 0 | 446,842 | 21 | ok | ok |
+
+The three that did not finish (`1774908`, `1851368`, `1851960`) were left with an
+unrenamed `.wm-tmp-*` mask and no stats at all, and **the deletion was ours, not
+the platform's**: `pod_ship.py` deleted the session when its own `--wait`
+deadline expired, whether or not the pod had finished. A harness that kills the
+job it is waiting for is indistinguishable from a cluster fault on the mount, so
+the default is inverted — a session that is still running at the deadline is now
+left alone (`--delete-unfinished` restores the old behaviour), pinned by
+`test_pod_ship_does_not_delete_a_job_its_own_deadline_missed`. The three were
+re-run with a 4 h deadline and the interrupted `run.json` kept as
+`<obsid>.run.attempt1.json`.
+
+**Cost model, measured after the fact from each run's own `run.json`** (all four
+are "ok", 16 workers, and the numbers are the processing stage alone, download
+and environment excluded): `1729091` 36 HDUs in 851.6 s, `1853217` 40 in
+3087.6 s, `1853221` 40 in 5129.0 s, `1853389` 40 in 2828.4 s. That is 380-2050
+CPU-seconds per HDU — a 5x spread across fields at identical settings, so
+**per-HDU cost is set by field content, not by the pipeline's fixed overhead**,
+and a budget sized from one exposure does not carry to another. (An earlier note
+in this file quoted 586-1043 s per HDU; that was read off a mid-flight snapshot
+of a strained first attempt and is superseded by these whole-run numbers.)
+
+**The three that did not finish are in a different cost regime, and it is
+measurable.** They were re-run with a 4 h ship deadline, and were then cut by a
+**3 h in-pod `WM_TIMEOUT`** that the launch itself set — a budget chosen before
+any of these numbers existed. What the logs and the mount show, 2 h in:
+
+| obsid | HDUs written | mask bytes | mask untouched for | median candidate points |
+|---|---|---|---|---|
+| `1774908` | ~15 of 36 | 8.74 MB | 55 min | 6,816 |
+| `1851368` | ~1.5 of 40 | 0.90 MB | 48 min | 25,240 |
+| `1851960` | ~1.7 of 40 | 0.99 MB | 64 min | 154,380 |
+
+**All seven then finished, and the bound is visible in their own logs.**
+`1851368` and `1851960` on the bounded tree: 40/40 HDUs, `status=ok`, in 2.76 ks
+and 2.82 ks (~46 min each) — the same two exposures that the 3 h cap cut partway
+through with 1-2 HDUs written in 2 h. Their logs report fits capped at 20,000
+from up to 164,666 candidates and 18 cascades stopped at 200 rejected models,
+while STREAK content comparable to the quiet fields is still found. `1774908`
+finished attempt 3 in **2,209 s** with 36/36 HDUs and `status=ok`.
+
+against 2,341-4,592 median candidates on the four that finished in 47-85 min.
+The mechanism is in `weightmask/streaks.py`: `_detect_trails_sparse_ransac` runs
+a **fixed-trial fit over every residual candidate pixel on each pass**, and its
+rejected-model path consumes only `min_inliers` pixels before looping, so
+per-pass cost and pass count both grow with crowd size. The function's own
+comment already says it: "heavily crowded fields need a candidate cap before the
+RANSAC search". A non-sidereal frame with long star trails is the crowded case,
+and the loop is what made a 40-HDU exposure need more than the 3 h cap.
+
+**Two compounding causes, both measured; one fixed in code and one in the
+launcher.** Profiling one real HDU of `1851960` on a quiet machine (cProfile, one
+worker) put the whole HDU at 242 s with `streaks` 131 s, of which 72 s was the
+sparse RANSAC — 24 passes, each a 300-trial fit over 157k candidates. The pod ran
+the same HDU 10-25x slower, and the candidate count alone does not explain it:
+
+1. **The rejection cascade had no bound.** The loop ends only when the candidate
+   set drains, one rejected model at a time, and the same HDU took 230+ passes on
+   a pod against 24 locally — the cascade length is chaotic in the candidate set,
+   so it cannot be budgeted by averaging. The worst case is
+   `candidates/min_inliers` (~6,800 passes at ~3.5 s each on one core).
+   `weightmask/streaks.py` now bounds it: `sparse_ransac_params.max_candidates:
+   20000` caps the set entering each fit (a uniform stride, deterministic and
+   spatially even) and the model is re-scored against *every* candidate, so the
+   cap bounds the search and never the evidence; `max_rejected: 200` bounds the
+   cascade. Both are inert on the fields the stage was tuned on (2.3-4.6k
+   candidates, tens of rejected models per HDU) and both are schema-validated.
+   Checked on a real crowded HDU: 142,037 candidates reduced to 20,000 fitted,
+   with three real trails found (lengths 928-1,278 px, density 0.66-0.69).
+2. **Library thread pools were oversubscribed 16x.** `pod_run.py` deliberately
+   drops the image's `OMP_NUM_THREADS`/`MKL_NUM_THREADS` (they perturbed the
+   parallel-efficiency campaign), but dropping them lets BLAS/OpenMP fall back to
+   the *node's* CPU count — 192 on these pods — per worker, so 16 HDUs asked for
+   up to 16x192 threads on the 16 cores they were granted. Measured on `1851960`
+   with 16 workers: **per-HDU wall 2.6-4.0 ks before, 0.8-1.0 ks with the pools
+   pinned to one thread.** `pod_run.py` gains `thread_hygiene()` and
+   `WM_THREAD_PIN=1`, pinned by a test.
+
+With both, the crowded HDUs take **320-410 s** now (`streaks` 98-315 s) at 16
+workers, against 2,651-5,934 s before; a 40-HDU exposure that the 3 h cap used to
+cut partway through reaches ~50% in ~30 minutes. Bounded runs also show the
+bound working in situ: fits capped at 20,000 from up to 164,666 candidates, 18
+cascades stopped at 200 rejected models, and real trails still found (e.g.
+length 1,594.7 px, 1,149 inliers, density 0.721). **The bound is a deliberate
+behaviour change on crowded HDUs**, so it is inert on the quiet fields the four
+verified exposures came from only where their candidate counts stay under it
+(2.3-4.6k median, up to 99k on their busiest HDU); those four artifacts were
+produced by the pre-bound code and their `run.json` records still describe
+themselves. `benchmarks/canfar/run_exposures.sh` is the committed launcher for
+this campaign, carrying `WM_THREAD_PIN=1`, the explicit `WM_TIMEOUT`, and the
+attempt-record and partial-mask handling that used to live only in ad-hoc shells. Scaling the pod up was never
+the lever: a 32-core / 192 GB request is rejected with HTTP 400 by the create
+endpoint while three 16-core pods are running, so the relaunch keeps the proven
+16-core shape. `1774908` finished its attempt 3 with `WM_TIMEOUT=21600` (6 h);
+`1851368` and `1851960` were re-launched on the re-staged tree (attempt 3,
+`WM_THREAD_PIN=1`, `WM_TIMEOUT=10800`), with each cut attempt's record kept as
+`<obsid>.run.attempt2.json`. All seven are then re-verified in a separate
+session.
+
+**Review path, independent of the processing sessions.**
+`benchmarks/canfar/verify_exposures.py` runs in a separate session, trusts
+nothing the driver recorded, and recomputes every quality-bit count from the mask
+pixels. It re-checks the mask against the digest `run.json` claims, cross-checks
+the shipped stats table column by column against the pixels, reports a short or
+unreadable mask as a hole rather than as a small clean read, and writes
+`results/ns-review/streak_summary.tsv` so a review needs no pod logs. That test
+caught a real defect in its own first version: the summary read
+`COSMIC_RAY`/`SATURATED`, which are not `QUALITY_BITS` names (`CR`/`SAT` are), so
+two columns would have shipped as zeros that look like a detector with no
+cosmics in it.
+
+**Verification of all seven, in a separate session (2026-10-14).** Session
+`y1cothww` re-derived every number from the mask pixels on the mount and wrote
+`results/ns-review/streak_summary.tsv` (7 rows) in 22.5 s, `rc=0`:
+
+| obsid | status | HDUs | holes | STREAK px | HDUs with streaks | digest | stats |
+|---|---|---|---|---|---|---|---|
+| `1729091` | ok | 36/36 | 0 | 1,902 | 2 | ok | ok |
+| `1774908` | ok | 36/36 | 0 | 3,828 | 3 | ok | ok |
+| `1851368` | ok | 40/40 | 0 | 452,720 | 15 | ok | ok |
+| `1851960` | ok | 40/40 | 0 | 266,391 | 16 | ok | ok |
+| `1853217` | ok | 40/40 | 0 | 210,479 | 7 | ok | ok |
+| `1853221` | ok | 40/40 | 0 | 385,059 | 12 | ok | ok |
+| `1853389` | ok | 40/40 | 0 | 446,842 | 21 | ok | ok |
+
+All seven are `status=ok` with no holes, so digest and stats both match on every
+exposure. **The sentence that used to follow here -- that the two crowded fields
+"now carry trail content in the same regime as the good ones" -- is wrong and is
+retracted; see the audit below.** More STREAK pixels is not more trail.
+
+The artifact itself, read back off the mount by a separate 1-core session rather
+than from a processing pod's log: `/arc/projects/mlao/cfhtcast/weightmask-perf/
+results/ns-review/streak_summary.tsv`, 977 bytes, 20 columns, `sha256
+886ea0c5a4c003a323cfdf47ab1064299e218f03baa623cc5d80b3507e622932`. Its processing
+and quality columns:
+
+| obsid | seconds | mask bytes | STREAK px | STREAK px/HDU | CR px | SAT px | flagged px | npix |
+|---|---|---|---|---|---|---|---|---|
+| `1729091` | 851.6 | 21,346,560 | 1,902 | 52.8 | 29,532 | 216,457 | 33,904,637 | 353,092,608 |
+| `1774908` | 2,208.7 | 19,679,040 | 3,828 | 106.3 | 24,822 | 286,925 | 30,109,294 | 353,092,608 |
+| `1851368` | 2,768.7 | 19,889,280 | 452,720 | 11,318.0 | 17,089 | 402,453 | 35,603,417 | 392,325,120 |
+| `1851960` | 2,828.1 | 30,254,400 | 266,391 | 6,659.8 | 27,627 | 827,494 | 63,938,067 | 392,325,120 |
+| `1853217` | 3,087.6 | 24,013,440 | 210,479 | 5,262.0 | 23,331 | 347,433 | 42,548,727 | 392,325,120 |
+| `1853221` | 5,129.0 | 24,053,760 | 385,059 | 9,626.5 | 23,546 | 327,748 | 42,939,591 | 392,325,120 |
+| `1853389` | 2,828.4 | 27,918,720 | 446,842 | 11,171.0 | 44,524 | 618,744 | 51,271,984 | 392,325,120 |
+
+**Audit: on these fields the STREAK product is detector defects and star trails,
+not trails (2026-10-14).** The review images prompted the question, and the
+answer is that essentially none of the 1,767,221 STREAK pixels in this campaign
+is a satellite trail. Auditing the shipped masks by shape (`/tmp/wm/
+audit_streaks_payload.py`, run in session `zofvhumg` against the mount's own
+masks) splits them three ways:
+
+| obsid | STREAK px | axis-aligned row bands | axis-aligned column groups | diagonal groups / star-trail angle | thin lines |
+|---|---|---|---|---|---|
+| `1729091` | 1,902 | 0 | 0 | 1,375 | 524 |
+| `1774908` | 3,828 | 0 | 0 | 3,023 | 805 |
+| `1851368` | 452,720 | 65,940 | 13,832 (plus 9-16 px bands in the group column) | 368,515 | 4,433 |
+| `1851960` | 266,391 | 0 | 41,262 | 204,151 | 20,978 |
+| `1853217` | 210,479 | 55,224 | 13,745 | 129,261 | 12,249 |
+| `1853221` | 385,059 | 67,549 | 0 | 311,146 | 6,364 |
+| `1853389` | 446,842 | 82,790 | 0 | 362,238 | 1,761 |
+
+(The "diagonal groups" column is the audit's catch-all bucket: its largest
+members are bands 9-16 px wide running 1,900-4,600 rows down the detector, i.e.
+the same defect class as the narrow ones, plus the star-trail angle structures.)
+
+What each class is, and the evidence:
+
+- **Axis-aligned bands that recur in independent exposures.** Horizontal bands of
+  exactly 3, 6, 7 or 8 rows spanning 2,050 of the 2,112 columns, and vertical
+  groups 3-16 px wide spanning 2,400-4,612 of the 4,644 rows. They appear at the
+  *same detector coordinates* in different exposures of the same CCD -- mask HDU 1
+  is flagged at column 1,624 in both `1851368` and `1851960`, and HDU 6/16/17/23/38
+  carry bands at rows 3 and 7 in three or four of the seven exposures each. Sky
+  cannot do that and a trail cannot either; a detector defect must.
+- **The star trails.** `1851960` HDU 17 is a non-sidereal frame, so every star is
+  trailed: 134 of its 137 elongated sources sit at 30-45 degrees (mean 40.2,
+  median length 55 px). The flagged component in that HDU is at **40.2 degrees**,
+  602x712 px over 931 px of length -- and its pixels are at sky level: median
+  +9 ADU over a sky of 571 with rms 22, with four bright heads along it (values
+  1,044 / 952 / 882 / 770) and sky everywhere between. Two or more star trails
+  that happen to be near-collinear are enough for the RANSAC pass (which draws a
+  line between the segment endpoints), so the mask paints a 931-px line across
+  931 px of empty sky. The campaign's "thin lines" are this, at the field's trail
+  angle: 20,978 px at 40 degrees in `1851960`, 13,136 px at 40 degrees in its
+  thin-line histogram.
+- **The edge band.** The largest single object in the local 1851960 HDU 17 mask is
+  7,055 px: rows 0-7 across 952 columns, at sky level (median 572 against 574 in
+  the neighbouring rows). It is neither a trail nor a defect class any stage owns;
+  it is the frame edge being detected.
+
+The 20-sigma brightness veto cannot catch any of this: `_drop_bright_components`
+drops what is *too bright* (a star's head, a saturated column), and every false
+positive here is at or below the sky. Nor is it a tuning problem: the gates in
+`detect_streaks` test geometry (thin, long, straight) and these are all thin,
+long and straight. The two properties that separate them are absent from the
+stage: alignment with the *detector axes* (a defect runs the full span of one
+axis at constant narrow width, which no sky feature does), and alignment with the
+*field's own star-trail direction* (a satellite trail has its own angular rate, so
+on a non-sidereal frame it is the one direction the star trails do not share --
+unless it happens to be parallel, which the length check then has to settle).
+
+**The two fields that were questioned, measured (session `ynjdznld`).** For
+`1729091` and `1774908` the field's own star-trail angle and length were measured
+from the frame, and every flagged component compared against them:
+
+| obsid | mask HDU | field star trails | flagged component | shape | brightness | verdict |
+|---|---|---|---|---|---|---|
+| `1729091` | 4 | 16.0 deg, 110 sources, median 21 px | 1,375 px, 174x187, 43.5 deg (**27.5 off**) | 10.7 px thick, profile flat (868-938, one 1,403 end) | +142 ADU = **5.2 rms** | not a trail and not a star trail: a bright, thick, flat feature (bleed/ghost class), unresolved |
+| `1729091` | 12 | 17.3 deg, 87 sources | 524 px, 38x176, 11.5 deg (5.8 off) | 2.9 px thick, profile 1,473 at one end then 774-792 | +14 ADU = 0.56 rms | a line drawn from a bright spot across 176 px of sky |
+| `1774908` | 19 | 31.7 deg, 89 sources, median 27 px | 404 px, 91x136, 33.5 deg (**1.8 off = parallel**) | 2.5 px thick, bright ends, sky between | +11 ADU = 0.93 rms | star-trail chain |
+| `1774908` | 29 | 34.9 deg, 65 sources | 3,023 px, 175x305, 28.9 deg (6.0 off) | 10.1 px thick, profile flat (231-253) | +51 ADU = 2.3 rms | thick flat band, not trail-shaped |
+| `1774908` | 34 | 32.4 deg, 95 sources | 401 px, 127x135, 43.2 deg (10.8 off) | 2.2 px thick, bright knots with sky between | +16 ADU = 1.26 rms | star-trail chain |
+
+The satellite signature -- one line at the PSF's width, roughly uniform in flux,
+at an angle the field's trail family does not share -- appears in none of them.
+Every flagged component is either aligned with a detector axis, or within 6 deg of
+the field's own trail angle with sky between its heads, or 10 px thick and flat
+(which a satellite trail is not). The star-trail length itself is a measurable
+per-frame quantity (21 px here, 27 px there, 55 px on `1851960`) and is the
+natural length scale a veto needs, since a satellite's trail length is set by its
+own angular rate rather than by the telescope's.
+
+Two config facts explain why none of the existing gates bite. `max_support_width:
+12` admits a 10 px band: the profile gate measures the transverse MAD of the
+component, which for these bands is ~4.5 px, not the 10 px an eye measures.
+And `min_length: 128` was set to "reject a measured persistent 116 px detector
+feature" -- so a persistent detector feature was already known, and the campaign's
+axis-aligned ones are 1,700-4,612 px long, far past any length floor.
+
+**Consequences, stated plainly.** The `ns-review` campaign delivered what it
+promised mechanically -- seven exposures processed, artifacts digest-verified,
+no holes -- but the STREAK numbers in the tables above are a false-positive
+census, not a trail detection, and `1851960`'s "trail content" was the artifact of
+this audit rather than evidence that the stage works on these fields. The bound
+comparison is affected too: on the one HDU measured both ways, the bounded run
+*added* the 2,132-px 40-degree false positive (7,544 px -> 9,676 px), so "inert on
+the quiet fields" was too strong -- capping the candidate set changes what the
+RANSAC accepts, and on this field it changed the answer.
+
+`seconds` is each run's own processing figure and confirms the cost model: seven
+exposures, 36-40 HDUs each, now land in 852-5,129 s (**19,702 s of processing
+for the campaign**), where the three crowded fields previously exceeded a 3 h cap
+with a handful of HDUs written. `bad_px` is 0 on all seven and `no_data_px` is
+one full HDU per exposure (13,059,072 = 36-CCD fields, 14,510,080 = 40-CCD), and
+`digest_match`/`stats_match` are `True` throughout. Verification ran on the same bounded tree as processing, so it
+clears the artifacts, not the bound: the bound's own evidence is the in-log
+capping above plus the local HDU check (142,037 candidates -> 20,000 fitted,
+three real trails).
+
+**Review images: what the streak stage did, at the pixel level (2026-10-14).**
+A table of STREAK pixel counts says something happened but not whether it happened
+on a real trail, so `benchmarks/canfar/plot_trail_cutouts.py` renders one sheet
+per exposure: up to three cutouts of 256x256, each the *real* frame on the left,
+zscale stretched on its own pixels (contrast 0.25, so the crop is read at the
+contrast a reviewer would pick by hand rather than at min/max where a few
+saturated stars flatten the trail), beside the same crop of `<obsid>.mask.fits.fz`
+on the right with one colour per defect class and unpainted pixels white. Both
+panels use `origin="lower"` so a feature sits at the same place in both. Masks
+come from the mount, the exposure is re-downloaded to scratch, and the sheet plus
+an `index.json` go to `results/ns-review/cutouts/` (pod session `xv5g50kx`,
+8 sheets, 0 failures).
+
+The one non-obvious decision is that a panel is only drawn when the masked line
+is genuinely brighter than the sky, because the naive probe is wrong and was
+measured to be wrong: an intermittent trail is dashed, the mask closes the gaps
+between segments, so about half the masked pixels are sky and the *masked median
+sits on the sky median* (1851960 HDU 17: 574.3 vs 571.2). What the eye sees is
+the ridge, so the test is the 90th percentile of the masked pixels against the
+window's brightest clean pixels (its 99.9th percentile): a candidate below 1.0 is
+reported under `skipped` instead of being published as a trail. Across the seven
+exposures three candidates were skipped that way (one each in `1774908`,
+`1851960`, `1853217`) and every drawn panel passed with 1.009-1.669.
+
+| obsid | cutouts drawn | ridge (masked p90 / clean p99.9) | candidate skipped |
+|---|---|---|---|
+| `1729091` | 2 (ccd03, ccd11) | 1.159, 1.383 | 0 |
+| `1774908` | 2 (ccd18, ccd33) | 1.669, 1.642 | 1 (line on sky) |
+| `1851368` | 3 (ccd00) | 1.009, 1.182, 1.198 | 0 |
+| `1851960` | 3 (ccd18, ccd22, ccd29) | 1.160, 1.172, 1.196 | 1 |
+| `1853217` | 3 (ccd00, ccd31, ccd37) | 1.164, 1.224, 1.228 | 1 |
+| `1853221` | 3 (ccd00) | 1.163, 1.185, 1.185 | 0 |
+| `1853389` | 3 (ccd00, ccd22) | 1.021, 1.104, 1.139 | 0 |
+
+Three caveats, stated rather than left to be discovered. The exposures were
+re-downloaded for this, so the sheets are the same observation ids and the same
+CADC files by byte count (all seven match the processing runs' `exposure_bytes`
+exactly) but their digests were not compared against `run.json`. Windows are
+clamped inside the frame, so an edge candidate cannot be centred exactly --
+`1774908` HDU 19 is at `y0=0` and its trail runs out of the top. And selection
+prefers the longest segments, so one CCD can fill a sheet: `1851368`, `1853221`
+and `1853389` are all streaks in `ccd00`.
+
+One thing to look at rather than accept: `1729091` is nearly streak-free (1,902 px
+in 2 of 36 HDUs) while the other six have thousands of pixels across 3-21 HDUs.
+Same instrument, same tracking mode, so either that field genuinely has far less
+trail or the stage is missing it there; the mask is on the mount for exactly that
+kind of check.
+
+**The acceptance test, and the first number it produced (2026-10-14).**
+`benchmarks/streak_nonsidereal_acceptance.py` measures the one thing the campaign
+did not: a frame with a known star-trail family, a control run with *no* satellite
+injected, and injected star trails, chains and axis-aligned bands as negatives.
+On the control, where the answer must be an empty mask, the stage flags **4,526
+px** in a synthetic 1024-squared fixture and **4,379 px** in a real crop of
+`1851960` HDU 17. Repeating the real crop **with the flat the campaign's own crate
+downloaded** (`flat_08Bm01_r.fits.fz`) takes that to **0 px**, with no stage
+change: the upstream mask grows from 56,520 to 84,467 px and the defect class
+never reaches the stage. The campaign's pod command passes no `--flat`
+(`run_exposures.sh:68`) and `process_exposure.py` applies no persistence prior
+either (its own docstring), so the dominant class in the tables above is a
+configuration omission before it is a stage bug. Plan, ranked, with the veto
+insertion points, in `streak_nonsidereal_remediation_2026-10-14.md`.
+
+### CANFAR egress restored, and the "flake" that was our own transport (2026-10-13)
+
+**The pod-side DNS outage is over.** Re-probed from a pod
+(`benchmarks/canfar/probe_dns_outage.py`, 15 samples at 6 s intervals) the same
+hosts that returned 0/36 on 2026-10-12 now answer: `www.cadc-ccda…` **15/15**,
+`ws.cadc-ccda…` **15/15**, `github.com` **15/15**, `conda.anaconda.org`
+**15/15**, `pypi.org` and `files.pythonhosted.org` **15/15**. Two names still
+give 0/15 — `cadc-ccda.hia-iha.nrc-cnrc.gc.ca` and `cadc.nrc.ca` — and that is
+not a fault: neither is a hostname, so they were never evidence of the outage
+even when they were read alongside it. The control plane is healthy this
+session too: `canfar ps` answered, and every create below was accepted on
+**attempt 1**, against 10 of 20 on 2026-10-12. Both transports the campaign
+scripts assume therefore work again — `git clone` and CADC — so the earlier
+conclusion that "pod egress is not CADC only" describes that week's fault, not
+the platform.
+
+**The `FATAL: WM_TREE and WM_COMMAND are both required` recorded above as a
+control-plane flake is a defect in `pod_ship.py`.** It reproduced on the first
+attempt of the next job, which is what a flake should not do, so it was
+measured instead of retried. A payload that dumps `os.environ` shows the
+platform's `env` parameter delivering `WM_TREE`, `WM_TIMEOUT` and
+`WM_RESULTS_TAG` while dropping `WM_COMMAND` entirely:
+
+| env value sent | what the pod saw |
+|---|---|
+| `/arc/projects/…/cand-ce16410c5cae` | arrived |
+| `7200` | arrived |
+| `pytest -q` | arrived |
+| `a b`, `hello\tworld`, `x--y`, `--help`, `--`, `---x` | arrived (spaces, tabs and dashes are not the problem) |
+| `-p no:cacheprovider` | arrived |
+| `{py} -m pytest -q -rf --tb=short -p no:cacheprovider` | **absent** |
+| `--tb=short` | **absent** |
+| `a --tb=short b` | **absent** |
+| `k=v`, `--foo=bar`, `=a` | **absent** |
+| `a=` | arrived as `a` |
+
+So the loss tracks `=` in the *value*, and every shell command acquires one
+sooner or later. `pod_ship.py` no longer sends environment through that
+parameter at all: the map is serialised into the payload as argv token 1
+(`base64(json(env))`) and an `__import__`-only bootstrap applies it before the
+script runs, which is why the bootstrap must contain no space — a space is an
+argument boundary once the server has re-split `cmd` and `args`. argv was
+already proven lossless for ~900 KB of base64 chunks by the staged-source run,
+so this adds no new trust. Verified end to end against the live platform: the
+exact `WM_COMMAND` that used to vanish now arrives byte-identical.
+
+**A second trap, found by trying to falsify the first.** In that same dump a pod
+set `WM_SHORTCODE=a:b:c` and printed `a:b:c`, while the log showed `a🅱c` — and
+an earlier bisect had "proved" an emoji-shortcode expander rewriting values. It
+is the *log* that rewrites: printing the map as base64 taken **inside the pod**
+yields `a:b:c` exactly. `canfar logs` is therefore not a faithful channel for
+exact strings, and it also hard-wraps long lines. The docstrings say so, and the
+regression test splits the real args string the way the server does rather than
+trusting a reading of the log. Two corrections came out of this: the emoji
+expansion is a rendering artifact, not a transport effect, and the `=` rule
+above is a working correlation — proven for the case that mattered (pod
+behaviour, not log text: the runner genuinely did not see `WM_COMMAND`) but
+inferred for the rest from log output.
+
+**The pod-side suite is green at the tip, and the three failures were
+environmental.** `repos/cand-ce16410c5cae` built its own environment (`pixi
+install`, 58 s, attempt 1, shared package cache) and then ran
+`{py} -m pytest -q -rf --tb=short -p no:cacheprovider` for 26:04: **1306 passed,
+4 skipped, 1 xfailed, 852 subtests, rc=0** — with nothing failing. The
+`WM_COMMAND` that used to vanish arrived intact, so the transport fix is
+validated in the real workload and not only in the harness.
+
+The counts are fully accounted for against the local run (1309 passed, 1
+skipped), which matters more than the green colour: `tests/test_contract.py`
+skips `torchfits is optional` in both, and exactly three tests —
+`test_both_features_are_recovered_at_every_veto_setting`,
+`test_known_hot_column_does_not_overlap_the_streak_mask`, and
+`test_production_input_roi_stays_out_of_streaks` — call `_production_inputs`,
+which raises `SkipTest` when `benchmark_data/megacam` is absent, and a freshly
+staged pod tree carries no fixture inputs. 1309 − 3 = 1306 passed with 1 + 3 = 4
+skipped, so the pod runs the same suite rather than a quietly smaller one.
+
+Why the three 2026-10-12 failures happened is still an *inference*, and is
+recorded as one. Both `tests/test_perf_protocol.py` failures are `_pixi_argv`
+tests that shell out to `pixi run` **inside the tree**, which cannot work until
+an environment exists there; that run also predates `442bfc8`, the fix that made
+the reuse path (`WM_TREE_ORIGIN`) actually execute, so a copied tree would have
+had no environment at all while DNS was down. The original assertion text was
+never captured and the run is not reproducible now that the env is built and
+egress works, so this is the best-supported explanation rather than a
+measurement.
+
+**The mount, inventoried before spending jobs.** `repos/` holds `bootstrap`
+(`124df7f`, stale `M` on two files), `bootstrap2` (`d84163e`) — both without a
+built env — and `cand-313cb436e7f9`, which has no `.git` (it was extracted from a
+tarball) but whose `.pixi/envs/default/bin/python` satisfies every required
+import, so a job can reuse that interpreter instead of paying for a solve. A new
+tree was staged at the candidate tip: `repos/cand-ce16410c5cae`, tarball
+663,756 B with sha256 `c69e40d0…` verified in the pod, 176 files, 3,535,750
+bytes. One thing the inventory does **not** show is the gate's fixture inputs:
+the only CFHT exposure on the mount is
+`cfhtcast-bench/downloads/2240997p.fits.fz`, which is not the fixture set, so a
+pod gate run has to fetch its inputs.
+
+`/usr/local/bin/pixi` is `0.81.0` in `images.canfar.net/astroai/base:latest`, so
+the image needs no pixi install either.
 
 ### WM-16 root cause (2026-10-12)
 
