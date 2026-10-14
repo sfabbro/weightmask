@@ -12,6 +12,9 @@ streak-recall-floor = "python benchmarks/streak_recall_floor.py --out test_outpu
 # The one harness that measures a non-sidereal frame, where every star is a trail.
 # The synthetic fixture needs no downloads; --frame real needs an exposure on disk.
 streak-nonsidereal = "python benchmarks/streak_nonsidereal_acceptance.py --quick --out test_outputs/perf/streak_nonsidereal_acceptance.json"
+# The length window star_trail_veto trades against: parallel satellite vs the
+# field's own chains, both in measured family-length multiples.
+streak-veto-window = "python benchmarks/star_trail_veto_window.py --out test_outputs/perf/star_trail_veto_window.json"
 exposure-time = "python benchmarks/exposure_time.py"
 ci-local = "python benchmarks/ci_local.py"
 release-check = "python benchmarks/release_check.py"

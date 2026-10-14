@@ -116,7 +116,15 @@ and confidence maps can change from 0.2.0.
   harness: the flat-less `1851960` HDU 17 crop's STREAK footprint falls from
   4,379 px to 0 px with no injected trail cell lost at any sigma or offset, and a
   sidereal frame of round stars yields no family at all, leaving those masks
-  unchanged.
+  unchanged. Its length window is now measured rather than designed
+  (`benchmarks/star_trail_veto_window.py`): the decision flips at 189 px, which is
+  3.985x the family's measured length and 3.44x the star trails themselves, so a
+  satellite flying parallel to the field's motion inside 3.4 star-trail lengths
+  is lost to this rule by design and `length_factor` sets exactly where. A chain
+  whose star trails are separated by gaps -- the campaign's geometry -- is
+  dropped at every span measured, up to 21x the family length; a chain whose
+  segments touch is one component and behaves exactly like the satellite the
+  window protects, so length alone cannot separate those two.
 
 ### Known limitations
 
@@ -130,6 +138,14 @@ and confidence maps can change from 0.2.0.
   label set has no independently confirmed trail, so that recall is `n/a`.
   Injected non-sidereal trails are recalled in only a minority of cells at low
   significance, unchanged by `star_trail_veto`.
+- `star_trail_veto`'s length condition cannot separate a chain of *touching*
+  star trails from a satellite flying parallel to the field's motion: both are
+  dropped inside the same window -- up to 3.985x the field's measured star-trail
+  length, bounded by `length_factor` -- and both survive outside it. A parallel
+  satellite inside that window is a false negative by design, and the local
+  corpus contains no such trail, so the cost is measured but not calibrated
+  against a real detection. Gapped chains, which is what the campaign's false
+  positives were, are dropped at every span measured.
 - Axis-aligned detector bands that reach the streak stage are still not vetoed.
   On the 2026-10-14 campaign's flat-less runs they were the largest class of
   STREAK pixels; supplying the flat removes them upstream (measured: 4,379 px to

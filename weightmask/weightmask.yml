@@ -185,6 +185,25 @@ streak_masking:
   # (1774908 HDU 19 sat 1.8 deg off the field angle), so raising length_factor
   # trades these false positives for that sensitivity.
   #
+  # MEASURED, not designed (benchmarks/star_trail_veto_window.py, 1024-px
+  # synthetic non-sidereal fixture, 55 px star trails, family measured at 47 px):
+  #   a trail parallel to the field is dropped while it is under 189.0 px: the
+  #   crossing bisects at 3.985x the family's measured length, which is this
+  #   length_factor to within 0.4%, so the config sets exactly the boundary it
+  #   claims to. Length follows the trail's own angular rate, so a satellite
+  #   flying parallel to the field's motion inside ~3.4 star-trail lengths is
+  #   lost to this rule by design.
+  #   the 10 deg tolerance measures 9.1 deg inside, 11.1 deg outside.
+  #   a GAPPED chain (the campaign's geometry) is dropped at every span to 21x:
+  #   each gap leaves its own component at ~1.15x, and on the 8-segment case the
+  #   stage's 778 px of chain in the mask falls to 0 (14,123 -> 7,370 px).
+  #   a CONTIGUOUS chain is one component, so it is dropped inside the same
+  #   window and survives outside it: length cannot separate it from a parallel
+  #   satellite. "A chain cannot outgrow the trails it is made of" holds for the
+  #   gapped case only -- see CHANGELOG's Known limitations.
+  #   the injected parallel trail does not move the family it is judged against
+  #   (47.2-47.3 px, angle within 0.02 deg, at 2x, 4x and 8x).
+  #
   # The family is estimated once per HDU. On a sidereal frame there is no shared
   # angle -- cosmic rays, saturated-star bleed and galaxies have every
   # orientation -- so the estimator returns None and this veto stays inert; that
