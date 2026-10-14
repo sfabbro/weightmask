@@ -238,6 +238,37 @@ and stay below the conservative area ceiling, while `null` and wide-veto runs
 only establish feature recovery. The known hot column at x=1946 must have zero
 overlap with the streak mask under the shipped default.
 
+### On a non-sidereal field, the field's own trails are the false positive
+
+When the telescope tracks the target's own motion, every star is trailed, so
+"long, thin and straight" stops being evidence about satellites and starts being
+a description of the field. The dominant false positive measured on the
+2026-10-14 campaign was not a trail at all: two or more star trails near
+collinear enough for the RANSAC pass to join their heads -- on `1851960` HDU 17 a
+931 px component at 40.2 degrees, its pixels at sky level, with a bright head
+every few hundred pixels while the field's own trails measure 55 px.
+
+```yaml
+  star_trail_veto:
+    enable: true                          # drop chains of the frame's own star trails
+    mode_window_deg: 10.0                 # orientation window of the family's dominant mode
+    angle_tol_deg: 10.0                   # component must be this close to the family angle
+    length_factor: 4.0                    # ... and no longer than this times its median length
+```
+
+`star_trail_veto` measures the frame's own trail angle and median length from its
+elongated sources, once per HDU, and drops a component parallel to them within
+`angle_tol_deg` whose span is no longer than `length_factor` times that length.
+The length condition is what protects a satellite flying parallel to the field's
+motion: a chain of star trails cannot outgrow the trails it is made of, while a
+satellite's length comes from its own angular rate, so `length_factor` is the knob
+that trades these false positives against sensitivity to a parallel satellite.
+The angle is the *dominant orientation mode* of the elongated sources rather
+than their average, so a few long foreign trails cannot hide the family, and on a
+frame of round stars there is no mode to find and the veto does nothing.
+`tests/test_star_trail_family.py` pins both halves: family recovery on a trailed
+field, and bit-identical sidereal masks with the veto on and off.
+
 The following is historical 0.2.0 chronology, retained to explain why the
 removed stage is not part of the current configuration. There used to be a
 third stage, an angle-binned Radon rescue

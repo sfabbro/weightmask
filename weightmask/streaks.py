@@ -970,6 +970,17 @@ def _detect_trails_sparse_ransac(data_sub, bkg_rms_map, existing_mask, config):
     min_line_density = float(cfg.get("min_line_density", 0.2))
     max_trials = int(cfg.get("max_trials", 1000))
     max_trails = int(cfg.get("max_trails", 3))
+    # Cost bounds for crowded fields. Both are inert on the fields this stage was
+    # tuned on (2.3-4.6k candidates, tens of rejected models per HDU) and bind
+    # only where the loop is unbounded otherwise. Measured 2026-10-14 on
+    # non-sidereal MegaCam frames: a 6-sigma residual set of 154-236k pixels per
+    # HDU, where the RANSAC cost per pass grows linearly with the candidate count
+    # and the number of rejected models is bounded only by candidates/min_inliers
+    # (~6,800 passes at ~3.5 s each on one core). The same HDU over the same
+    # exposure took 24 passes locally and 230+ on a pod -- the cascade length is
+    # chaotic, so it is bounded here rather than hoped for.
+    max_candidates = int(cfg.get("max_candidates", 20000))
+    max_rejected = int(cfg.get("max_rejected", 200))
 
     if bkg_rms_map is not None:
         # Detection threshold: no measurable RMS means no detectable excess, so
@@ -984,17 +995,27 @@ def _detect_trails_sparse_ransac(data_sub, bkg_rms_map, existing_mask, config):
 
     trail_mask = np.zeros(data_sub.shape, dtype=bool)
     trail_idx = 0
+    rejected = 0
     # ponytail: each rejected model consumes at least min_inliers pixels;
-    # heavily crowded fields need a candidate cap before the RANSAC search.
+    # without the bounds below a crowded field drains that budget one 1000-trial
+    # fit at a time.
     while trail_idx < max_trails:
         coords = np.argwhere(residual_mask)
         if len(coords) < min_inliers:
             break
 
-        print(f"--> Using sparse RANSAC trail detection ({len(coords)} candidate points)")
+        fit_coords = coords
+        if max_candidates > 0 and len(coords) > max_candidates:
+            # A uniform stride over the row-major candidate list: deterministic,
+            # spatially even, and cheap. The model is re-scored against every
+            # candidate below, so the cap cannot hide an inlier -- it bounds what
+            # RANSAC is asked to search, not what a model is allowed to explain.
+            stride = np.linspace(0, len(coords) - 1, max_candidates).astype(np.intp)
+            fit_coords = coords[stride]
+        print(f"--> Using sparse RANSAC trail detection ({len(coords)} candidate points, {len(fit_coords)} fitted)")
         try:
-            _, inliers = ransac(
-                coords,
+            model, inliers = ransac(
+                fit_coords,
                 LineModelND,
                 min_samples=2,
                 residual_threshold=residual_threshold,
@@ -1007,6 +1028,10 @@ def _detect_trails_sparse_ransac(data_sub, bkg_rms_map, existing_mask, config):
 
         if inliers is None or np.count_nonzero(inliers) < min_inliers:
             break
+        if len(fit_coords) != len(coords):
+            inliers = model.residuals(coords) <= residual_threshold
+            if np.count_nonzero(inliers) < min_inliers:
+                break
 
         inlier_coords = coords[inliers]
         diffs = inlier_coords.max(axis=0) - inlier_coords.min(axis=0)
@@ -1017,6 +1042,13 @@ def _detect_trails_sparse_ransac(data_sub, bkg_rms_map, existing_mask, config):
         density = np.count_nonzero(inliers) / max(length, 1.0)
         if length < min_length or density < min_line_density:
             residual_mask[inlier_coords[:, 0], inlier_coords[:, 1]] = False
+            rejected += 1
+            if max_rejected > 0 and rejected >= max_rejected:
+                print(
+                    f"    Sparse RANSAC stopped after {rejected} rejected models "
+                    f"({len(coords)} candidates left): crowded field, bounded"
+                )
+                break
             continue
 
         rr, cc = line(int(p0[0]), int(p0[1]), int(p1[0]), int(p1[1]))
@@ -1138,6 +1170,243 @@ def _drop_premasked_components(mask, existing_mask, max_fraction, min_pixels=24)
     )
 
 
+def _component_geometry(labeled, n_components):
+    """Per-component area, orientation, length and elongation, without a Python loop.
+
+    One statistic serves both sides of the star-trail-family comparison -- the
+    family's length and a candidate component's length -- so the estimator's own
+    bias cancels in the ratio the veto compares. ``length`` is
+    ``sqrt(12 * variance)`` along the major axis: the exact span of a uniform bar,
+    and a stable proxy for a trail. Only the non-zero pixels are touched, because
+    both callers hand it a sparse mask rather than a rectangular block, and
+    reconstructing coordinates for every pixel of a MegaCam HDU would cost more
+    memory than the rest of the stage.
+    """
+    names = ("size", "angle_deg", "length_px", "elongation")
+    if n_components <= 0:
+        return {name: np.zeros(1, dtype=np.float64) for name in names}
+    labeled = np.asarray(labeled)
+    flat = labeled.ravel()
+    positions = np.flatnonzero(flat)
+    labels_nz = flat[positions]
+    width = labeled.shape[1]
+    x = (positions % width).astype(np.float64)
+    y = (positions // width).astype(np.float64)
+    length_index = n_components + 1
+    counts = np.bincount(labels_nz, minlength=length_index).astype(np.float64)
+    sums = {
+        "x": np.bincount(labels_nz, weights=x, minlength=length_index),
+        "y": np.bincount(labels_nz, weights=y, minlength=length_index),
+    }
+    # One product at a time: a coordinate pair squared for every masked pixel is
+    # the whole memory argument for doing this off the non-zero pixels, and an
+    # eager tuple of all three products would spend it again.
+    for name, first, second in (("xx", x, x), ("yy", y, y), ("xy", x, y)):
+        product = first * second
+        sums[name] = np.bincount(labels_nz, weights=product, minlength=length_index)
+        del product
+    safe = np.maximum(counts, 1.0)
+    mean_x = sums["x"] / safe
+    mean_y = sums["y"] / safe
+    var_x = np.maximum(sums["xx"] / safe - mean_x * mean_x, 0.0)
+    var_y = np.maximum(sums["yy"] / safe - mean_y * mean_y, 0.0)
+    cov_xy = sums["xy"] / safe - mean_x * mean_y
+    trace = var_x + var_y
+    determinant = var_x * var_y - cov_xy * cov_xy
+    discriminant = np.sqrt(np.maximum(0.25 * trace * trace - determinant, 0.0))
+    major = 0.5 * trace + discriminant
+    minor = np.maximum(0.5 * trace - discriminant, 0.0)
+    return {
+        "size": counts,
+        "angle_deg": _normalize_angle_deg(0.5 * np.degrees(np.arctan2(2.0 * cov_xy, var_x - var_y))),
+        "length_px": np.sqrt(np.maximum(12.0 * major, 0.0)),
+        "elongation": np.sqrt(major / np.maximum(minor, 1e-12)),
+    }
+
+
+def _angular_distance_deg(angle_deg, reference_deg):
+    """Signed difference between two angles in the [0, 180) degree range."""
+    reference = np.asarray(reference_deg, dtype=np.float64)
+    return (np.asarray(angle_deg, dtype=np.float64) - reference + 90.0) % 180.0 - 90.0
+
+
+def _circular_median_and_spread_deg(angles_deg):
+    """Robust centre and MAD of angles that live on a half-circle.
+
+    Angles here are orientations, not directions: 179 and 1 degrees are two
+    degrees apart. Doubling them turns the problem back into the ordinary circle,
+    where the mean direction of the doubled angles locates the mode, and one
+    median pass about it resists the minority of cosmic rays, bleed and galaxies
+    that share no orientation with the field's trails.
+    """
+    angles = np.asarray(angles_deg, dtype=np.float64)
+    doubled = np.radians(2.0 * angles)
+    centre = 0.5 * np.degrees(np.arctan2(float(np.mean(np.sin(doubled))), float(np.mean(np.cos(doubled)))))
+    centre = float(_normalize_angle_deg(centre))
+    centre = float(_normalize_angle_deg(centre + float(np.median(_angular_distance_deg(angles, centre)))))
+    residual = np.abs(_angular_distance_deg(angles, centre))
+    return centre, 1.4826 * float(np.median(residual))
+
+
+def _dominant_angle_mode(angles_deg, min_sources, window_deg=10.0):
+    """The densest orientation window and the members inside it, or ``None``.
+
+    A frame-wide MAD is not the right test: on a 1024-crop of ``1851960`` HDU 17
+    the field's 26 trailing sources and six injected trails at other angles put
+    the spread over 10 degrees and the whole family disappeared -- failing open,
+    and failing exactly when a satellite is present. Taking the densest window of
+    orientations instead keeps the family while the foreign trails stay outside
+    it, and it is what keeps a sidereal frame inert: cosmic rays, bleed and
+    galaxies scatter over every orientation, so no narrow window holds
+    ``min_sources`` of them. The window is wide enough for the field itself --
+    ``1851960`` HDU 17's own trails span 30-45 degrees -- while a satellite at
+    another angle sits well outside it.
+    """
+    angles = np.asarray(angles_deg, dtype=np.float64)
+    if angles.size < int(min_sources):
+        return None
+    # Overlapping windows, half a window apart. Non-overlapping bins split a
+    # family that straddles a bin edge -- measured on the fixture, 12 members in
+    # one 5-degree bin and 9 in the next, which read as no family at all.
+    half_window = 0.5 * float(window_deg)
+    step = max(half_window, 1.0)
+    centres = np.arange(0.0, 180.0, step) + 0.5 * step
+    inside = np.abs(_angular_distance_deg(angles[:, None], centres[None, :])) <= half_window
+    counts = np.count_nonzero(inside, axis=0)
+    best = int(np.argmax(counts))
+    if counts[best] < int(min_sources):
+        return None
+    return angles[inside[:, best]]
+
+
+def _axis_aligned_band(length_px, angle_deg, shape, span_fraction=0.75):
+    """True for a component that spans an axis at a fixed narrow width.
+
+    A detector band runs the whole span of one axis at 0 or 90 degrees, which no
+    sky feature does, and it would otherwise enter a frame's star-trail family as
+    one more elongated source -- on the flat-less path, where the bands reach the
+    stage at all.
+    """
+    height, width = shape
+    along_rows = np.abs(_angular_distance_deg(angle_deg, 0.0)) <= 5.0
+    along_columns = np.abs(_angular_distance_deg(angle_deg, 90.0)) <= 5.0
+    return (along_rows & (length_px >= span_fraction * width)) | (along_columns & (length_px >= span_fraction * height))
+
+
+def frame_trail_family(data_sub, bkg_rms_map, existing_mask=None, config=None):
+    """The frame's own star-trail angle, length and population, or ``None``.
+
+    On a non-sidereal frame every star is trailed, so the frame carries a family
+    of elongated sources that share one orientation: measured on ``1851960`` HDU
+    17, 134 sources at 30-45 degrees (mean 40.2, median 55 px). A sidereal frame
+    has round PSFs, and its elongated population is cosmic rays, saturated-star
+    bleed and galaxies at every orientation, so both the population floor and the
+    spread test below are what keep this estimator inert there -- a veto built on
+    it cannot reach a sidereal result it was not measured on.
+
+    The returned length is the median of the family's own members, which is the
+    length scale a satellite trail has to be compared against: the telescope sets
+    the star-trail length, a satellite's own angular rate sets its own.
+    """
+    cfg = dict(config or {})
+    thresh_sig = float(cfg.get("thresh_sig", 2.5))
+    min_sources = int(cfg.get("min_sources", 20))
+    max_spread_deg = float(cfg.get("max_angle_spread_deg", 10.0))
+    min_elongation = float(cfg.get("min_elongation", 3.0))
+    min_length_px = float(cfg.get("min_length", 8.0))
+    if data_sub is None:
+        return None
+    values = np.clip(np.asarray(data_sub, dtype=np.float64), 0.0, None)
+    if existing_mask is not None:
+        values = np.where(existing_mask, 0.0, values)
+    scale = robust_rms(bkg_rms_map, default=1.0) if bkg_rms_map is not None else 1.0
+    if not np.isfinite(scale) or scale <= 0:
+        return None
+    binary = np.isfinite(values) & (values > thresh_sig * scale)
+    if int(np.count_nonzero(binary)) < 4 * min_sources:
+        return None
+    components = _label_components(binary)
+    if components is None:
+        return None
+    labeled, n_components, _sizes = components
+    geometry = _component_geometry(labeled, n_components)
+    member = (
+        (geometry["size"] >= 8.0)
+        & (geometry["elongation"] >= min_elongation)
+        & (geometry["length_px"] >= min_length_px)
+        & ~_axis_aligned_band(geometry["length_px"], geometry["angle_deg"], binary.shape)
+    )
+    member[0] = False
+    population = int(np.count_nonzero(member))
+    if population < min_sources:
+        return None
+    mode_window_deg = float(cfg.get("mode_window_deg", 10.0))
+    mode_angles = _dominant_angle_mode(geometry["angle_deg"][member], min_sources, mode_window_deg)
+    if mode_angles is None:
+        return None
+    angle, spread = _circular_median_and_spread_deg(mode_angles)
+    if spread > max_spread_deg:
+        return None
+    within = np.abs(_angular_distance_deg(geometry["angle_deg"][member], angle)) <= max(3.0 * spread, mode_window_deg)
+    if int(np.count_nonzero(within)) < min_sources:
+        return None
+    length = float(np.median(geometry["length_px"][member][within]))
+    if not np.isfinite(length) or length <= 0:
+        return None
+    return {
+        "angle_deg": round(float(angle), 2),
+        "angle_spread_deg": round(float(spread), 2),
+        "length_px": round(length, 2),
+        "count": int(np.count_nonzero(within)),
+        "population": population,
+        "mode_window_deg": mode_window_deg,
+        "thresh_sig": thresh_sig,
+    }
+
+
+def _drop_star_trail_family_components(mask, family, config=None, min_pixels=24):
+    """Drop a chain of the field's own star trails; keep a trail with its own rate.
+
+    The campaign's dominant diagonal false positive is not a satellite. On
+    ``1851960`` HDU 17 the flagged component runs 931 px at 40.2 degrees while the
+    field's own star trails are 55 px, and its pixels are at sky level with four
+    bright heads along it: two or more star trails that happen to be near
+    collinear are enough for the RANSAC pass to draw a line between the segment
+    endpoints. Two conditions, both measured on the frame in hand: orientation
+    within ``angle_tol_deg`` of the *frame's own* trail angle, and a span no
+    longer than ``length_factor`` times the family's median length.
+
+    The length condition is the one that matters. An angle-only test would veto a
+    satellite that happens to be parallel to the field's motion -- ``1774908``
+    HDU 19 was 1.8 degrees off -- while a chain of star trails cannot outgrow the
+    trails it is made of, and a satellite's length comes from its own angular
+    rate. Returns the surviving mask and what it dropped, for the stage's debug
+    record.
+    """
+    if family is None or not np.any(mask):
+        return mask, {"components": 0, "px": 0}
+    components = _label_components(mask)
+    if components is None:
+        return mask, {"components": 0, "px": 0}
+    labeled, n_components, sizes = components
+    geometry = _component_geometry(labeled, n_components)
+    cfg = dict(config or {})
+    angle_tol = float(cfg.get("angle_tol_deg", 10.0))
+    length_factor = float(cfg.get("length_factor", 4.0))
+    family_length = max(float(family["length_px"]), 1.0)
+    parallel = (np.abs(_angular_distance_deg(geometry["angle_deg"], float(family["angle_deg"]))) <= angle_tol) & (
+        geometry["length_px"] <= length_factor * family_length
+    )
+    dropped = parallel & (sizes >= int(min_pixels))
+    dropped[0] = False
+    if not np.any(dropped):
+        return mask, {"components": 0, "px": 0}
+    return mask & ~dropped[labeled], {
+        "components": int(np.count_nonzero(dropped[1:])),
+        "px": int(np.count_nonzero(mask & dropped[labeled])),
+    }
+
+
 def _gate_mask_by_profile(mask, max_half_width=6.0, min_pixels=24):
     """Keep pixels that lie on a thin line. Drop a component that is too wide.
 
@@ -1206,12 +1475,35 @@ def detect_streaks(data_sub, bkg_rms_map, existing_mask, config):
     max_premasked = config.get("mask_params", {}).get("max_premasked_fraction", 0.25)
     max_sigma = config.get("mask_params", {}).get("max_component_sigma", 20.0)
 
+    family_cfg = config.get("star_trail_veto") or {}
+    family = None
+    veto_dropped = {"components": 0, "px": 0}
+
     def _veto(mask):
         mask = _drop_bright_components(mask, data_sub, bkg_rms_map, max_sigma, min_streak_px, existing_mask)
-        return _drop_premasked_components(mask, existing_mask, max_premasked, min_streak_px)
+        mask = _drop_premasked_components(mask, existing_mask, max_premasked, min_streak_px)
+        if family is not None:
+            mask, dropped = _drop_star_trail_family_components(mask, family, family_cfg, min_streak_px)
+            veto_dropped["components"] += dropped["components"]
+            veto_dropped["px"] += dropped["px"]
+        return mask
 
     print(f"  Detecting streaks (mode: {mode})...")
     streak_t0 = time.time()
+    if family_cfg.get("enable", False):
+        t_family = time.time()
+        family = frame_trail_family(data_sub, bkg_rms_map, existing_mask, family_cfg)
+        if family is None:
+            print(
+                f"    [streak] no star-trail family (t+{time.time() - t_family:.1f}s): no shared trail angle in this frame."
+            )
+        else:
+            print(
+                f"    [streak] star-trail family (t+{time.time() - t_family:.1f}s): "
+                f"{family['angle_deg']:.1f} deg, {family['length_px']:.0f} px, "
+                f"{family['count']} of {family['population']} elongated sources, "
+                f"spread {family['angle_spread_deg']:.1f} deg."
+            )
     predictions = []
     hp_mask, hp_accepted, hp_debug = _detect_streaks_houghpeaks(
         data_sub, bkg_rms_map, existing_mask, config, predictions
@@ -1248,6 +1540,13 @@ def detect_streaks(data_sub, bkg_rms_map, existing_mask, config):
         debug_info["sparse_ransac"] = int(np.count_nonzero(sparse_mask))
     else:
         debug_info["sparse_ransac"] = 0
+    debug_info["star_trail_family"] = family
+    debug_info["star_trail_dropped"] = dict(veto_dropped)
+    if family is not None and veto_dropped["components"]:
+        print(
+            f"    [streak] star-trail veto dropped {veto_dropped['components']} component(s), "
+            f"{veto_dropped['px']} px parallel to the field's own trails."
+        )
 
     if config.get("profile_accept", True):
         mask_cfg = config.get("mask_params", {})

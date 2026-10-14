@@ -347,6 +347,17 @@ CONFIG_SCHEMA = {
             "min_row_run": _NONNEGATIVE_INTEGER,
             "angle_fan_slack": _NONNEGATIVE,
         },
+        "star_trail_veto": {
+            "enable": _BOOL,
+            "thresh_sig": _POSITIVE,
+            "min_sources": _POSITIVE_INTEGER,
+            "mode_window_deg": _number(0, 90),
+            "max_angle_spread_deg": _POSITIVE,
+            "min_elongation": _POSITIVE,
+            "min_length": _POSITIVE,
+            "angle_tol_deg": _number(0, 90),
+            "length_factor": _number(1.0, exclusive_minimum=True),
+        },
         "enable_sparse_ransac": _BOOL,
         "sparse_ransac_params": {
             "detect_thresh_sig": _POSITIVE,
@@ -357,6 +368,8 @@ CONFIG_SCHEMA = {
             "dilation_radius": _NONNEGATIVE_INTEGER,
             "max_trials": _POSITIVE_INTEGER,
             "max_trails": _POSITIVE_INTEGER,
+            "max_candidates": _POSITIVE_INTEGER,
+            "max_rejected": _POSITIVE_INTEGER,
         },
     },
     "variance": {

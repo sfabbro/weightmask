@@ -85,6 +85,89 @@ class TestResidualRansac(unittest.TestCase):
         self.assertGreaterEqual(trail_recall(mask, primary_truth)[1], 0.95)
         self.assertGreaterEqual(trail_recall(mask, residual_truth)[1], 0.95)
 
+    def test_crowded_field_rejection_cascade_is_bounded(self):
+        """A field with no line to find must not spend unbounded time proposing models.
+
+        Measured on non-sidereal frames: 154-236k residual candidates per HDU, and
+        the rejection cascade ran until the candidate set drained -- 230+ passes in
+        one pod against 24 for the same HDU locally, with ~6,800 passes at ~3.5 s
+        each as the worst case. The bound is on the model budget, not on the pixels
+        a model may explain; the re-scoring that keeps the cap honest is pinned by
+        the next test.
+        """
+        import weightmask.streaks as streaks
+
+        rng = np.random.default_rng(3)
+        image = np.zeros((600, 600), dtype=np.float32)
+        # Sparse clutter: dense enough that the cap binds, thin enough that no
+        # corridor reaches the density gate (clutter fraction ~3% against 0.6).
+        image[rng.integers(0, 600, 12000), rng.integers(0, 600, 12000)] = 8.0
+
+        calls = {"n": 0, "sizes": []}
+        real = streaks.ransac
+
+        def counting(coords, model, **kwargs):
+            calls["n"] += 1
+            calls["sizes"].append(len(coords))
+            return real(coords, model, **kwargs)
+
+        streaks.ransac = counting
+        try:
+            config = {"sparse_ransac_params": {"max_trials": 50, "max_candidates": 5000, "max_rejected": 12}}
+            mask = streaks._detect_trails_sparse_ransac(image, np.ones_like(image), None, config)
+        finally:
+            streaks.ransac = real
+        self.assertFalse(np.any(mask))
+        self.assertGreaterEqual(calls["n"], 1)
+        self.assertLessEqual(calls["n"], 13)
+        self.assertTrue(all(size <= 5000 for size in calls["sizes"]), calls["sizes"][:3])
+
+    def test_candidate_cap_does_not_change_what_a_model_explains(self):
+        """The fit is capped; the model is not.
+
+        A stride sample of a crowded field holds only a fraction of a trail's
+        pixels, so an accepted model is re-scored against every candidate. With the
+        same model handed to both runs, the capped and uncapped outputs must be
+        identical -- the cap may bound the search, never the evidence.
+        """
+        import warnings
+
+        from skimage.measure import LineModelND
+
+        import weightmask.streaks as streaks
+
+        image = np.zeros((400, 400), dtype=np.float32)
+        image[200, 50:300] = 8.0  # the trail the injected model will claim
+        rng = np.random.default_rng(5)
+        image[rng.integers(0, 400, 5000), rng.integers(0, 400, 5000)] = 8.0  # the cap binds here
+
+        points = np.array([[200.0, 50.0], [200.0, 300.0]])
+        if hasattr(LineModelND, "from_estimate"):
+            model = LineModelND.from_estimate(points)  # skimage >= 0.26
+        else:  # the spelling older supported versions have
+            with warnings.catch_warnings():
+                warnings.simplefilter("ignore", FutureWarning)
+                model = LineModelND().estimate(points)
+        real = streaks.ransac
+
+        def fixed(coords, _model_cls, **kwargs):
+            return model, model.residuals(coords) <= kwargs["residual_threshold"]
+
+        def run(params):
+            streaks.ransac = fixed
+            try:
+                return streaks._detect_trails_sparse_ransac(
+                    image, np.ones_like(image), None, {"sparse_ransac_params": params}
+                )
+            finally:
+                streaks.ransac = real
+
+        base = {"min_inliers": 25, "min_length": 100, "min_line_density": 0.6, "max_trails": 1}
+        uncapped = run(dict(base))
+        capped = run({**base, "max_candidates": 500})
+        self.assertTrue(np.any(uncapped))
+        np.testing.assert_array_equal(capped, uncapped)
+
     def test_residual_detection_is_invariant_to_adu_scale(self):
         from weightmask.streaks import _detect_trails_sparse_ransac
 

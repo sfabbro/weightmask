@@ -47,7 +47,22 @@ class TestRescueStageIsGone(unittest.TestCase):
             detect_streaks(data, rms, existing_mask, config)
         self.assertIn("_last_run", config)
         self.assertNotIn("mrt", config["_last_run"])
-        self.assertEqual(set(config["_last_run"].keys()), {"mode", "houghpeaks", "contours", "sparse_ransac"})
+        debug = config["_last_run"]
+        self.assertEqual(
+            set(debug.keys()),
+            {
+                "mode",
+                "houghpeaks",
+                "contours",
+                "sparse_ransac",
+                # The star-trail-family decision is recorded per HDU, so a veto
+                # that fired is attributable from the run itself.
+                "star_trail_family",
+                "star_trail_dropped",
+            },
+        )
+        self.assertIsNone(debug["star_trail_family"], "a quiet 64x64 frame has no trail family")
+        self.assertEqual(debug["star_trail_dropped"], {"components": 0, "px": 0})
 
     def test_shipped_config_carries_no_rescue_or_satdet_keys(self):
         streak_masking = _shipped_streak_config()

@@ -169,6 +169,45 @@ streak_masking:
     max_component_sigma: 20.0
     max_row_gap: 24              # Hough only: group support across short gaps from star masks
     min_row_run: 8               # reject short noise runs before grouping; gaps stay unfilled
+  # OPTIONAL star-trail-family veto: drop a chain of the field's own star trails.
+  # Set enable: false to disable it entirely.
+  #
+  # On a non-sidereal frame every star is trailed, so "long, thin and straight"
+  # stops being evidence. Measured on the 2026-10-14 campaign, the dominant
+  # diagonal false positive is two or more star trails near-collinear enough for
+  # the RANSAC pass to draw a line between their heads: on 1851960 HDU 17 a
+  # 931 px component at 40.2 deg while the field's own trails are 55 px, its
+  # pixels at sky level with four bright heads along it. A satellite trail has
+  # its own angular rate, so two properties separate the classes and both are
+  # measurable per frame: alignment with the frame's *own* trail angle, and a
+  # span no longer than a small multiple of the family's length. The length
+  # condition is what protects a satellite flying parallel to the field's motion
+  # (1774908 HDU 19 sat 1.8 deg off the field angle), so raising length_factor
+  # trades these false positives for that sensitivity.
+  #
+  # The family is estimated once per HDU. On a sidereal frame there is no shared
+  # angle -- cosmic rays, saturated-star bleed and galaxies have every
+  # orientation -- so the estimator returns None and this veto stays inert; that
+  # is why it can ship enabled. The acceptance harness
+  # (benchmarks/streak_nonsidereal_acceptance.py) is its gate: it injects a
+  # satellite at a known offset from the family angle, and negative star trails,
+  # chains and detector bands. Measured on that matrix 2026-10-14 (24 cells, 3
+  # seeds): the flat-less 1851960 HDU 17 crop's STREAK footprint falls from
+  # 4,379 px to 0 px on every seed, no injected cell changes at any sigma or
+  # offset, and a sidereal frame of round stars yields no family at all, so
+  # sidereal masks are unchanged. `--set
+  # streak_masking.star_trail_veto.enable=false` reproduces the pre-veto numbers
+  # on the same code.
+  star_trail_veto:
+    enable: true
+    thresh_sig: 2.5              # sky-RMS units; elongated-source threshold
+    min_sources: 20              # fewer elongated sources in a mode than this = no family
+    mode_window_deg: 10.0        # full width of the dominant-mode orientation window
+    max_angle_spread_deg: 10.0   # MAD of the family's angles must be under this
+    min_elongation: 3.0          # major/minor axis ratio of a trailed source
+    min_length: 8.0              # pixels; ignore sources shorter than this
+    angle_tol_deg: 10.0          # component must be this close to the family angle
+    length_factor: 4.0           # and no longer than this multiple of the family's median length
   enable_sparse_ransac: true     # dashed-trail recovery on residual bright pixels
   sparse_ransac_params:
     detect_thresh_sig: 6.0       # residual pixels this many σ above sky
@@ -179,6 +218,18 @@ streak_masking:
     dilation_radius: 1           # pixels; grow each RANSAC trail
     max_trials: 300              # RANSAC iterations
     max_trails: 3                # stop after this many residual lines
+    # Cost bounds for crowded fields. Both are inert on the fields this stage
+    # was tuned on (2.3-4.6k candidates and tens of rejected models per HDU)
+    # and bind only where the loop is otherwise unbounded: on non-sidereal
+    # MegaCam frames the 6-sigma residual set reached 154-236k pixels per HDU,
+    # where RANSAC cost per pass grows with the candidate count and rejections
+    # are bounded only by candidates/min_inliers -- measured at ~6,800 passes of
+    # ~3.5 s each on one core, and the same HDU took 24 passes locally against
+    # 230+ on a pod. max_candidates bounds the fit (a model is still re-scored
+    # against every candidate, so the cap cannot hide an inlier); max_rejected
+    # bounds how long a field can spend proposing models that never pass.
+    max_candidates: 20000        # candidates entering each RANSAC fit
+    max_rejected: 200            # rejected models per HDU before stopping
 
 variance:
   method: "theoretical"          # "theoretical" (default), "rms_map", or "empirical_fit"

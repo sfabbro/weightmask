@@ -360,3 +360,37 @@ def test_perf_rejects_obsolete_all_hdus_flag_before_resolving():
     with patch.object(perf_megacam, "resolve_exposures", side_effect=AssertionError("must reject before resolving")):
         with pytest.raises(SystemExit):
             perf_megacam.main(["--all-hdus", "--resolve-only"])
+
+
+def test_set_overrides_walk_dotted_paths_to_any_depth():
+    """`--set` must reach a key two levels down, not create a literal dotted key.
+
+    Splitting once on the first dot used to write ``star_trail_veto.enable`` into
+    the streak config, where the production validator then rejected it -- the
+    override did nothing and said so only as an "unsupported key" error.
+    """
+    config = {
+        "streak_masking": {
+            "enable": True,
+            "mask_params": {"min_mask_pixels": 24},
+            "star_trail_veto": {"enable": True, "length_factor": 4.0},
+        }
+    }
+    streak_inject.apply_overrides(config, ["streak_masking.star_trail_veto.enable=false"])
+    assert config["streak_masking"]["star_trail_veto"]["enable"] is False
+    assert "star_trail_veto.enable" not in config["streak_masking"]
+
+    streak_inject.apply_overrides(config, ["streak_masking.star_trail_veto.length_factor=2.5"])
+    assert config["streak_masking"]["star_trail_veto"]["length_factor"] == 2.5
+
+    streak_inject.apply_overrides(config, ["cosmic_ray.faint_cr.threshold=7"])
+    assert config["cosmic_ray"]["faint_cr"]["threshold"] == 7
+
+    streak_inject.apply_overrides(config, ["streak_masking.mask_params.min_mask_pixels=1"])
+    assert config["streak_masking"]["mask_params"]["min_mask_pixels"] == 1
+
+    # Walking through a val is a mistake, and it must be said out loud rather
+    # than silently replacing the val with a mapping.
+    with pytest.raises(SystemExit):
+        streak_inject.apply_overrides(config, ["streak_masking.enable.extra=1"])
+    assert config["streak_masking"]["enable"] is True

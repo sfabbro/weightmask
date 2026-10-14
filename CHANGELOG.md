@@ -105,6 +105,18 @@ and confidence maps can change from 0.2.0.
   announce successful releases. The old duplicate publish workflow is removed.
 - User docs/examples match the callable API, `NO_DATA` bit, configuration,
   command names, and output behavior. README links work from PyPI.
+- Streak detection now drops a chain of the frame's own star trails. On a
+  non-sidereal field every star is trailed, so long-and-straight is not evidence,
+  and the measured dominant false positive is two or more star trails
+  near-collinear enough for the RANSAC pass to join their heads at sky level. The
+  frame's own trail angle and median length are estimated per HDU
+  (`star_trail_veto`, from the elongated sources the stage already thresholds) and
+  a component parallel to them within `length_factor` of that length is dropped;
+  `enable: false` restores the previous behavior. Measured on the acceptance
+  harness: the flat-less `1851960` HDU 17 crop's STREAK footprint falls from
+  4,379 px to 0 px with no injected trail cell lost at any sigma or offset, and a
+  sidereal frame of round stars yields no family at all, leaving those masks
+  unchanged.
 
 ### Known limitations
 
@@ -116,6 +128,13 @@ and confidence maps can change from 0.2.0.
   per-amplifier/local baselines.
 - This release does not claim validated real-trail recall. The local MegaCam
   label set has no independently confirmed trail, so that recall is `n/a`.
+  Injected non-sidereal trails are recalled in only a minority of cells at low
+  significance, unchanged by `star_trail_veto`.
+- Axis-aligned detector bands that reach the streak stage are still not vetoed.
+  On the 2026-10-14 campaign's flat-less runs they were the largest class of
+  STREAK pixels; supplying the flat removes them upstream (measured: 4,379 px to
+  0 px on the crop tested), and the persistence prior does the same where other
+  exposures exist.
 - The full synthetic suite is not a pass. `pixi run benchmark-synthetic` on
   this tree reports average streak F1 0.149, below the unchanged 0.200 gate.
   The CI-sized sparse case passes its own gates. The MegaCam science gate on

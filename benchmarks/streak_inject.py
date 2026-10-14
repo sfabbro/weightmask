@@ -133,8 +133,7 @@ def place_trails(
             candidate_segment = _trail_segment(length, angle, cand_cx, cand_cy)
             if all(
                 max(abs(cand_cx - pcx), abs(cand_cy - pcy)) > min_separation
-                and _segment_distance(candidate_segment, _trail_segment(pl, pa, pcx, pcy))
-                > 2.0 * band_half_width
+                and _segment_distance(candidate_segment, _trail_segment(pl, pa, pcx, pcy)) > 2.0 * band_half_width
                 for pl, _, _, pa, pcx, pcy in placed
             ):
                 found = (cand_cx, cand_cy)
@@ -328,7 +327,14 @@ def scoreable_truth(body, data_sub, existing, baseline):
 
 
 def apply_overrides(config, pairs):
-    """Apply ``key=value`` (optionally dotted) overrides in place and return it."""
+    """Apply ``key=value`` overrides, dotted to any depth, and return the config.
+
+    The path is walked rather than split once, so a key two levels down
+    (``streak_masking.star_trail_veto.enable``) lands where it belongs. Splitting
+    once created a literal ``star_trail_veto.enable`` key instead, which the
+    production config validator then rejected -- a confusing way to learn that an
+    override silently did nothing.
+    """
     from weightmask.config import clean_config_dict
 
     for item in pairs or []:
@@ -338,11 +344,17 @@ def apply_overrides(config, pairs):
         parsed = clean_config_dict({key: value})[key]
         if isinstance(parsed, str):  # keep strings as strings for enumerated knobs
             parsed = value
-        if "." in key:
-            top, sub = key.split(".", 1)
-            config[top] = {**config.get(top, {}), sub: parsed}
-        else:
-            config[key] = parsed
+        parts = key.split(".")
+        target = config
+        for part in parts[:-1]:
+            nested = target.get(part)
+            if nested is None:
+                nested = {}
+                target[part] = nested
+            elif not isinstance(nested, dict):
+                raise SystemExit(f"--set {key}: {part!r} is not a mapping")
+            target = nested
+        target[parts[-1]] = parsed
     return config
 
 
@@ -520,9 +532,7 @@ def main(argv=None):
         scoreable = np.zeros(sci.shape, dtype=bool)
         trail_partitions = []
         for trail in trails:
-            accepted_truth, rejected_pixels = scoreable_truth(
-                trail["truth"], data_sub, existing, clean_baseline
-            )
+            accepted_truth, rejected_pixels = scoreable_truth(trail["truth"], data_sub, existing, clean_baseline)
             scoreable |= accepted_truth
             trail_partitions.append((accepted_truth, rejected_pixels))
         fp_px, fp5_px, novel_px = score_mask(mask, clean_baseline, scoreable)
