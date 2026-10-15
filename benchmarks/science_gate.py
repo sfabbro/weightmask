@@ -26,11 +26,51 @@ DEFAULT_OUT = os.path.join("test_outputs", "harness", "science-gate.md")
 DEFAULT_MANIFEST = os.path.join("test_outputs", "harness", "science-gate.json")
 INPUT_MANIFEST = os.path.join("benchmarks", "trail_truth", "megacam_real_labels.json")
 METRIC_REVISIONS = ["truth-band-recall-v2", "truth-pixel-recall-v3", "additive-finite-injection-v3"]
-WORM_AUDIT = 0.275
-WORM_DROP = 0.02
-SINGLE_FLOOR = 0.15
-CONTINUOUS_RECALL = 0.75
-RECALL5 = 0.90
+# Floors, re-derived 2026-10-15 on the corrected instrument
+# (`truth-pixel-recall-v3` injection, `additive-finite-injection-v3` CR) under
+# the owner decision recorded in
+# `.cursor/harness/release_remediation_plan_2026-10-06.md` ("Floors re-derived
+# 2026-10-15"). Two rules, both applied to measurements rather than to a target:
+#
+# * Injection recall. On identical harness, fixture, seed and config the
+#   pre-remediation detector at `a58b849` measures 0.506 continuous / 0.561
+#   within 5 px, and this tree measures 0.720 / 0.800. Each floor is the
+#   midpoint, so it fails the pre-remediation baseline and leaves half the
+#   recovered recall as headroom. The measurement is deterministic for a fixed
+#   fixture and config -- 0.720 / 0.800 on 2026-10-10, 2026-10-12 and
+#   2026-10-15 -- so the guard carries no allowance for run-to-run noise.
+# * Cosmic rays. The corrected harness measures 0.207 worm / 0.054 single-pixel
+#   before and after the remediation alike, so no floor between the two exists.
+#   These are no-regression guards two binomial sigma below the corrected
+#   measurement, not sensitivity claims: the faint-CR sensitivity the superseded
+#   instrument implied (worm 0.275, single-pixel 0.15) is not reproduced by the
+#   corrected instrument and remains tracked as an open gap. The single-pixel
+#   floor is a collapse guard only.
+PRE_REMEDIATION_CONTINUOUS_RECALL = 0.506
+PRE_REMEDIATION_RECALL5 = 0.561
+MEASURED_CONTINUOUS_RECALL = 0.720
+MEASURED_RECALL5 = 0.800
+CORRECTED_WORM_RECALL = 0.207
+CORRECTED_SINGLE_RECALL = 0.054
+WORM_SCOREABLE_SAMPLES = 276
+SINGLE_SCOREABLE_SAMPLES = 149
+
+
+def _midpoint_floor(pre_remediation, measured):
+    """The midpoint of a corrected baseline and this tree, floored to 2 dp."""
+    return math.floor((pre_remediation + measured) / 2 * 100) / 100
+
+
+def _no_regression_floor(reference, scoreable, sigmas=2.0):
+    """Two binomial sigma below a corrected measurement, floored to 2 dp."""
+    sigma = math.sqrt(reference * (1 - reference) / scoreable)
+    return math.floor((reference - sigmas * sigma) * 100) / 100
+
+
+CONTINUOUS_RECALL = _midpoint_floor(PRE_REMEDIATION_CONTINUOUS_RECALL, MEASURED_CONTINUOUS_RECALL)
+RECALL5 = _midpoint_floor(PRE_REMEDIATION_RECALL5, MEASURED_RECALL5)
+WORM_FLOOR = _no_regression_floor(CORRECTED_WORM_RECALL, WORM_SCOREABLE_SAMPLES)
+SINGLE_FLOOR = _no_regression_floor(CORRECTED_SINGLE_RECALL, SINGLE_SCOREABLE_SAMPLES)
 
 
 def _fits_paths(directory):
@@ -212,11 +252,20 @@ def _inject(exposure, hdu, out_dir, failures, notes):
     except (OSError, KeyError, ValueError) as exc:
         failures.append(f"streak_inject invalid metrics: {exc}")
         return
-    notes.append(f"streak_inject continuous recall {recall:.3f}, recall5 {recall5:.3f} on {exposure} HDU {hdu}")
+    notes.append(
+        f"streak_inject continuous recall {recall:.3f}, recall5 {recall5:.3f} on {exposure} HDU {hdu} "
+        f"(pre-remediation baseline {PRE_REMEDIATION_CONTINUOUS_RECALL:.3f}, {PRE_REMEDIATION_RECALL5:.3f})"
+    )
     if recall < CONTINUOUS_RECALL:
-        failures.append(f"continuous recall {recall:.3f} < {CONTINUOUS_RECALL:.2f}")
+        failures.append(
+            f"continuous recall {recall:.3f} < {CONTINUOUS_RECALL:.2f} "
+            f"(midpoint with the pre-remediation baseline {PRE_REMEDIATION_CONTINUOUS_RECALL:.3f})"
+        )
     if recall5 < RECALL5:
-        failures.append(f"recall at 5px {recall5:.3f} < {RECALL5:.2f}")
+        failures.append(
+            f"recall at 5px {recall5:.3f} < {RECALL5:.2f} "
+            f"(midpoint with the pre-remediation baseline {PRE_REMEDIATION_RECALL5:.3f})"
+        )
 
 
 def _cosmics(exposure, hdu, out_dir, failures, notes):
@@ -244,11 +293,21 @@ def _cosmics(exposure, hdu, out_dir, failures, notes):
     except (OSError, KeyError, ValueError) as exc:
         failures.append(f"cr_faint_curves invalid metrics: {exc}")
         return
-    notes.append(f"cr two-pass worm {worm:.3f} (audit {WORM_AUDIT:.3f}), single-pixel {single:.3f}")
-    if worm < WORM_AUDIT - WORM_DROP:
-        failures.append(f"worm recall {worm:.3f} dropped by more than {WORM_DROP:.2f} from {WORM_AUDIT:.3f}")
+    notes.append(
+        f"cr two-pass worm {worm:.3f} (corrected reference {CORRECTED_WORM_RECALL:.3f}, floor {WORM_FLOOR:.2f}), "
+        f"single-pixel {single:.3f} (corrected reference {CORRECTED_SINGLE_RECALL:.3f}, floor {SINGLE_FLOOR:.2f}); "
+        "both floors are no-regression guards, not sensitivity claims"
+    )
+    if worm < WORM_FLOOR:
+        failures.append(
+            f"worm recall {worm:.3f} < {WORM_FLOOR:.2f}, two binomial sigma below the corrected "
+            f"measurement {CORRECTED_WORM_RECALL:.3f}"
+        )
     if single < SINGLE_FLOOR:
-        failures.append(f"single-pixel recall {single:.3f} < {SINGLE_FLOOR:.2f}")
+        failures.append(
+            f"single-pixel recall {single:.3f} < {SINGLE_FLOOR:.2f}, two binomial sigma below the corrected "
+            f"measurement {CORRECTED_SINGLE_RECALL:.3f}"
+        )
 
 
 def _perf(exposure, out_dir, failures, notes):

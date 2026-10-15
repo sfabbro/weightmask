@@ -80,6 +80,70 @@ class TestScienceGateSkip(unittest.TestCase):
                 self.assertTrue(failures)
 
 
+def _inject_failures(tmp, recalls, recall5s):
+    rows = "".join(f"false\t{recall}\t{recall5}\n" for recall, recall5 in zip(recalls, recall5s))
+    (tmp / "streak_inject.tsv").write_text("dashed\trecall\trecall5\n" + rows)
+    failures = []
+    with patch.object(science_gate, "_run", return_value=(0, "")):
+        science_gate._inject("fixture.fits", 1, str(tmp), failures, [])
+    return failures
+
+
+def _cosmics_failures(tmp, worm, single):
+    (tmp / "cr_faint.tsv").write_text(f"variant\tworm_recall\tsingle_recall\nmain+faint\t{worm}\t{single}\n")
+    failures = []
+    with patch.object(science_gate, "_run", return_value=(0, "")):
+        science_gate._cosmics("fixture.fits", 1, str(tmp), failures, [])
+    return failures
+
+
+def test_re_derived_floors_sit_between_the_baseline_and_the_measurement():
+    """The 2026-10-15 decision re-derived the floors off the corrected instrument.
+
+    Pin the derivation, not only the resulting numbers: a midpoint injection
+    floor must fail the pre-remediation baseline and pass this tree, and a
+    cosmic-ray floor must sit strictly under the corrected measurement it
+    guards, because the corrected instrument measures the same value with and
+    without the remediation.
+    """
+    assert science_gate.CONTINUOUS_RECALL == pytest.approx(
+        (science_gate.PRE_REMEDIATION_CONTINUOUS_RECALL + science_gate.MEASURED_CONTINUOUS_RECALL) / 2, abs=0.01
+    )
+    assert science_gate.RECALL5 == pytest.approx(
+        (science_gate.PRE_REMEDIATION_RECALL5 + science_gate.MEASURED_RECALL5) / 2, abs=0.01
+    )
+    assert (
+        science_gate.PRE_REMEDIATION_CONTINUOUS_RECALL
+        < science_gate.CONTINUOUS_RECALL
+        < science_gate.MEASURED_CONTINUOUS_RECALL
+    )
+    assert science_gate.PRE_REMEDIATION_RECALL5 < science_gate.RECALL5 < science_gate.MEASURED_RECALL5
+    assert 0 < science_gate.WORM_FLOOR < science_gate.CORRECTED_WORM_RECALL
+    assert 0 < science_gate.SINGLE_FLOOR < science_gate.CORRECTED_SINGLE_RECALL
+    sigma = science_gate.math.sqrt(
+        science_gate.CORRECTED_SINGLE_RECALL
+        * (1 - science_gate.CORRECTED_SINGLE_RECALL)
+        / science_gate.SINGLE_SCOREABLE_SAMPLES
+    )
+    assert science_gate.SINGLE_FLOOR == pytest.approx(science_gate.CORRECTED_SINGLE_RECALL - 2 * sigma, abs=0.01)
+
+
+def test_injection_floors_refuse_the_pre_remediation_baseline(tmp_path):
+    # The five non-dashed trails of the 2026-10-15 run on 1013719p HDU 1.
+    measured = _inject_failures(tmp_path, [1.0, 0.998, 0.603, 1.0, 0.0], [1.0, 1.0, 1.0, 1.0, 0.0])
+    assert measured == []
+    baseline = _inject_failures(tmp_path, [0.506] * 5, [0.561] * 5)
+    assert len(baseline) == 2
+    assert "continuous recall 0.506" in baseline[0]
+    assert "recall at 5px 0.561" in baseline[1]
+
+
+def test_cosmic_ray_floors_refuse_a_regression_from_the_corrected_measurement(tmp_path):
+    assert _cosmics_failures(tmp_path, 0.207, 0.054) == []
+    assert _cosmics_failures(tmp_path, 0.14, 0.054)
+    assert _cosmics_failures(tmp_path, 0.207, 0.005)
+
+
 @pytest.mark.parametrize("relocate", [False, True])
 def test_gate_uses_fixture_paths_unless_data_directory_is_explicit(tmp_path, relocate):
     class LocalPool:

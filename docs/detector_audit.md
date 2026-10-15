@@ -338,6 +338,12 @@ Two real HDUs, injected CRs, `benchmarks/cr_faint_curves.py`:
 | production two-pass | 0.207 | **0.275** | 3202 | 7.8 s |
 | single pass + morphology gate | **0.010** | 0.313 | 1850 | 4.9 s |
 
+This table was measured on the superseded cosmic-ray injection harness. Under the
+corrected `additive-finite-injection-v3` harness the same production two-pass
+arrangement measures **0.207 worm and 0.054 single-pixel** recall, unchanged by
+the 0.2.1 remediation. The table is kept as the record of that earlier
+instrument; it is not the current gate value. See `docs/releasing.md`.
+
 The two-pass arrangement earns its 2.8 s: multi-pixel worm recall more than triples
 (0.086 -> 0.275) for 62 extra false-positive pixels. The single-pass variant is faster and
 cleaner but cannot see single-pixel hits at all, because the morphology gate requires
@@ -598,7 +604,9 @@ against the gates that produced it, so a label cannot be added without evidence.
 (status failed). With the persistence prior, `score_trail_truth --detector streaks`
 scored artefact FP rate 0.033 (8 of 241) over 89 HDUs; trail recall is n/a.
 Injected continuous recall on `1013719p` HDU 1 was 0.552 and recall at 5 px was
-0.600, both under the synthetic floors 0.75 and 0.90, which is why the gate failed.
+0.600, both under the injection floors 0.75 and 0.90 as they stood on that date,
+which is why the gate failed. Those four floors were re-derived on the corrected
+instrument on 2026-10-15; see `docs/releasing.md`.
 Production two-pass cosmic-ray worm recall was 0.285 and single-pixel recall was
 0.200. `perf_megacam` on 2 HDUs of `1013719p` (no baseline compare) recorded streak
 time 69.542 s/HDU and 83.141 s/HDU overall, exposure wall 166.8 s. No speedup is

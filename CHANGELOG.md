@@ -153,8 +153,16 @@ and confidence maps can change from 0.2.0.
   exposures exist.
 - The full synthetic suite is not a pass. `pixi run benchmark-synthetic` on
   this tree reports average streak F1 0.149, below the unchanged 0.200 gate.
-  The CI-sized sparse case passes its own gates. The MegaCam science gate on
-  this tree also failed; see Qualification.
+  The CI-sized sparse case passes its own gates. This release does not change
+  that gate; it stays open, and the science gate now passes on floors re-derived
+  against the corrected instrument, which Qualification states in full.
+- The science-gate floors were re-derived on 2026-10-15 (see Qualification and
+  `docs/releasing.md`). Two injected trails are still missed at length: the
+  400 px, 6 sigma trail scores 0.000 and the 800 px, 8 sigma trail 0.603, while
+  both 1500 px trails score 1.000 and 0.998. Faint cosmic-ray sensitivity is
+  also unchanged: the corrected instrument measures 0.207 worm and 0.054
+  single-pixel recall before and after this release's fixes, so its two floors
+  are no-regression guards rather than sensitivity claims.
 - Full science benchmarks are opt-in. Historical scores under 0.2.0 used the
   earlier generator and recall metric. Broad multi-seed/angular sweeps and
   other instrument campaigns remain unqualified. Stage diagnostics with a
@@ -162,16 +170,23 @@ and confidence maps can change from 0.2.0.
 
 ### Qualification
 
-`pixi run science-gate` on this tree **failed**. Do not treat the 2026-10-06
-figures (continuous recall 0.753 / 0.903, worm 0.322, single-pixel 0.167) as
-the candidate result.
+`pixi run science-gate` on this tree **passed** on 2026-10-15, under four floors
+re-derived against the corrected instrument; the derivation, with both
+measurements and both rules, is in `docs/releasing.md` and the release
+remediation plan. Do not treat the 2026-10-06 figures (continuous recall 0.753 /
+0.903, worm 0.322, single-pixel 0.167) as the candidate result: they were
+measured on the superseded harness.
 
 - Artefact false positives on 89 annotated HDUs and 241 labelled artefacts are
   still 0 (rate 0.000) with persistence on. Real-trail recall is `n/a`.
 - Injected continuous-trail mean recall on `1013719p` HDU 1 is 0.720 exact and
-  0.800 within five pixels, below 0.75 and 0.90.
+  0.800 within five pixels, against floors of 0.61 and 0.68. The
+  pre-remediation detector scores 0.506 and 0.561 on the same harness, seed and
+  config, and fails both floors.
 - Two-pass cosmic-ray recall is 0.207 for worms and 0.054 for single pixels,
-  below the worm drop limit and the 0.15 single-pixel floor.
+  which are also the pre-remediation scores. The floors of 0.15 and 0.01 sit two
+  binomial standard errors below that measurement and guard against a
+  regression rather than claiming that sensitivity.
 - The two-HDU timing run completed. It is not a speedup claim.
 - The local suite covers both geometry-guarded linear-feature regressions. One
   optional torchfits test skips. A clean export passes lint, expected data/optional
