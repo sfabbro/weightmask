@@ -46,7 +46,20 @@ nor faint cosmic-ray sensitivity. The two injected trails that are still lost --
 400 px at 6 sigma scoring 0.000 and 800 px at 8 sigma scoring 0.603 -- are
 recorded in the changelog's known limitations together with the corrected
 cosmic-ray measurement. `pixi run benchmark-synthetic` remains red at average
-streak F1 0.149 < 0.200; WM-16 is not lowered here and the release notes say so.
+streak F1 0.149 < 0.200; WM-16 is not lowered here.
+
+### Second owner decision, same date — WM-16 stays open for 0.2.1
+
+`pixi run benchmark-synthetic` on the merged commit `de36188` reports average
+streak F1 0.149 against the unchanged 0.200 aggregate gate, so the release
+checklist item "Synthetic benchmark has no gate failures" is **accepted as unmet
+for 0.2.1 rather than satisfied by lowering it**. The changelog's Known
+limitations and Qualification sections state the failure, and WM-16 stays open
+with its measured root cause: the pre-mask starves the accumulator, 17.6-86.4%
+of each trail's own ground-truth pixels are already masked when the streak stage
+runs, and only 0-6 unmasked binned cells clear `thresh_sig`. That detector work
+is the first target after 0.2.1; `tests/benchmarks/wm16_hough_starvation.py`
+reproduces the measurement.
 
 Evidence: the 2026-10-15 qualification run at `de36188` wrote
 `test_outputs/harness/release-evidence.json` (status, commit SHA, config SHA,
