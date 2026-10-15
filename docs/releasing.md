@@ -39,6 +39,36 @@ and require a passed report before publication. Missing data produces a skip,
 which is not qualification. This data-backed gate remains an explicit local
 check; ordinary CI does not download or run the campaign.
 
+## Science-gate floors
+
+`benchmarks/science_gate.py` refuses a run on four floors. They were re-derived
+on 2026-10-15 against the corrected instrument recorded in
+`.cursor/harness/release_remediation_plan_2026-10-06.md`, because the previous
+floors (0.75, 0.90, worm 0.275 less 0.02, single-pixel 0.15) were calibrated on
+the superseded harness and were unreachable by both the pre-remediation detector
+and this tree.
+
+| measurement | pre-remediation | this tree | floor |
+|---|---|---|---|
+| continuous injected recall | 0.506 | 0.720 | 0.61 |
+| injected recall within 5 px | 0.561 | 0.800 | 0.68 |
+| two-pass cosmic-ray worm recall | 0.207 | 0.207 | 0.15 |
+| two-pass cosmic-ray single-pixel recall | 0.054 | 0.054 | 0.01 |
+
+The two injection floors are the midpoint of the two measurements, so each one
+fails the pre-remediation baseline with margin and leaves this tree half of the
+recovered recall as headroom. That measurement is deterministic for a fixed
+fixture and config, so the guard needs no allowance for run-to-run noise.
+
+The two cosmic-ray floors are **no-regression guards, not sensitivity claims**.
+The corrected instrument measures the same cosmic-ray recall before and after
+the remediation, so no floor separates the two, and each floor therefore sits
+two binomial standard errors below the corrected measurement (n = 276 worm and
+149 single-pixel samples). The corrected instrument reproduces neither the worm
+0.275 nor the single-pixel 0.15 the superseded one implied; only a collapse of
+single-pixel recovery trips its floor. Faint cosmic-ray sensitivity under the
+corrected metric remains an open gap, and the release notes state it.
+
 The release workflow runs the same `release-check` script. It refuses to proceed on:
 
 | Check | What it catches |

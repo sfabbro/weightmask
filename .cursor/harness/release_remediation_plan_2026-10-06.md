@@ -1,6 +1,69 @@
 # weightmask — release remediation plan (2026-10-06)
 
-Status: **hold — remediated work committed to a PR; 0.2.1 not released**
+Status: **release candidate — 0.2.1 floors re-derived on the corrected
+instrument (2026-10-15); qualification re-run on the merged upstream `main`.
+WM-16 is still open and is recorded as a known limitation, not lowered.**
+
+## Owner decision 2026-10-15 — science-gate floors re-derived on the corrected instrument
+
+Owner decision: re-baseline the four `benchmarks/science_gate.py` floors against
+the corrected instrument, as the 2026-10-09 decision below deferred, and release
+0.2.1 if the re-derived gate passes.
+
+Why it was needed. The 2026-10-12 re-measurement confirmed that the same four
+failures reproduce on the PR head, and the 2026-10-15 run confirmed them again on
+the merged upstream `main` (`de36188`): 0.720 / 0.800, worm 0.207, single-pixel
+0.054. The 2026-10-09 A/B explains why. On the corrected instrument the
+pre-remediation detector at `a58b849` and this tree score 0.506 / 0.561 against
+0.720 / 0.800 for injection, and *identical* for cosmic rays (0.207 worm, 0.054
+single-pixel). The old floors (0.75, 0.90, worm 0.275 less 0.02, single-pixel
+0.15) were calibrated on the superseded harness, where the archived
+`test_outputs/harness/0.2.1-release/` copy scored 0.753 / 0.903. Under the
+corrected instrument neither candidate nor baseline approaches them, so no set of
+thresholds between the two existed and the cosmic-ray floors were unreachable by
+construction.
+
+Two rules, both applied to measurements rather than to a target, both executable
+in `benchmarks/science_gate.py` and pinned by `tests/test_science_gate.py`:
+
+- **Injection recall floor = the midpoint of the corrected pre-remediation score
+  and this tree's score.** `CONTINUOUS_RECALL = 0.61` from 0.506 and 0.720;
+  `RECALL5 = 0.68` from 0.561 and 0.800. Each floor fails the pre-remediation
+  baseline with margin and leaves this tree half of the recovered recall as
+  headroom. The measurement is deterministic for a fixed fixture and config --
+  0.720 / 0.800 on 2026-10-10, 2026-10-12 and 2026-10-15 -- so the guard carries
+  no allowance for run-to-run noise.
+- **Cosmic-ray floor = the corrected measurement less two binomial standard
+  errors,** floored to two decimals. `WORM_FLOOR = 0.15` (0.207, n = 276
+  scoreable); `SINGLE_FLOOR = 0.01` (0.054, n = 149). These are no-regression
+  guards, not sensitivity claims: the corrected instrument reproduces neither the
+  worm 0.275 nor the single-pixel 0.15 the superseded instrument implied, and
+  only a collapse of single-pixel recovery trips its floor. Faint cosmic-ray
+  sensitivity under the corrected metric stays open.
+
+What this decision does *not* do. It claims neither the missing injected recall
+nor faint cosmic-ray sensitivity. The two injected trails that are still lost --
+400 px at 6 sigma scoring 0.000 and 800 px at 8 sigma scoring 0.603 -- are
+recorded in the changelog's known limitations together with the corrected
+cosmic-ray measurement. `pixi run benchmark-synthetic` remains red at average
+streak F1 0.149 < 0.200; WM-16 is not lowered here.
+
+### Second owner decision, same date — WM-16 stays open for 0.2.1
+
+`pixi run benchmark-synthetic` on the merged commit `de36188` reports average
+streak F1 0.149 against the unchanged 0.200 aggregate gate, so the release
+checklist item "Synthetic benchmark has no gate failures" is **accepted as unmet
+for 0.2.1 rather than satisfied by lowering it**. The changelog's Known
+limitations and Qualification sections state the failure, and WM-16 stays open
+with its measured root cause: the pre-mask starves the accumulator, 17.6-86.4%
+of each trail's own ground-truth pixels are already masked when the streak stage
+runs, and only 0-6 unmasked binned cells clear `thresh_sig`. That detector work
+is the first target after 0.2.1; `tests/benchmarks/wm16_hough_starvation.py`
+reproduces the measurement.
+
+Evidence: the 2026-10-15 qualification run at `de36188` wrote
+`test_outputs/harness/release-evidence.json` (status, commit SHA, config SHA,
+metric revisions, data IDs) and `test_outputs/harness/science-gate.md`.
 
 ## Re-measurement 2026-10-12 on `b2e4da6` (PR head, clean tree)
 
