@@ -33,6 +33,7 @@ import tomllib
 import yaml
 
 from benchmarks.release_evidence import validate_manifest
+from weightmask._version import __version__
 from weightmask.config import copy_default_config, default_config_bytes, default_config_path, default_config_resource
 from weightmask.contract import QUALITY_BITS
 
@@ -584,7 +585,7 @@ class TestPackagedConfiguration(unittest.TestCase):
             text=True,
         )
         self.assertEqual(result.returncode, 0, result.stderr)
-        self.assertEqual(result.stdout.strip(), "0.2.1 0.2.1")
+        self.assertEqual(result.stdout.strip(), f"{__version__} {__version__}")
 
     def test_default_config_can_be_copied_without_source_tree(self):
         with tempfile.TemporaryDirectory() as tmp:
