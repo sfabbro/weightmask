@@ -6,6 +6,16 @@ Products from a complete configuration (such as a copy of the bundled
 `weightmask.yml`) are bit-identical to 0.2.1. Partial configurations now get the
 bundled defaults for every key they omit, so their products can change.
 
+### Performance
+
+- The object stage no longer dilates each elongated hand-off component on its
+  own full-frame mask. Dilation distributes over union, so that per-component
+  pass rebuilt the hand-off mask the stage already had, at a cost of
+  components x frame size. On nine real MegaCam CCDs (`--nproc 8`, Apple M2,
+  three interleaved runs each) the background/object loop drops from about
+  30 s to 5 s per CCD and the exposure from 213 s to 174 s (median), with
+  bit-identical products.
+
 ### Changed
 
 - The bundled `weightmask/weightmask.yml` is the single source of defaults.

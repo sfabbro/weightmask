@@ -66,6 +66,13 @@ own components, merging changes semantics); `_SEGMENT_SCORE` is a constant
 term the confidence thresholds were tuned with; the text-reading CLI tests
 guard against dead config keys and flags, so they stay.
 
+Perf (same machine, Apple M2, rep case 9 CCDs `--nproc 8`, 3 interleaved
+pairs, golden labels perf_base_k/perf_new_k): 212.3/214.5/213.4 s at 3d27bd6
+vs 172.8/174.9/173.5 s at 9389341, products identical. Cause: the old object
+stage's per-component `binary_dilation` of the hand-off mask (O(components x
+frame), result equal to the single dilation by distributivity) removed with the
+config-result plumbing in f5fa2de. bgobj_loop median 31 s -> 5.5 s per CCD.
+
 Deferred: `streaks.py` package split (32 test/benchmark modules patch its
 private names; 1.4k lines of one stage), `conftest.py` (no shared fixture
 duplication worth it), merging test modules, print -> logging, satur
