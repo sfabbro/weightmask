@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 1.2.2 - 2026-10-15
 
 Products from a complete configuration (such as a copy of the bundled
 `weightmask.yml`) are bit-identical to 0.2.1. Partial configurations now get the
@@ -90,6 +90,11 @@ bundled defaults for every key they omit, so their products can change.
   weight.
 - The residual faint cosmic-ray pass protects PSF-like sources with the
   configured `cosmic_ray.psf_fwhm_guess` instead of a hard-coded 3 px.
+
+### Known limitations
+
+- This release does not claim validated real-trail recall. The local MegaCam
+  label set has no independently confirmed trail, so that recall is `n/a`.
 
 ## 0.2.1 - 2026-10-14
 

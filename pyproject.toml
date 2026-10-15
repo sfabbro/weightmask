@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "weightmask"
-version = "0.2.1"
+version = "1.2.2"
 authors = [
   { name="Seb Fabbro", email="sebfabbro@gmail.com" },
 ]
@@ -40,7 +40,7 @@ torchfits = ["torchfits>=1.1.3"]
 [project.urls]
 Homepage = "https://github.com/astroai/weightmask"
 Issues = "https://github.com/astroai/weightmask/issues"
-Changelog = "https://github.com/astroai/weightmask/blob/v0.2.1/CHANGELOG.md"
+Changelog = "https://github.com/astroai/weightmask/blob/v1.2.2/CHANGELOG.md"
 Source = "https://github.com/astroai/weightmask"
 PyPI = "https://pypi.org/project/weightmask/"
 
