@@ -13,10 +13,16 @@ import tempfile
 import types
 import unittest
 from pathlib import Path
+from unittest.mock import patch
 
 import numpy as np
 import pytest
 from astropy.io import fits
+
+from benchmarks.canfar import plot_trail_cutouts as cutouts
+from benchmarks.canfar import process_exposure, stage_source, verify_exposures
+from benchmarks.canfar.manifest import manifest_sha256, validate_manifest
+from weightmask.contract import QUALITY_BITS
 
 ROOT = Path(__file__).resolve().parents[1]
 SCRIPTS = ROOT / "benchmarks" / "canfar"
@@ -232,8 +238,6 @@ esac
             self.assertNotIn("mask-identical: True", (self.work / "table.md").read_text())
 
     def test_partial_download_is_not_a_successful_cached_variant(self):
-        from unittest.mock import patch
-
         source = (SCRIPTS / "run_one.sh").read_text()
         fetch_source = source.split("def fetch(url, out):", 1)[1].split("\nPUB = ", 1)[0]
         scope = {}
@@ -255,7 +259,6 @@ esac
         Both halves are what a reviewer reads back later (the mask file and the
         per-bit counts), so they are checked here rather than only in a pod.
         """
-        from benchmarks.canfar import process_exposure
 
         urls = process_exposure.candidate_urls("1729091")
         self.assertTrue(urls[0].endswith("/1729091p.fits.fz"), urls)
@@ -286,10 +289,6 @@ esac
         a stats file that does not describe its pixels is worse than none: both
         have to fail here rather than be reported as a clean exposure.
         """
-        import json
-
-        from benchmarks.canfar import verify_exposures
-        from weightmask.contract import QUALITY_BITS
 
         directory = self.work / "ns-9999999"
         directory.mkdir()
@@ -367,7 +366,6 @@ esac
         `git archive` would silently stage the last commit instead, which is how
         a measurement ends up describing code that was not the thing under test.
         """
-        from benchmarks.canfar import stage_source
 
         repo = self.work / "repo"
         repo.mkdir()
@@ -421,8 +419,6 @@ esac
         self.assertIn("per-exposure mapping", result.stderr)
 
     def test_manifest_rejects_removed_parameters(self):
-        from benchmarks.canfar.manifest import validate_manifest
-
         manifest = json.loads((ROOT / "benchmarks/canfar_experiments/manifest.json").read_text())
         with pytest.raises(ValueError, match="Unsupported configuration key") as raised:
             validate_manifest(manifest, "E3")
@@ -430,8 +426,6 @@ esac
         self.assertIn("satdet_params", str(raised.value))
 
     def test_manifest_accepts_canonical_override_keys(self):
-        from benchmarks.canfar.manifest import validate_manifest
-
         manifest = json.loads((ROOT / "benchmarks/canfar_experiments/manifest.json").read_text())
         manifest["groups"][0]["config_set"] = {
             "cosmic_ray.dilation_radius": 2,
@@ -440,8 +434,6 @@ esac
         validate_manifest(manifest, "E0")
 
     def test_manifest_rejects_unresolved_e0_and_multiflat_e7(self):
-        from benchmarks.canfar.manifest import validate_manifest
-
         manifest = json.loads((ROOT / "benchmarks/canfar_experiments/manifest.json").read_text())
         manifest["groups"][0]["safe_ids"] = ["TBD"]
         with pytest.raises(ValueError, match="E0 group has unresolved inputs"):
@@ -450,8 +442,6 @@ esac
             validate_manifest(manifest, "E7")
 
     def test_manifest_rejects_paired_id_cardinality_mismatch(self):
-        from benchmarks.canfar.manifest import validate_manifest
-
         manifest = json.loads((ROOT / "benchmarks/canfar_experiments/manifest.json").read_text())
         manifest["groups"][0]["publisherIDs"] = []
         with pytest.raises(ValueError, match="safe_ids/publisherIDs cardinality mismatch"):
@@ -465,15 +455,11 @@ esac
         )
 
     def test_manifest_rejects_unresolved_e8(self):
-        from benchmarks.canfar.manifest import validate_manifest
-
         manifest = json.loads((ROOT / "benchmarks/canfar_experiments/manifest.json").read_text())
         with pytest.raises(ValueError, match="E8.*unresolved"):
             validate_manifest(manifest, "E8")
 
     def test_manifest_accepts_resolved_e8(self):
-        from benchmarks.canfar.manifest import validate_manifest
-
         manifest = json.loads((ROOT / "benchmarks/canfar_experiments/manifest.json").read_text())
         group = next(group for group in manifest["groups"] if group["exp_id"] == "E8")
         group.update(
@@ -488,8 +474,6 @@ esac
         validate_manifest(manifest, "E8")
 
     def test_manifest_is_pinned_historical_and_hash_is_content_hash(self):
-        from benchmarks.canfar.manifest import manifest_sha256
-
         path = ROOT / "benchmarks/canfar_experiments/manifest.json"
         manifest = json.loads(path.read_text())
         self.assertEqual(manifest["status"], "historical")
@@ -713,8 +697,6 @@ esac
         mask HDU has to be matched to the exposure HDU by detector name (the
         recorded order is the fallback).
         """
-        from benchmarks.canfar import plot_trail_cutouts as cutouts
-        from weightmask.contract import QUALITY_BITS
 
         mask = np.zeros((64, 64), dtype=np.uint16)
         # A trail across the window, closed by the mask (which is what the
@@ -775,8 +757,6 @@ esac
 
     def test_cutout_sheet_renders_a_trail_component_to_a_png(self):
         """End to end on a synthetic exposure and mask: PNG, index, and mapping."""
-        from benchmarks.canfar import plot_trail_cutouts as cutouts
-        from weightmask.contract import QUALITY_BITS
 
         exposure = self.work / "0000001p.fits.fz"
         rng = np.random.default_rng(1)

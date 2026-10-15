@@ -6,24 +6,19 @@ shape measurement, forced photometry, profile fitting, or difference imaging.
 Algorithms are in [algorithms.md](algorithms.md). The supported library
 surface is in [api.md](api.md).
 
-## Config is required
+## Config
 
-Pass `--config path.yml`, or put `weightmask.yml` in the current directory.
-Installed packages include the canonical config. Create a local copy with:
+The packaged [`weightmask.yml`](../weightmask/weightmask.yml) holds every key
+and is the only source of defaults. `--config path.yml` is a set of overrides
+deep-merged over it, so a file holding just `cosmic_ray: {niter: 2}` is a valid
+config; without `--config` the packaged defaults are used. Unknown keys and
+out-of-range values fail before any data is read. To start from a full copy:
 
 ```python
 from weightmask.config import copy_default_config
 
 copy_default_config("weightmask.yml")
 ```
-
-The only key list is the canonical [`weightmask.yml`](../weightmask.yml). Extra
-top-level keys fail validation. Those YAML values are the product
-defaults. Missing keys warn and fall back to in-code defaults, which are not
-the same file: in particular `streak_masking.enable` is false, `rescale_variance`
-is false, `default_gain` is 1.0 e⁻/ADU, and `default_rdnoise` is 0 e⁻. Copy
-the YAML. `validate_config(config)` returns `False` on invalid config. The source-tree
-`weightmask.yml` is a convenience copy and must match the packaged resource.
 
 Each HDU uses one gain and one read-noise value (first present header keyword
 in the configured lists) unless both `GAINA` and `GAINB` exist and a section
@@ -440,12 +435,11 @@ keys and you get the bare formula.
 from astropy.io import fits
 import yaml
 
-from weightmask.config import clean_config_dict
-from weightmask.process import process_image, validate_config
+from weightmask.config import clean_config_dict, resolve_config
+from weightmask.process import process_image
 
-with open("weightmask.yml") as f:
-    config = clean_config_dict(yaml.safe_load(f))
-assert validate_config(config)
+with open("overrides.yml") as f:
+    config = resolve_config(clean_config_dict(yaml.safe_load(f)))
 
 sci = fits.getdata("science.fits", ext=1)
 hdr = dict(fits.getheader("science.fits", ext=1))

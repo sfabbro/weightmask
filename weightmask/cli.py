@@ -14,11 +14,10 @@ import numpy as np
 import yaml
 
 from . import __version__
-from .config import clean_config_dict
+from .config import clean_config_dict, resolve_config
 from .errors import StageFailure
 from .mef import process_all_hdus
-from .process import validate_config
-from .streaks import PersistenceProfileAccumulator
+from .persistence import PersistenceProfileAccumulator
 from .utils import extract_hdu_spec, paths_alias
 
 
@@ -69,7 +68,7 @@ def parse_arguments(argv=None) -> argparse.Namespace:
         "--config",
         type=str,
         default=None,
-        help="YAML config. If omitted, looks for a copied weightmask.yml in the current directory.",
+        help="YAML overrides of the bundled weightmask.yml. If omitted, the bundled defaults are used.",
     )
     inputs.add_argument(
         "--flat_image",
@@ -326,60 +325,27 @@ def build_persistence_priors(science_path, hdus, other_paths, min_other=2):
     return priors
 
 
-def _find_default_config() -> Optional[str]:
-    if os.path.exists("weightmask.yml"):
-        print("Using default config file found at: weightmask.yml")
-        return "weightmask.yml"
-    return None
-
-
-def _read_and_clean_config(config_path: str) -> dict:
-    try:
-        with open(config_path, "r") as f:
-            config = yaml.safe_load(f)
-            if not isinstance(config, dict):
-                print(f"ERROR: Config file '{config_path}' must be a YAML dictionary.")
-                return None
-            return clean_config_dict(config)
-    except OSError as e:
-        print(f"ERROR: Failed to read config file '{config_path}': {e}")
-        return None
-    except yaml.YAMLError as e:
-        print(f"ERROR: Failed to parse config file '{config_path}': {e}")
-        return None
-
-
-def load_configuration(config_path: str) -> dict:
-    if config_path is None:
-        config_path = _find_default_config()
-        if config_path is None:
-            print("ERROR: Config file not specified and no default found.")
+def load_configuration(config_path: Optional[str]) -> Optional[dict]:
+    """The packaged defaults, overridden by ``config_path`` if given; None on error."""
+    overrides = {}
+    if config_path is not None:
+        try:
+            with open(config_path, "r") as f:
+                overrides = yaml.safe_load(f)
+        except OSError as e:
+            print(f"ERROR: Failed to read config file '{config_path}': {e}")
             return None
-
-    config = _read_and_clean_config(config_path)
-    if config is None:
+        except yaml.YAMLError as e:
+            print(f"ERROR: Failed to parse config file '{config_path}': {e}")
+            return None
+        if not isinstance(overrides, dict):
+            print(f"ERROR: Config file '{config_path}' must be a YAML dictionary.")
+            return None
+    try:
+        return resolve_config(clean_config_dict(overrides))
+    except ValueError as e:
+        print(f"ERROR: {e}")
         return None
-
-    if not isinstance(config, dict):
-        print(f"ERROR: Config file '{config_path}' must be a YAML dictionary.")
-        return None
-
-    if not validate_config(config):
-        print("ERROR: Configuration validation failed.")
-        return None
-
-    if "output_params" not in config:
-        config["output_params"] = {}
-    if "confidence_params" not in config:
-        config["confidence_params"] = {}
-    if "output_map_format" not in config["output_params"]:
-        config["output_params"]["output_map_format"] = "weight"
-    config["output_params"].setdefault("mask_bitpix", 16)
-    config["output_params"].setdefault("ivar_bitpix", 32)
-    config["output_params"].setdefault("compress", False)
-    config["output_params"].setdefault("sky_format", "full")
-
-    return config
 
 
 def _validate_output_paths(paths, inputs):
@@ -534,9 +500,8 @@ def run_pipeline(argv=None) -> int:
         input_hdu = args.hdu
 
     paths = determine_output_paths(args, input_path, config)
-    config_path = args.config or "weightmask.yml"
     if not _validate_output_paths(
-        paths, [input_path, flat_path, badpix_path, args.dark_image, config_path, *(args.persistence or [])]
+        paths, [input_path, flat_path, badpix_path, args.dark_image, args.config, *(args.persistence or [])]
     ):
         return 1
 
@@ -600,11 +565,6 @@ def run_pipeline(argv=None) -> int:
             return 1
     finally:
         _cleanup_hdul(hdul_input, hdul_flat, hdul_badpix, hdul_dark)
-
-    import warnings
-
-    warnings.filterwarnings("default", category=UserWarning)
-    warnings.filterwarnings("default", category=RuntimeWarning)
 
     if process_success_count == 0:
         print("\nNo HDUs processed and published successfully. Existing outputs were preserved.")

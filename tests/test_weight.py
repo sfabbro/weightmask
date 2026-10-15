@@ -113,15 +113,6 @@ class TestWeight(unittest.TestCase):
         if confidence_map is not None:
             self.assertTrue(np.all(confidence_map == 0.0))
 
-    def test_generate_weight_and_confidence_none_input(self):
-        """Test weight and confidence map generation with None input."""
-        weight_map, confidence_map, product = generate_weight_and_confidence(None, None, {})
-
-        # Should return None for both when inv_variance_map is None
-        self.assertIsNone(weight_map)
-        self.assertIsNone(confidence_map)
-        self.assertIsNone(product)
-
 
 if __name__ == "__main__":
     unittest.main()

@@ -5,6 +5,8 @@ import numpy as np
 
 from weightmask.errors import StageFailure
 from weightmask.mef import process_hdu
+from weightmask.objects import ObjectDetection
+from weightmask.streaks import StreakDetection
 
 
 class TestProcessHDU(unittest.TestCase):
@@ -67,7 +69,9 @@ class TestProcessHDU(unittest.TestCase):
             np.ones((100, 100), dtype=np.float32),
         )
 
-        mock_detect_objs.return_value = np.zeros((100, 100), dtype=bool)
+        mock_detect_objs.return_value = ObjectDetection(
+            np.zeros((100, 100), dtype=bool), np.zeros((100, 100), dtype=bool)
+        )
 
         # calculate_inverse_variance returns (inv_var_map, final_method)
         mock_calc_inv_var.return_value = np.ones((100, 100), dtype=np.float32)
@@ -257,7 +261,9 @@ class TestProcessHDU(unittest.TestCase):
             np.zeros((100, 100), dtype=np.float32),
             np.ones((100, 100), dtype=np.float32),
         )
-        mock_detect_objs.return_value = np.zeros((100, 100), dtype=bool)
+        mock_detect_objs.return_value = ObjectDetection(
+            np.zeros((100, 100), dtype=bool), np.zeros((100, 100), dtype=bool)
+        )
         mock_calc_inv_var.return_value = np.ones((100, 100), dtype=np.float32)
         mock_generate_weight.return_value = (
             np.ones((100, 100), dtype=np.float32),
@@ -308,9 +314,11 @@ class TestProcessHDU(unittest.TestCase):
             np.zeros((100, 100), dtype=np.float32),
             np.ones((100, 100), dtype=np.float32),
         )
-        mock_detect_objs.return_value = np.zeros((100, 100), dtype=bool)
+        mock_detect_objs.return_value = ObjectDetection(
+            np.zeros((100, 100), dtype=bool), np.zeros((100, 100), dtype=bool)
+        )
         mock_calc_inv_var.return_value = np.ones((100, 100), dtype=np.float32)
-        mock_detect_streaks.return_value = np.zeros((100, 100), dtype=bool)
+        mock_detect_streaks.return_value = StreakDetection(np.zeros((100, 100), dtype=bool), {})
         mock_generate_weight.return_value = (
             np.ones((100, 100), dtype=np.float32),
             np.ones((100, 100), dtype=np.float32),
@@ -361,7 +369,9 @@ class TestProcessHDU(unittest.TestCase):
             np.zeros((100, 100), dtype=np.float32),
             np.ones((100, 100), dtype=np.float32),
         )
-        mock_detect_objs.return_value = np.zeros((100, 100), dtype=bool)
+        mock_detect_objs.return_value = ObjectDetection(
+            np.zeros((100, 100), dtype=bool), np.zeros((100, 100), dtype=bool)
+        )
         mock_calc_inv_var.return_value = np.ones((100, 100), dtype=np.float32)
         mock_grow_bleed.return_value = np.zeros((100, 100), dtype=bool)
         mock_generate_weight.return_value = (

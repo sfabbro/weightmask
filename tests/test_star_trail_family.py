@@ -14,11 +14,13 @@ from pathlib import Path
 import numpy as np
 import yaml
 
-from weightmask.config import configuration_errors
+from benchmarks.production_inputs import capture_detector_inputs, streak_config
+from benchmarks.streak_inject import trail_recall
+from weightmask.config import configuration_errors, default_config, section_config
 from weightmask.streaks import (
     _angular_distance_deg,
     _axis_aligned_band,
-    _drop_star_trail_family_components,
+    _veto_components,
     detect_streaks,
     frame_trail_family,
 )
@@ -173,56 +175,59 @@ class TestFrameTrailFamily(unittest.TestCase):
         self.assertIsNotNone(frame_trail_family(frame, rms, None, {"enable": True, "min_sources": 5}))
 
 
+def _family_veto(mask, family, **veto):
+    config = section_config("streak_masking", {"star_trail_veto": veto})
+    return _veto_components(mask, np.zeros(mask.shape, dtype=np.float32), None, None, config, family)
+
+
 class TestStarTrailVeto(unittest.TestCase):
     family = {"angle_deg": FAMILY_ANGLE, "length_px": FAMILY_LENGTH, "angle_spread_deg": 2.0, "count": 40}
 
     def test_a_chain_parallel_to_the_family_is_dropped(self):
         chain = _line_mask(SHAPE, angle_deg=FAMILY_ANGLE + 1.0, length=8.0 * FAMILY_LENGTH, cx=180, cy=180)
-        kept, dropped = _drop_star_trail_family_components(chain, self.family, {"enable": True}, min_pixels=24)
+        kept, dropped = _family_veto(chain, self.family)
         self.assertEqual(dropped["components"], 0, "an 8x family length is a satellite, not a chain")
         self.assertTrue(np.array_equal(kept, chain))
 
         chain = _line_mask(SHAPE, angle_deg=FAMILY_ANGLE + 1.0, length=2.5 * FAMILY_LENGTH, cx=180, cy=180)
-        kept, dropped = _drop_star_trail_family_components(chain, self.family, {"enable": True}, min_pixels=24)
+        kept, dropped = _family_veto(chain, self.family)
         self.assertEqual(dropped["components"], 1)
         self.assertEqual(dropped["px"], int(np.count_nonzero(chain)))
         self.assertFalse(np.any(kept))
 
     def test_a_trail_at_its_own_angle_survives(self):
         trail = _line_mask(SHAPE, angle_deg=FAMILY_ANGLE + 40.0, length=2.0 * FAMILY_LENGTH, cx=180, cy=180)
-        kept, dropped = _drop_star_trail_family_components(trail, self.family, {"enable": True}, min_pixels=24)
+        kept, dropped = _family_veto(trail, self.family)
         self.assertEqual(dropped["components"], 0)
         self.assertTrue(np.array_equal(kept, trail))
 
     def test_angle_and_length_are_both_required(self):
         long_parallel = _line_mask(SHAPE, angle_deg=FAMILY_ANGLE, length=10.0 * FAMILY_LENGTH, cx=180, cy=180)
-        kept, _dropped = _drop_star_trail_family_components(long_parallel, self.family, {"enable": True}, min_pixels=24)
+        kept, _dropped = _family_veto(long_parallel, self.family)
         self.assertTrue(np.array_equal(kept, long_parallel), "a satellite parallel to the field keeps its trail")
 
         short_angled = _line_mask(SHAPE, angle_deg=FAMILY_ANGLE + 60.0, length=FAMILY_LENGTH, cx=180, cy=180)
-        kept, _dropped = _drop_star_trail_family_components(short_angled, self.family, {"enable": True}, min_pixels=24)
+        kept, _dropped = _family_veto(short_angled, self.family)
         self.assertTrue(np.array_equal(kept, short_angled))
 
     def test_small_components_are_left_to_the_profile_gate(self):
         tiny = np.zeros(SHAPE, dtype=bool)
         tiny[10, 10:16] = True
-        kept, dropped = _drop_star_trail_family_components(tiny, self.family, {"enable": True}, min_pixels=24)
+        kept, dropped = _family_veto(tiny, self.family)
         self.assertEqual(dropped["components"], 0)
         self.assertTrue(np.array_equal(kept, tiny))
 
     def test_no_family_means_no_drop(self):
         chain = _line_mask(SHAPE, angle_deg=FAMILY_ANGLE, length=2.0 * FAMILY_LENGTH, cx=180, cy=180)
-        kept, dropped = _drop_star_trail_family_components(chain, None, {"enable": True}, min_pixels=24)
+        kept, dropped = _family_veto(chain, None)
         self.assertEqual(dropped["components"], 0)
         self.assertTrue(np.array_equal(kept, chain))
 
     def test_the_angle_tolerance_is_the_knob_that_moves(self):
         near = _line_mask(SHAPE, angle_deg=FAMILY_ANGLE + 15.0, length=2.0 * FAMILY_LENGTH, cx=180, cy=180)
-        _kept, dropped = _drop_star_trail_family_components(near, self.family, {"enable": True}, min_pixels=24)
+        _kept, dropped = _family_veto(near, self.family)
         self.assertEqual(dropped["components"], 0, "15 degrees off is outside the 10-degree tolerance")
-        _kept, dropped = _drop_star_trail_family_components(
-            near, self.family, {"enable": True, "angle_tol_deg": 20.0}, min_pixels=24
-        )
+        _kept, dropped = _family_veto(near, self.family, angle_tol_deg=20.0)
         self.assertEqual(dropped["components"], 1)
 
 
@@ -250,12 +255,8 @@ def _sidereal_hdu(shape=STAGE_SHAPE, *, sky=1000.0, noise=5.0, stars=14, seed=0)
 class TestVetoThroughTheStage(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
-        from benchmarks.production_inputs import capture_detector_inputs, streak_config
-        from benchmarks.streak_inject import trail_recall
-
         cls.trail_recall = staticmethod(trail_recall)
-        with open(ROOT / "weightmask.yml") as handle:
-            config = yaml.safe_load(handle)
+        config = default_config()
         cls.streak_cfg = streak_config(config)
         cls.raw = _sidereal_hdu()
         # 8 sigma of this fixture's 5 ADU noise, the same regime as the recall
@@ -291,7 +292,7 @@ class TestVetoThroughTheStage(unittest.TestCase):
         cfg = dict(self.streak_cfg)
         cfg["star_trail_veto"] = dict(cfg["star_trail_veto"], enable=enable)
         with contextlib.redirect_stdout(io.StringIO()):
-            return detect_streaks(self.inputs[0], self.inputs[1], self.inputs[2], cfg)
+            return detect_streaks(self.inputs[0], self.inputs[1], self.inputs[2], cfg).mask
 
     def test_a_sidereal_trail_is_detected_identically_with_and_without_the_veto(self):
         """The estimator must return no family on a frame of round stars, so the
@@ -307,14 +308,14 @@ class TestVetoThroughTheStage(unittest.TestCase):
     def test_the_quiet_frame_alone_yields_no_streak_pixels(self):
         cfg = dict(self.streak_cfg)
         with contextlib.redirect_stdout(io.StringIO()):
-            mask = detect_streaks(self.clean[0], self.clean[1], self.clean[2], cfg)
+            mask = detect_streaks(self.clean[0], self.clean[1], self.clean[2], cfg).mask
         self.assertEqual(int(np.count_nonzero(mask)), 0, "the fixture must be clean before injection")
 
 
 class TestShippedConfiguration(unittest.TestCase):
     def test_both_canonical_configs_validate_and_carry_the_veto(self):
         blocks = []
-        for path in (ROOT / "weightmask.yml", ROOT / "weightmask" / "weightmask.yml"):
+        for path in (ROOT / "weightmask" / "weightmask.yml", ROOT / "weightmask" / "weightmask.yml"):
             with open(path) as handle:
                 config = yaml.safe_load(handle)
             self.assertEqual(configuration_errors(config), [], f"{path} does not validate")
@@ -325,8 +326,7 @@ class TestShippedConfiguration(unittest.TestCase):
         self.assertEqual(blocks[0], blocks[1], "the published and packaged configs must agree")
 
     def test_an_unknown_veto_key_is_rejected(self):
-        with open(ROOT / "weightmask.yml") as handle:
-            config = yaml.safe_load(handle)
+        config = default_config()
         config["streak_masking"]["star_trail_veto"]["length_factorr"] = 4.0
         self.assertTrue(configuration_errors(config), "a typo in a config key must be an error")
 

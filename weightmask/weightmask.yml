@@ -28,7 +28,7 @@ saturation:
   effective_full_scale: 65535.0  # ADU; 16-bit ceiling used as a histogram bound
   histogram_params:
     hist_min_adu: 30000          # ADU; ignore the sky peak when hunting the sat clump
-    hist_max_adu: null           # ADU; null → use effective_full_scale
+    hist_max_adu: null           # ADU; null → 1.01 × the frame maximum
     guard_fraction: 0.75         # keep the clump only if it sits this far into the tail
     max_upper_factor: 1.05       # reject clumps above this × the expected full scale
     min_tail_pixels: 8           # need at least this many pixels in the sat clump
@@ -68,6 +68,12 @@ cosmic_ray:
   dilation_radius: 0             # pixels; used only if dilate_cr
   max_component_area: 12         # drop CR islands larger than this (likely stars/bleed)
   min_component_contrast_sigma: 4.0  # keep a CR island only if peak SNR exceeds this
+  single_pass: false             # fold the faint pass into one astroscrappy run (needs niter > 0 and faint_cr)
+  sepmed: true                   # astroscrappy separable median (faster, same masks)
+  cleantype: "meanmask"          # astroscrappy cleantype: median, medmask, meanmask or idw
+  fsmode: "median"               # astroscrappy fine-structure mode: median or convolve
+  psffwhm: 2.5                   # pixels; astroscrappy PSF FWHM (used by fsmode convolve)
+  psfsize: 7                     # pixels, odd; astroscrappy PSF kernel size
   faint_cr:
     enable: true                 # second, fainter pass for elongated multi-pixel hits
     enhancement: "lacosmic"      # lacosmic (default) or opt-in residual prototype
@@ -107,16 +113,15 @@ sep_objects:
   spike_width: 3                 # pixels; bar thickness
 
 streak_masking:
-  enable: true                   # STREAK bit; production mode is auto_ground only
-  mode: "auto_ground"            # binned Hough peaks + contours + strip refine + optional RANSAC
+  enable: true                   # STREAK bit: binned Hough peaks + contours + strip refine + optional RANSAC
   profile_accept: true           # keep only the fitted line; drop components wider than max_support_width
-  debug: false                   # extra streak diagnostics
   houghpeak_params:
     enable: true                 # binned Hough-peak extractor
     bin: 4                       # spatial binning before the peak search
     thresh_sig: 2.5              # peak significance in the Hough accumulator
     min_votes: 100               # minimum accumulator votes
     max_candidates: 6            # cap
+    confidence_threshold: 0.40   # minimum candidate score to accept a refined peak
   contour_params:
     enable: true                 # elongated-contour extractor
     thresh_sig: 2.5              # binary threshold in sky-RMS units
@@ -124,6 +129,7 @@ streak_masking:
     shape_cut: 0.2               # compactness; reject round blobs
     area_cut: 100.0              # pixels; minimum contour area
     radius_dev_cut: 0.5          # reject contours that look circular
+    confidence_threshold: 0.40   # minimum candidate score to accept a refined contour
   # mrt_rescue_params removed. The Radon rescue was the sensitive stage -- the
   # one meant to find what the cheap prescreen misses. Measured before removal:
   # over 83 real amps it accepted on 3, all three false positives, while
@@ -169,6 +175,7 @@ streak_masking:
     max_component_sigma: 20.0
     max_row_gap: 24              # Hough only: group support across short gaps from star masks
     min_row_run: 8               # reject short noise runs before grouping; gaps stay unfilled
+    angle_fan_slack: 13.0        # pixels; support up to max_support_width + this retries +-0.25..1 deg rotations
   # OPTIONAL star-trail-family veto: drop a chain of the field's own star trails.
   # Set enable: false to disable it entirely.
   #
@@ -261,6 +268,8 @@ variance:
   epsilon: 1.0e-9                # validity cut / safe-flat substitute; not added to the denominator
   flat_rel_noise: 0.003          # dimensionless fractional flat uncertainty; adds (S*rel_map)^2 ADU^2
   rescale_variance: true         # scale so background SNR has robust scatter 1
+  empirical_patch_size: 128      # pixels; patch size for the empirical_fit regression
+  empirical_clip_sigma: 3.0      # sigma clip for the empirical_fit regression
 
 confidence_params:
   dtype: "float32"               # confidence array dtype

@@ -59,18 +59,20 @@ import os
 import sys
 import time
 
+import fitsio
 import numpy as np
+from astropy.io import fits as _fits
+from scipy import ndimage
+from scipy.ndimage import binary_dilation
 
-# The sibling harness is imported by name when this runs as a script from the
-# repository root (its own directory is what is on sys.path), and by package path
-# when a test imports it.
-_HERE = os.path.dirname(os.path.abspath(__file__))
-if _HERE not in sys.path:
-    sys.path.insert(0, _HERE)
-try:
-    from streak_inject import apply_overrides, trail_recall
-except ImportError:  # pragma: no cover - the package layout
-    from benchmarks.streak_inject import apply_overrides, trail_recall  # type: ignore[no-redef]
+from weightmask.config import default_config, resolve_config
+from weightmask.process import header_gain_read_noise
+from weightmask.streaks import detect_streaks
+
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+
+from benchmarks.production_inputs import capture_detector_inputs
+from benchmarks.streak_inject import apply_overrides, trail_recall
 
 POSITIVE_OFFSETS_QUICK = (30.0, 90.0)
 POSITIVE_OFFSETS_FULL = (10.0, 30.0, 60.0, 90.0)
@@ -293,7 +295,6 @@ def summarize_components(mask, *, top=6):
     detector band, a component that is long and diagonal is a fitted trail, and
     the difference decides whether the fix belongs in the mask or in the vetoes.
     """
-    from scipy import ndimage
 
     labels, count = ndimage.label(mask)
     if count == 0:
@@ -327,7 +328,6 @@ def attribute(mask, truth, *, dilation=2):
     from noise. Pixel attribution answers that: each class is grown by
     ``dilation`` so a line drawn a pixel off a trail still counts as being on it.
     """
-    from scipy.ndimage import binary_dilation
 
     total = int(np.count_nonzero(mask))
     grown = {}
@@ -384,17 +384,6 @@ def main(argv=None):
     parser.add_argument("--out", default="")
     options = parser.parse_args(argv)
 
-    import fitsio
-
-    try:
-        from production_inputs import capture_detector_inputs, production_gain_read_noise
-    except ImportError:  # pragma: no cover - the package layout
-        from benchmarks.production_inputs import capture_detector_inputs, production_gain_read_noise  # type: ignore[no-redef]
-
-    import yaml
-
-    from weightmask.streaks import detect_streaks
-
     size = int(options.size)
     flat = None
     if options.frame == "real":
@@ -407,8 +396,6 @@ def main(argv=None):
         if options.flat:
             with fitsio.FITS(options.flat, "r") as handle:
                 flat = handle[options.hdu].read()[y0 : y0 + size, x0 : x0 + size].astype(np.float32)
-        rng_seed = options.seed
-        frame_rng = np.random.default_rng(rng_seed)
         truth = {}
     else:
         frame, truth = synthetic_frame(
@@ -420,17 +407,14 @@ def main(argv=None):
             rms=options.rms,
             seed=options.seed,
         )
-        from astropy.io import fits as _fits
 
         header = _fits.Header({"NAXIS": 2, "SATURATE": 65535.0, "EXPTIME": 60.0, "GAIN": 1.6, "RDNOISE": 5.0})
         flat = None
 
-    with open("weightmask.yml") as handle:
-        config = yaml.safe_load(handle)
-    config = apply_overrides(config, options.set)
+    config = apply_overrides(default_config(), options.set)
     streak_cfg = dict(config["streak_masking"])
 
-    gain, _read_noise = production_gain_read_noise(header, config)
+    gain, _read_noise = header_gain_read_noise(header, resolve_config(config)["variance"])
     print(f"frame {frame.shape}, gain {gain}", flush=True)
 
     # --- the control: a non-sidereal frame with no satellite injected ---------
@@ -443,7 +427,7 @@ def main(argv=None):
     )
     existing_px = int(clean_existing.sum())
     t0 = time.time()
-    control_mask = detect_streaks(clean_data_sub, clean_rms, clean_existing, dict(streak_cfg))
+    control_mask = detect_streaks(clean_data_sub, clean_rms, clean_existing, dict(streak_cfg)).mask
     control_px = int(np.count_nonzero(control_mask))
     print(f"control (no satellite injected): STREAK {control_px} px in {time.time() - t0:.1f}s", flush=True)
 
@@ -491,7 +475,7 @@ def main(argv=None):
 
     t0 = time.time()
     data_sub, rms, existing = capture_detector_inputs(injected, header, config, flat=flat)
-    mask = detect_streaks(data_sub, rms, existing, dict(streak_cfg))
+    mask = detect_streaks(data_sub, rms, existing, dict(streak_cfg)).mask
     print(f"injected frame: STREAK {int(np.count_nonzero(mask))} px in {time.time() - t0:.1f}s", flush=True)
 
     rows = score(mask, cells, chains, control_mask=control_mask)

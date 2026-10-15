@@ -10,12 +10,12 @@ import unittest
 
 import numpy as np
 
+from weightmask.persistence import _finite_axis_profiles
 from weightmask.streaks import (
     _adjust_confidence_for_mask,
     _bin_array,
     _clip_line_to_image,
     _edges_touched,
-    _finite_axis_profiles,
     _largest_near_center,
     _normalize_angle_deg,
 )

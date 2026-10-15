@@ -24,15 +24,23 @@ import sys
 import time
 from pathlib import Path
 
+import fitsio
 import numpy as np
 import yaml
+from scipy.ndimage import binary_dilation
+
+from weightmask.config import resolve_config
+from weightmask.process import header_gain_read_noise
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
-DEFAULT_CONFIG = REPO_ROOT / "weightmask.yml"
+DEFAULT_CONFIG = REPO_ROOT / "weightmask" / "weightmask.yml"
+sys.path.insert(0, str(REPO_ROOT))
+
+from benchmarks.production_inputs import capture_detector_calls
 
 
 def load_config(path=DEFAULT_CONFIG):
-    return yaml.safe_load(Path(path).read_text())
+    return resolve_config(yaml.safe_load(Path(path).read_text()))
 
 
 def load_shipped_sigclip(config_path=DEFAULT_CONFIG):
@@ -51,9 +59,11 @@ def inject(sci, sky, rms, rng, n_single=150, n_worm=60, gain=1.0, invalid_mask=N
     valid = np.isfinite(sci) & np.isfinite(sky) & np.isfinite(rms) & (rms > 0)
     if invalid_mask is not None:
         valid &= ~np.asarray(invalid_mask, dtype=bool)
+
     def deposit(amplitude, sigma):
         electrons = max(float(amplitude) * float(sigma) * gain, 0.0)
         return float(rng.poisson(electrons)) / gain
+
     interior = valid.copy()
     interior[:10] = interior[-10:] = False
     interior[:, :10] = interior[:, -10:] = False
@@ -65,9 +75,7 @@ def inject(sci, sky, rms, rng, n_single=150, n_worm=60, gain=1.0, invalid_mask=N
     for index in range(n_single):
         available = locations[~sampled_origins.ravel()[locations]]
         if not available.size:
-            rejected.extend(
-                {"kind": "single", "reason": "placement_failed"} for _ in range(n_single - index)
-            )
+            rejected.extend({"kind": "single", "reason": "placement_failed"} for _ in range(n_single - index))
             break
         y, x = np.unravel_index(rng.choice(available), sci.shape)
         sampled_origins[y, x] = True
@@ -118,8 +126,6 @@ def inject(sci, sky, rms, rng, n_single=150, n_worm=60, gain=1.0, invalid_mask=N
 
 
 def score(flag, truth_single, truth_worm, baseline=None):
-    from scipy.ndimage import binary_dilation
-
     near_any = binary_dilation(truth_single | truth_worm, iterations=1)
     tp_single = np.count_nonzero(flag & truth_single)
     tp_worm = np.count_nonzero(flag & truth_worm)
@@ -289,8 +295,6 @@ def main(argv=None):
     if args.exposure is None:
         parser.error("exposure is required unless --normalized-residuals is used")
 
-    import fitsio
-
     base_cfg = load_config(args.config)
     cosmic_base = base_cfg["cosmic_ray"]
     exposure_id = os.path.basename(args.exposure).split(".")[0]
@@ -298,9 +302,8 @@ def main(argv=None):
     with fitsio.FITS(args.exposure, "r") as handle:
         sci = np.ascontiguousarray(handle[args.hdu].read().astype(np.float32))
         header = handle[args.hdu].read_header()
-    from production_inputs import capture_detector_calls, production_gain_read_noise
 
-    gain, _read_noise = production_gain_read_noise(header, base_cfg)
+    gain, _read_noise = header_gain_read_noise(header, base_cfg["variance"])
     clean_calls = capture_detector_calls(sci, header, base_cfg, stop_after="cosmics")
     clean_cosmic = clean_calls["cosmics"][-1]
     sky = clean_cosmic["kwargs"]["sky_map"]

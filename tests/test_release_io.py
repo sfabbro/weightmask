@@ -3,7 +3,8 @@
 import os
 import warnings
 import weakref
-from unittest.mock import patch
+from argparse import Namespace
+from unittest.mock import Mock, patch
 
 import fitsio
 import numpy as np
@@ -11,6 +12,7 @@ import pytest
 
 from weightmask.background import sky_to_mesh
 from weightmask.cli import build_persistence_priors, load_configuration, run_pipeline
+from weightmask.config import configuration_errors
 from weightmask.contract import ArtifactMetadata, ProducerMetadata, QualityBit, WeightMaskProduct, build_weight_product
 from weightmask.errors import StageFailure
 from weightmask.mef import (
@@ -22,7 +24,7 @@ from weightmask.mef import (
     process_all_hdus,
     process_hdu,
 )
-from weightmask.process import validate_config
+from weightmask.process import process_image
 from weightmask.reconstruct_sky import reconstruct_sky_fits
 
 
@@ -61,8 +63,6 @@ def _assert_products_unchanged(snapshots):
 
 
 def _run_fake_product_set(source, paths, *, config=None):
-    from argparse import Namespace
-
     with fitsio.FITS(str(source)) as hdul:
         with patch("weightmask.mef.process_hdu", side_effect=_fake_product):
             return process_all_hdus(
@@ -98,18 +98,16 @@ def test_invalid_config_is_rejected_before_fits_input_validation(tmp_path):
 
 
 def test_float16_fits_output_is_rejected():
-    assert not validate_config({"output_params": {"ivar_bitpix": 16}})
+    assert configuration_errors({"output_params": {"ivar_bitpix": 16}})
 
 
 @pytest.mark.parametrize("default,key", [(np.nan, "default_gain"), (0, "default_gain"), (-1, "default_rdnoise")])
 def test_invalid_calibration_defaults_are_rejected(default, key):
-    assert not validate_config({"variance": {key: default}})
+    assert configuration_errors({"variance": {key: default}})
 
 
 @pytest.mark.parametrize("bad", [np.nan, np.inf, -1.0])
 def test_invalid_calibration_headers_fall_back_before_cosmics(bad):
-    from weightmask.process import process_image
-
     shape = (32, 32)
     image = np.random.default_rng(6).normal(100, 5, shape).astype(np.float32)
     config = {
@@ -274,8 +272,6 @@ def test_incomplete_rollback_keeps_promotion_error_as_exception_cause(tmp_path):
 
 
 def test_successful_product_set_has_one_generation_and_synchronized_structure(tmp_path):
-    from argparse import Namespace
-
     source = tmp_path / "science.fits"
     fitsio.write(str(source), None)
     with fitsio.FITS(str(source), "rw") as handle:
@@ -355,8 +351,6 @@ def test_cli_converts_propagated_stage_failure_to_nonzero(tmp_path):
 
 
 def test_failed_detector_hdu_propagates_after_prior_output(tmp_path):
-    from argparse import Namespace
-
     source = tmp_path / "science.fits"
     output = tmp_path / "weight.fits"
     fitsio.write(str(source), None)
@@ -399,8 +393,6 @@ def test_failed_detector_hdu_propagates_after_prior_output(tmp_path):
 
 
 def test_parallel_stage_failure_cancels_unsubmitted_hdus_and_writes_nothing(tmp_path):
-    from argparse import Namespace
-
     source = tmp_path / "science.fits"
     output = tmp_path / "weight.fits"
     fitsio.write(str(source), None)
@@ -443,8 +435,6 @@ def test_parallel_stage_failure_cancels_unsubmitted_hdus_and_writes_nothing(tmp_
 
 @pytest.mark.parametrize("fault", ["shape", "nan", "nonbinary", "unreadable"])
 def test_invalid_keep_map_fails_hdu_without_dropping_calibration(tmp_path, fault):
-    from unittest.mock import Mock
-
     science, keep = tmp_path / "science.fits", tmp_path / "keep.fits"
     fitsio.write(str(science), np.ones((8, 8), np.float32))
     data = np.ones((4, 4) if fault == "shape" else (8, 8), np.float32)
@@ -733,8 +723,6 @@ def test_chip_replica_restores_outputs_and_keeps_detected_exclusion(tmp_path, ou
 
 @pytest.mark.parametrize("output_format,restored_map", [("weight", 4.0), ("confidence", 1.0)])
 def test_chip_replica_transaction_synchronizes_every_affected_product(tmp_path, output_format, restored_map):
-    from argparse import Namespace
-
     shape = (64, 64)
     source = tmp_path / "science.fits"
     header = {
@@ -821,8 +809,6 @@ def test_chip_replica_transaction_synchronizes_every_affected_product(tmp_path, 
 
 
 def test_missing_individual_streak_position_aborts_transaction(tmp_path):
-    from argparse import Namespace
-
     shape = (32, 32)
     source = tmp_path / "science.fits"
     header = {
@@ -957,8 +943,6 @@ def test_chip_replica_rejects_unsynchronized_individual_streak_before_mutation(t
     ],
 )
 def test_exposure_confidence_matches_exact_pooled_percentile(tmp_path, population_case, compress, scale):
-    from argparse import Namespace
-
     source, output = tmp_path / "science.fits", tmp_path / "confidence.fits"
     if population_case == "balanced":
         weights = [np.arange(1, 1025, dtype=np.float32).reshape(32, 32) * multiplier for multiplier in (1, 10)]

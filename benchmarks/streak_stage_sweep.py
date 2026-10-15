@@ -32,20 +32,18 @@ from concurrent.futures import ProcessPoolExecutor
 
 import fitsio
 import numpy as np
-import yaml
+from scipy import ndimage as ndi
+
+import weightmask.streaks as ST
+from weightmask.config import default_config
+from weightmask.utils import rms_valid_mask, robust_rms
 
 MODULE_DIR = os.path.dirname(os.path.abspath(__file__))
-if MODULE_DIR not in sys.path:
-    sys.path.insert(0, MODULE_DIR)
 REPO = os.path.dirname(MODULE_DIR)
-if REPO not in sys.path:
-    sys.path.insert(0, REPO)
+sys.path.insert(0, REPO)
 
-from production_inputs import capture_detector_inputs, streak_config  # noqa: E402
-from streak_recall_floor import build_stage_evidence  # noqa: E402
-
-import weightmask.streaks as ST  # noqa: E402
-from weightmask.utils import rms_valid_mask, robust_rms  # noqa: E402
+from benchmarks.production_inputs import capture_detector_inputs, streak_config
+from benchmarks.streak_recall_floor import build_stage_evidence
 
 DATA = os.path.join(REPO, "benchmark_data", "megacam")
 FLAT = os.path.join(DATA, "perf", "flat_08Bm01_r.fits.fz")
@@ -72,7 +70,6 @@ STAGES = (
 
 def component_table(mask, data_sub, rms):
     """Geometry, brightness and star attachment for each sizeable component."""
-    from scipy import ndimage as ndi
 
     labeled, n = ndi.label(mask, structure=np.ones((3, 3)))
     rows = []
@@ -107,9 +104,7 @@ def component_table(mask, data_sub, rms):
                 "angle_deg": round(float(np.degrees(theta)), 2),
                 "across_mad": round(mad, 2),
                 "median_sub": round(float(np.median(values)), 1),
-                "p90_over_rms": round(
-                    float(np.percentile(values / np.maximum(rms[ys, xs], 1e-6), 90)), 2
-                ),
+                "p90_over_rms": round(float(np.percentile(values / np.maximum(rms[ys, xs], 1e-6), 90)), 2),
                 "bright_blobs_on_line": attach,
                 "centroid": [int(ys.mean()), int(xs.mean())],
             }
@@ -130,7 +125,7 @@ def run_one(job):
             with fitsio.FITS(FLAT) as handle:
                 if hdu < len(handle) and handle[hdu].read().shape == science.shape:
                     flat = np.ascontiguousarray(handle[hdu].read().astype(np.float32))
-        cfg = yaml.safe_load(open(os.path.join(REPO, "weightmask.yml")))
+        cfg = default_config()
         scfg = streak_config(cfg)
         with contextlib.redirect_stdout(io.StringIO()):
             data_sub, rms, existing = capture_detector_inputs(science, header, cfg, flat=flat)
@@ -164,7 +159,7 @@ def run_one(job):
         try:
             clock = time.perf_counter()
             with contextlib.redirect_stdout(io.StringIO()):
-                mask = ST.detect_streaks(data_sub, rms, existing, dict(scfg))
+                mask = ST.detect_streaks(data_sub, rms, existing, dict(scfg)).mask
             out["streak_s"] = round(time.perf_counter() - clock, 1)
         finally:
             for name, fn in originals.items():
@@ -233,8 +228,7 @@ def main(argv=None):
             file=sys.stderr,
         )
         return 2
-    print(f"{len(jobs)} HDUs across {len({j[2] for j in jobs})} exposures; "
-          f"required amps {sorted(REQUIRED)} present")
+    print(f"{len(jobs)} HDUs across {len({j[2] for j in jobs})} exposures; required amps {sorted(REQUIRED)} present")
     results = []
     started = time.time()
     with ProcessPoolExecutor(max_workers=max(1, args.workers)) as pool:

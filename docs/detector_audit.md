@@ -555,7 +555,7 @@ against the gates that produced it, so a label cannot be added without evidence.
   mask is unchanged. `sky_to_mesh` encode is ~0 ms.
 - **`variance` / `weight`** — 0.3-0.4 s/HDU, no hot loops; the patch loop in
   `rescale_variance` covers a 9.8 Mpix plane in well under a second.
-- **`bad.detect_bad_pixels` / `detect_non_illuminated`** — tile-parallel by
+- **`bad.compute_flat_bad_mask` / `detect_non_illuminated`** — tile-parallel by
   design; the DATASEC complement is a slice assignment. No changes.
 - **I/O** — FITS reads are 0.06-0.09 s per HDU, so the audit confirmed CPU, not
   I/O, remains the constraint.

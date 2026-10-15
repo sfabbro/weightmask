@@ -19,7 +19,6 @@ import unittest
 from pathlib import Path
 
 import numpy as np
-import yaml
 from astropy.io import fits
 
 from benchmarks.production_inputs import capture_detector_inputs
@@ -35,6 +34,7 @@ from benchmarks.star_trail_veto_window import (
     synthetic_frame,
     window,
 )
+from weightmask.config import default_config
 from weightmask.streaks import frame_trail_family
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -53,8 +53,7 @@ KEPT_FROM = 4.06
 class TestStarTrailVetoWindow(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
-        with open(ROOT / "weightmask.yml") as handle:
-            cls.config = yaml.safe_load(handle)
+        cls.config = default_config()
         cls.veto_cfg = cls.config["streak_masking"]["star_trail_veto"]
         cls.rms_map = np.full(SHAPE, RMS, dtype=np.float32)
         frame, _truth = synthetic_frame(
@@ -101,8 +100,7 @@ class TestStarTrailVetoWindow(unittest.TestCase):
         shows up.
         """
         smallest = min(row["size_px"] for row in self._parallel())
-        with open(ROOT / "weightmask.yml") as handle:
-            min_mask_pixels = yaml.safe_load(handle)["streak_masking"]["mask_params"]["min_mask_pixels"]
+        min_mask_pixels = self.config["streak_masking"]["mask_params"]["min_mask_pixels"]
         self.assertEqual(smallest, 93)
         self.assertGreater(smallest, 3 * int(min_mask_pixels))
 

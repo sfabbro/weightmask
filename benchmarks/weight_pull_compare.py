@@ -13,7 +13,12 @@ Usage:
 import os
 import sys
 
+import fitsio
 import numpy as np
+from scipy.stats import kstest
+
+from weightmask.config import default_config
+from weightmask.mef import process_hdu
 
 
 def gaussian_pulls(science, sky, inverse_variance, mask=None):
@@ -93,8 +98,6 @@ def _validate_product_header(header, artifact, semantics):
 
 
 def pull_stats(pull):
-    from scipy.stats import kstest
-
     v = pull[np.isfinite(pull)]
     out = {
         "n": int(v.size),
@@ -111,13 +114,10 @@ def pull_stats(pull):
 
 
 def main():
-    import fitsio
-    import yaml
-
     pairs = [(sys.argv[i], int(sys.argv[i + 1])) for i in range(1, len(sys.argv), 2)]
     dl = "/scratch/sfabbro/downloads"
     wmd = "/arc/projects/mlao/cfhtcast/cfhtcast-data/wm"
-    cfg = yaml.safe_load(open("weightmask.yml"))
+    cfg = default_config()
     flat_of = {}
     with open("/arc/projects/mlao/cfhtcast/cfhtcast-data/flat_map_22_only.txt") as fh:
         fh.readline()
@@ -155,24 +155,31 @@ def main():
             om = old_mask_hdu.read()
             osky = old_sky_hdu.read().astype(np.float64)
         with fitsio.FITS(f"{dl}/{pid}.fits.fz") as hi, fitsio.FITS(flat_of[pid]) as hf:
-            from weightmask.mef import process_hdu
-
             science_hdu = hi[hdu]
             flat_hdu = _matching_hdu(hf, science_header)
             res = process_hdu(science_hdu, flat_hdu, cfg, hdu, tile_size=1024)
         nmask, ninv, _nweight, _nconf, nsky, _ = res
-        print(f"{pid} hdu{hdu}: oldmask={float(((om & 55) > 0).mean()):.4f} "
-              f"newmask={float(((nmask & 55) > 0).mean()):.4f}", flush=True)
+        print(
+            f"{pid} hdu{hdu}: oldmask={float(((om & 55) > 0).mean()):.4f} "
+            f"newmask={float(((nmask & 55) > 0).mean()):.4f}",
+            flush=True,
+        )
         common = (om == 0) & (nmask == 0)
         for tag, pull in _pull_series(sci, common, ow, osky, ninv.astype(np.float64), nsky.astype(np.float64)):
             st = pull_stats(pull)
             agg[tag].append(pull)
-            print(f"  {tag}: n={st['n']} std={st['std']:.3f} rsig={st['rsig']:.3f} "
-                  f"f3={st['f3']:.4f} f4={st['f4']:.5f} f5={st['f5']:.5f} ks={st['ks']:.4f} q={st['q']}", flush=True)
+            print(
+                f"  {tag}: n={st['n']} std={st['std']:.3f} rsig={st['rsig']:.3f} "
+                f"f3={st['f3']:.4f} f4={st['f4']:.5f} f5={st['f5']:.5f} ks={st['ks']:.4f} q={st['q']}",
+                flush=True,
+            )
     for tag in ("old", "new"):
         st = pull_stats(np.concatenate(agg[tag]))
-        print(f"POOLED {tag}: n={st['n']} std={st['std']:.3f} rsig={st['rsig']:.3f} "
-              f"f3={st['f3']:.4f} f4={st['f4']:.5f} f5={st['f5']:.5f} ks={st['ks']:.4f} q={st['q']}", flush=True)
+        print(
+            f"POOLED {tag}: n={st['n']} std={st['std']:.3f} rsig={st['rsig']:.3f} "
+            f"f3={st['f3']:.4f} f4={st['f4']:.5f} f5={st['f5']:.5f} ks={st['ks']:.4f} q={st['q']}",
+            flush=True,
+        )
 
 
 if __name__ == "__main__":

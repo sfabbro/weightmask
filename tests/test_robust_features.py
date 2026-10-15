@@ -32,7 +32,6 @@ class TestRobustFeatures(unittest.TestCase):
         cfg = {
             "box_size": 32,  # This will fail for the first tile
             "filter_size": 3,
-            "padding": 10,
         }
 
         # This should trigger tiered retries
@@ -109,7 +108,6 @@ class TestRobustFeatures(unittest.TestCase):
         mask = np.zeros(self.shape, dtype=bool)
         config = {
             "enable": True,
-            "mode": "auto_ground",
             "mask_params": {
                 "strip_length": 128,
                 "strip_width": 32,
@@ -133,7 +131,7 @@ class TestRobustFeatures(unittest.TestCase):
         # Need background RMS for thresholding
         rms = np.full(self.shape, 10.0, dtype=np.float32)
 
-        streak_mask = detect_streaks(data, rms, mask, config)
+        streak_mask = detect_streaks(data, rms, mask, config).mask
         self.assertTrue(np.sum(streak_mask) > 0)
         # Check if the line pixels are included
         self.assertTrue(streak_mask[100, 100])

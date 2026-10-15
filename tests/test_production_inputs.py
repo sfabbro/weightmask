@@ -9,29 +9,19 @@ were skipped. These tests pin the replacement to production rather than to a
 reimplementation of it.
 """
 
-import sys
 import unittest
-from pathlib import Path
 from unittest.mock import patch
 
 import numpy as np
-import yaml
 
-ROOT = Path(__file__).resolve().parents[1]
-if str(ROOT) not in sys.path:
-    sys.path.insert(0, str(ROOT))
-if str(ROOT / "benchmarks") not in sys.path:
-    sys.path.insert(0, str(ROOT / "benchmarks"))
-
-from production_inputs import (  # noqa: E402
-    capture_detector_calls,
-    capture_detector_inputs,
-    production_gain_read_noise,
-    streak_config,
-)
-
-from weightmask import MASK_BITS  # noqa: E402
-from weightmask.process import _detection_background_views, process_image  # noqa: E402
+import weightmask.process as proc
+from benchmarks.production_inputs import capture_detector_calls, capture_detector_inputs, streak_config
+from weightmask import MASK_BITS
+from weightmask.background import estimate_background as production_background
+from weightmask.config import default_config
+from weightmask.objects import ObjectDetection
+from weightmask.process import _detection_background_views, header_gain_read_noise, process_image
+from weightmask.streaks import StreakDetection
 
 SHAPE = (120, 120)
 
@@ -45,7 +35,7 @@ def _frame(seed=1):
 
 
 def _config(**streak_overrides):
-    cfg = yaml.safe_load(open(ROOT / "weightmask.yml"))
+    cfg = default_config()
     cfg["sep_objects"]["extract_thresh"] = 2.0
     cfg["sep_objects"]["min_area"] = 5
     cfg["sep_objects"]["max_elongation"] = 2.0
@@ -63,7 +53,7 @@ def _run_pipeline(data, cfg):
         seen["data_sub"] = np.array(data_sub, copy=True)
         seen["rms"] = None if bkg_rms_map is None else np.array(bkg_rms_map, copy=True)
         seen["existing"] = np.array(existing_mask, copy=True)
-        return np.zeros(SHAPE, dtype=bool)
+        return StreakDetection(np.zeros(SHAPE, dtype=bool), {})
 
     with (
         patch("weightmask.process.detect_cosmic_rays", return_value=np.zeros(SHAPE, dtype=bool)),
@@ -92,7 +82,7 @@ class TestCaptureMatchesProduction(unittest.TestCase):
         cfg = _enabled_config()
         with (
             patch("weightmask.process.detect_cosmic_rays", return_value=np.zeros(SHAPE, dtype=bool)),
-            patch("weightmask.process.detect_streaks", return_value=np.zeros(SHAPE, dtype=bool)),
+            patch("weightmask.process.detect_streaks", return_value=StreakDetection(np.zeros(SHAPE, dtype=bool), {})),
         ):
             result = process_image(
                 _frame(),
@@ -111,7 +101,7 @@ class TestCaptureMatchesProduction(unittest.TestCase):
         bar[58:62, 20:100] = True
         with (
             patch("weightmask.process.detect_cosmic_rays", return_value=np.zeros(SHAPE, dtype=bool)),
-            patch("weightmask.process.detect_streaks", return_value=bar),
+            patch("weightmask.process.detect_streaks", return_value=StreakDetection(bar, {})),
         ):
             result = process_image(
                 _frame(),
@@ -129,7 +119,7 @@ class TestCaptureMatchesProduction(unittest.TestCase):
             cfg["sep_objects"]["handoff_elongated_to_streak"] = handoff
             with (
                 patch("weightmask.process.detect_cosmic_rays", return_value=np.zeros(SHAPE, dtype=bool)),
-                patch("weightmask.process.detect_streaks", return_value=accepted),
+                patch("weightmask.process.detect_streaks", return_value=StreakDetection(accepted, {})),
             ):
                 return process_image(
                     _frame() if frame is None else frame,
@@ -151,7 +141,9 @@ class TestCaptureMatchesProduction(unittest.TestCase):
             cfg["sep_objects"]["handoff_elongated_to_streak"] = handoff
             with (
                 patch("weightmask.process.detect_cosmic_rays", return_value=np.zeros(SHAPE, dtype=bool)),
-                patch("weightmask.process.detect_streaks", return_value=np.zeros(SHAPE, dtype=bool)),
+                patch(
+                    "weightmask.process.detect_streaks", return_value=StreakDetection(np.zeros(SHAPE, dtype=bool), {})
+                ),
             ):
                 result = process_image(
                     _frame(),
@@ -179,20 +171,18 @@ class TestCaptureMatchesProduction(unittest.TestCase):
         self.assertTrue(np.all(np.isfinite(rms_det[support])))
 
     def test_detection_view_uses_effective_mesh_box_as_sigma(self):
-        import weightmask.process as process_module
-
         sky = np.full(SHAPE, 12.0, dtype=np.float32)
         rms = np.full(SHAPE, 2.0, dtype=np.float32)
         support = np.zeros(SHAPE, dtype=bool)
         support[58:62, 20:100] = True
         sigmas = []
-        original = process_module.gaussian_filter
+        original = proc.gaussian_filter
 
         def record(array, sigma, **kwargs):
             sigmas.append(float(sigma))
             return original(array, sigma=sigma, **kwargs)
 
-        with patch.object(process_module, "gaussian_filter", side_effect=record):
+        with patch.object(proc, "gaussian_filter", side_effect=record):
             _detection_background_views(sky, rms, support, 32)
         self.assertTrue(sigmas)
         self.assertTrue(all(sigma == 32.0 for sigma in sigmas))
@@ -216,7 +206,9 @@ class TestCaptureMatchesProduction(unittest.TestCase):
             cfg["sep_objects"]["handoff_elongated_to_streak"] = handoff
             with (
                 patch("weightmask.process.detect_cosmic_rays", return_value=np.zeros(SHAPE, dtype=bool)),
-                patch("weightmask.process.detect_streaks", return_value=np.zeros(SHAPE, dtype=bool)),
+                patch(
+                    "weightmask.process.detect_streaks", return_value=StreakDetection(np.zeros(SHAPE, dtype=bool), {})
+                ),
             ):
                 return process_image(
                     frame,
@@ -240,7 +232,7 @@ class TestCaptureMatchesProduction(unittest.TestCase):
         cfg["sep_objects"]["handoff_elongated_to_streak"] = False
         with (
             patch("weightmask.process.detect_cosmic_rays", return_value=np.zeros(SHAPE, dtype=bool)),
-            patch("weightmask.process.detect_streaks", return_value=np.zeros(SHAPE, dtype=bool)),
+            patch("weightmask.process.detect_streaks", return_value=StreakDetection(np.zeros(SHAPE, dtype=bool), {})),
         ):
             disabled = process_image(
                 frame, {"GAIN": 1.5, "RDNOISE": 5.0}, np.ones(SHAPE, dtype=np.float32), cfg, tile_size=32
@@ -250,7 +242,7 @@ class TestCaptureMatchesProduction(unittest.TestCase):
         cfg["sep_objects"]["handoff_elongated_to_streak"] = True
         with (
             patch("weightmask.process.detect_cosmic_rays", return_value=np.zeros(SHAPE, dtype=bool)),
-            patch("weightmask.process.detect_streaks", return_value=accepted),
+            patch("weightmask.process.detect_streaks", return_value=StreakDetection(accepted, {})),
         ):
             partial = process_image(
                 frame, {"GAIN": 1.5, "RDNOISE": 5.0}, np.ones(SHAPE, dtype=np.float32), cfg, tile_size=32
@@ -261,20 +253,18 @@ class TestCaptureMatchesProduction(unittest.TestCase):
         self.assertTrue(np.all(partial[accepted] & MASK_BITS["STREAK"]))
 
     def test_streak_overlap_never_subtracts_ordinary_object_detection(self):
-        from weightmask.background import estimate_background as production_background
-
         cfg = _enabled_config()
         cfg["sep_objects"]["handoff_elongated_to_streak"] = False
         background_inputs = []
         streak_inputs = []
 
-        def record_background(sci, mask, config):
+        def record_background(sci, mask, config, diagnostics=None):
             background_inputs.append(np.array(mask, copy=True))
-            return production_background(sci, mask, config)
+            return production_background(sci, mask, config, diagnostics)
 
         def record_empty_streak(sci, rms, mask, config):
             streak_inputs.append(np.array(mask, copy=True))
-            return np.zeros(SHAPE, dtype=bool)
+            return StreakDetection(np.zeros(SHAPE, dtype=bool), {})
 
         with (
             patch("weightmask.process.detect_cosmic_rays", return_value=np.zeros(SHAPE, dtype=bool)),
@@ -286,7 +276,7 @@ class TestCaptureMatchesProduction(unittest.TestCase):
             )[0]
         with (
             patch("weightmask.process.detect_cosmic_rays", return_value=np.zeros(SHAPE, dtype=bool)),
-            patch("weightmask.process.detect_streaks", return_value=np.ones(SHAPE, dtype=bool)),
+            patch("weightmask.process.detect_streaks", return_value=StreakDetection(np.ones(SHAPE, dtype=bool), {})),
         ):
             accepted = process_image(
                 _frame(), {"GAIN": 1.5, "RDNOISE": 5.0}, np.ones(SHAPE, dtype=np.float32), cfg, tile_size=32
@@ -308,19 +298,17 @@ class TestCaptureMatchesProduction(unittest.TestCase):
         later_fallback[80:84, 80:84] = True
         calls = []
 
-        def objects(_data, _rms, _existing, config):
+        def objects(_data, _rms, _existing, _config):
             calls.append(len(calls))
             if len(calls) == 1:
-                return first
-            config["_elongated_fallback_mask"] = later_fallback.copy()
-            config["_elongated_candidate_mask"] = later_fallback.copy()
-            return np.zeros(SHAPE, dtype=bool)
+                return ObjectDetection(first, np.zeros(SHAPE, dtype=bool))
+            return ObjectDetection(np.zeros(SHAPE, dtype=bool), later_fallback.copy())
 
         cfg = _enabled_config()
         with (
             patch("weightmask.process.detect_objects", side_effect=objects),
             patch("weightmask.process.detect_cosmic_rays", return_value=np.zeros(SHAPE, dtype=bool)),
-            patch("weightmask.process.detect_streaks", return_value=np.zeros(SHAPE, dtype=bool)),
+            patch("weightmask.process.detect_streaks", return_value=StreakDetection(np.zeros(SHAPE, dtype=bool), {})),
         ):
             result = process_image(
                 _frame(), {"GAIN": 1.5, "RDNOISE": 5.0}, np.ones(SHAPE, dtype=np.float32), cfg, tile_size=32
@@ -386,13 +374,10 @@ class TestCaptureMatchesProduction(unittest.TestCase):
         np.testing.assert_array_equal(second["cosmics"][0]["kwargs"]["bkg_rms_map"], original_rms)
 
     def test_gain_and_read_noise_follow_configured_keyword_precedence(self):
-        config = _enabled_config()
-        self.assertEqual(production_gain_read_noise({"GAINB": 2.0, "GAIN": 1.0, "RDNOIS": 7.0}, config), (1.0, 7.0))
-        self.assertEqual(production_gain_read_noise({"GAINB": 2.0, "RDNOIS": 7.0}, config), (2.0, 7.0))
-        self.assertEqual(production_gain_read_noise({"GAIN": -1.0, "RDNOIS": np.nan}, config), (1.5, 5.0))
-        config["variance"]["default_gain"] = 0.0
-        with self.assertRaises(ValueError):
-            production_gain_read_noise({}, config)
+        variance = default_config()["variance"]
+        self.assertEqual(header_gain_read_noise({"GAINB": 2.0, "GAIN": 1.0, "RDNOIS": 7.0}, variance), (1.0, 7.0))
+        self.assertEqual(header_gain_read_noise({"GAINB": 2.0, "RDNOIS": 7.0}, variance), (2.0, 7.0))
+        self.assertEqual(header_gain_read_noise({"GAIN": -1.0, "RDNOIS": np.nan}, variance), (1.5, 5.0))
 
     def test_capture_reproduces_the_pipelines_own_detector_inputs(self):
         data = _frame()
@@ -450,8 +435,6 @@ class TestCaptureFailsLoudly(unittest.TestCase):
             )
 
     def test_the_pipeline_call_is_restored_after_a_failed_capture(self):
-        import weightmask.process as proc
-
         original = proc.detect_streaks
         with self.assertRaises(RuntimeError):
             capture_detector_inputs(

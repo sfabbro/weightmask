@@ -6,10 +6,14 @@ from unittest.mock import patch
 
 import fitsio
 import numpy as np
-import yaml
+from scipy.ndimage import median_filter
 
-from weightmask.bad import compute_flat_bad_mask, detect_bad_pixels, detect_dark_hot_pixels
+from weightmask import MASK_BITS
+from weightmask.bad import compute_flat_bad_mask, detect_dark_hot_pixels
+from weightmask.config import default_config
+from weightmask.mef import process_all_hdus
 from weightmask.process import process_image
+from weightmask.satur import detect_saturated_pixels
 
 
 class TestBadPixels(unittest.TestCase):
@@ -24,9 +28,9 @@ class TestBadPixels(unittest.TestCase):
         flat_data[30, 30] = np.nan  # NaN value
         flat_data[40, 40] = np.inf  # Inf value
 
-        config = {"low_thresh": 0.5, "high_thresh": 2.0, "col_enable": False}
+        config = {"local_low_thresh": 0.5, "local_high_thresh": 2.0, "col_enable": False}
 
-        mask = detect_bad_pixels(flat_data, config, using_unit_flat=False)
+        mask = compute_flat_bad_mask(flat_data, config)
 
         # Check that bad pixels are correctly identified
         self.assertTrue(mask[10, 10])  # Low value
@@ -34,18 +38,6 @@ class TestBadPixels(unittest.TestCase):
         self.assertTrue(mask[30, 30])  # NaN
         self.assertTrue(mask[40, 40])  # Inf
         self.assertFalse(mask[50, 50])  # Normal pixel
-
-    def test_detect_bad_pixels_with_unit_flat(self):
-        """Test bad pixel detection with unit flat (should skip pixel thresholding)."""
-        flat_data = np.ones((100, 100), dtype=np.float32)
-        flat_data[10, 10] = 0.3  # This should be ignored with unit flat
-
-        config = {"low_thresh": 0.5, "high_thresh": 2.0, "col_enable": False}
-
-        mask = detect_bad_pixels(flat_data, config, using_unit_flat=True)
-
-        # With unit flat, no pixel thresholding should occur
-        self.assertEqual(np.sum(mask), 0)
 
     def test_detect_bad_pixels_column_detection(self):
         """Test bad column detection."""
@@ -62,7 +54,7 @@ class TestBadPixels(unittest.TestCase):
             "col_dead_thresh": 0.1,
         }
 
-        mask = detect_bad_pixels(flat_data, config, using_unit_flat=False)
+        mask = compute_flat_bad_mask(flat_data, config)
 
         # Check that the bad column is identified
         self.assertTrue(np.all(mask[:, 50]))
@@ -71,9 +63,9 @@ class TestBadPixels(unittest.TestCase):
         """Test bad pixel detection with no finite data."""
         flat_data = np.full((100, 100), np.nan, dtype=np.float32)
 
-        config = {"low_thresh": 0.5, "high_thresh": 2.0, "col_enable": False}
+        config = {"local_low_thresh": 0.5, "local_high_thresh": 2.0, "col_enable": False}
 
-        mask = detect_bad_pixels(flat_data, config, using_unit_flat=False)
+        mask = compute_flat_bad_mask(flat_data, config)
 
         # No usable flat response means every pixel is bad.
         self.assertTrue(mask.all())
@@ -104,7 +96,7 @@ class TestBadPixels(unittest.TestCase):
             "col_enable": False,
         }
 
-        full = detect_bad_pixels(flat, config, using_unit_flat=False)
+        full = compute_flat_bad_mask(flat, config)
 
         self.assertTrue(full[defects].all())
         for tile_size in (8, 16, 24):
@@ -116,14 +108,14 @@ class TestBadPixels(unittest.TestCase):
         flat = np.ones((64, 64), dtype=np.float32)
         flat[:40, 31] = 0.2
         config = {
-            "local_low_thresh": 0.0,
+            "local_low_thresh": 1e-6,
             "local_high_thresh": 10.0,
             "col_enable": True,
             "col_deriv_sigma": 3.0,
             "col_dead_thresh": 0.5,
         }
 
-        full = detect_bad_pixels(flat, config, using_unit_flat=False)
+        full = compute_flat_bad_mask(flat, config)
 
         self.assertTrue(full[:, 31].all())
         for tile_size in (8, 16, 32):
@@ -135,14 +127,14 @@ class TestBadPixels(unittest.TestCase):
         flat = np.broadcast_to(np.linspace(0.9, 1.1, 96, dtype=np.float32), (64, 96)).copy()
         flat[:, 47] = 1.8
         config = {
-            "local_low_thresh": 0.0,
+            "local_low_thresh": 1e-6,
             "local_high_thresh": 10.0,
             "col_enable": True,
             "col_deriv_sigma": 5.0,
             "col_dead_thresh": 0.0,
         }
 
-        mask = detect_bad_pixels(flat, config, using_unit_flat=False)
+        mask = compute_flat_bad_mask(flat, config)
 
         self.assertTrue(mask[:, 47].all())
         self.assertFalse(mask[:, :47].any())
@@ -150,7 +142,7 @@ class TestBadPixels(unittest.TestCase):
 
     def test_bad_column_attribution_handles_adjacent_and_edge_defects(self):
         config = {
-            "local_low_thresh": 0.0,
+            "local_low_thresh": 1e-6,
             "local_high_thresh": 10.0,
             "col_enable": True,
             "col_deriv_sigma": 5.0,
@@ -163,13 +155,11 @@ class TestBadPixels(unittest.TestCase):
                 expected = np.zeros(flat.shape, dtype=bool)
                 expected[:, columns] = True
 
-                mask = detect_bad_pixels(flat, config, using_unit_flat=False)
+                mask = compute_flat_bad_mask(flat, config)
 
                 np.testing.assert_array_equal(mask, expected)
 
     def test_tiled_local_filter_working_set_is_limited_to_core_plus_halo(self):
-        from scipy.ndimage import median_filter
-
         shapes = []
 
         def recording_filter(values, *args, **kwargs):
@@ -178,7 +168,7 @@ class TestBadPixels(unittest.TestCase):
 
         flat = np.ones((48, 48), dtype=np.float32)
         config = {"local_filter_size": 5, "col_enable": False}
-        with patch("scipy.ndimage.median_filter", side_effect=recording_filter):
+        with patch("weightmask.bad.median_filter", side_effect=recording_filter):
             compute_flat_bad_mask(flat, config, tile_size=16)
 
         self.assertIn((20, 20), shapes)
@@ -208,14 +198,12 @@ class TestBadPixels(unittest.TestCase):
 
         config = {}
 
-        mask = detect_bad_pixels(flat_data, config, using_unit_flat=False)
+        mask = compute_flat_bad_mask(flat_data, config)
 
         # Should use default thresholds
         self.assertTrue(mask[10, 10])
 
     def test_nonfinite_science_has_no_data_and_zero_weight(self):
-        from weightmask import MASK_BITS
-
         data = np.random.default_rng(0).normal(100, 2, (32, 32)).astype(np.float32)
         data[0, :3] = [np.nan, np.inf, -np.inf]
         config = {
@@ -237,11 +225,7 @@ class TestBadPixels(unittest.TestCase):
                 process_image(data, {}, None, {})
 
     def test_integer_science_preserves_saturation_full_scale(self):
-        from weightmask import MASK_BITS
-        from weightmask.satur import detect_saturated_pixels
-
-        with open("weightmask.yml") as stream:
-            config = yaml.safe_load(stream)
+        config = default_config()
         config["saturation"]["mask_bleed_trails"] = False
         config["cosmic_ray"] = {"niter": 0, "faint_cr": {"enable": False}}
         config["sep_background"]["iterations"] = 0
@@ -259,11 +243,7 @@ class TestBadPixels(unittest.TestCase):
                 self.assertTrue(np.all(weight[expected_mask] == 0))
 
     def test_float32_pipeline_saturation_matches_direct_detection(self):
-        from weightmask import MASK_BITS
-        from weightmask.satur import detect_saturated_pixels
-
-        with open("weightmask.yml") as stream:
-            config = yaml.safe_load(stream)
+        config = default_config()
         config["saturation"]["mask_bleed_trails"] = False
         config["cosmic_ray"] = {"niter": 0, "faint_cr": {"enable": False}}
         config["sep_background"]["iterations"] = 0
@@ -301,8 +281,6 @@ class TestBadPixels(unittest.TestCase):
                 process_image(np.ones((32, 32)), {}, None, {}, **{name: np.zeros(32, dtype=bool)})
 
     def test_zero_dark_only_masks_positive_hot_pixels(self):
-        from weightmask.mef import process_all_hdus
-
         with TemporaryDirectory() as directory:
             science_path, dark_path = (str(Path(directory) / name) for name in ("science.fits", "dark.fits"))
             image = np.ones((32, 32), dtype=np.float32)

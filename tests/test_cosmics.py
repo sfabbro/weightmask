@@ -1,33 +1,27 @@
 import unittest
-from importlib.util import find_spec
-from pathlib import Path
 from unittest.mock import MagicMock, patch
 
 import numpy as np
-import yaml
 
-from weightmask.cosmics import detect_cosmic_rays
+from weightmask.config import configuration_errors, default_config
+from weightmask.cosmics import _get_psf_peakiness, detect_cosmic_rays
 from weightmask.errors import StageFailure
-
-ASTROSCRAPPY_AVAILABLE = find_spec("astroscrappy") is not None
 
 
 class TestCosmics(unittest.TestCase):
     def test_shipped_config_uses_only_fixed_dimensionless_sigclip(self):
-        config = yaml.safe_load((Path(__file__).resolve().parents[1] / "weightmask.yml").read_text())
+        config = default_config()
 
         self.assertNotIn("dynamic_sigclip", config["cosmic_ray"])
 
     def test_retired_adu_rms_sigclip_config_is_rejected(self):
-        from weightmask.process import validate_config
-
-        self.assertFalse(validate_config({"cosmic_ray": {"dynamic_sigclip": False}}))
+        self.assertTrue(configuration_errors({"cosmic_ray": {"dynamic_sigclip": False}}))
 
     def test_sigclip_does_not_change_when_adu_scale_changes(self):
         normalized = np.zeros((16, 16), dtype=np.float32)
         normalized[8, 8] = 9.0
         empty = np.zeros_like(normalized, dtype=bool)
-        config = {"sigclip": 8.5, "niter": 1, "dilate_cr": False, "psf_aware": False}
+        config = {"sigclip": 8.5, "niter": 1, "dilate_cr": False, "psf_aware": False, "faint_cr": {"enable": False}}
 
         with patch("weightmask.cosmics.detect_cosmics", return_value=(empty, normalized)) as detector:
             for rms_adu in (1.0, 100.0):
@@ -45,7 +39,6 @@ class TestCosmics(unittest.TestCase):
 
     def test_get_psf_peakiness(self):
         """Test the calculation of PSF peakiness."""
-        from weightmask.cosmics import _get_psf_peakiness
 
         # Test a standard FWHM value (e.g., FWHM=3.0)
         peakiness = _get_psf_peakiness(3.0)
@@ -80,12 +73,6 @@ class TestCosmics(unittest.TestCase):
 
         config = {"sigclip": 4.5, "objlim": 5.0}
 
-        if not ASTROSCRAPPY_AVAILABLE:
-            with self.assertRaises(StageFailure):
-                detect_cosmic_rays(sci_data, existing_mask, saturation_level, gain, read_noise, config)
-            return
-
-        # If astroscrappy is available, run the full test
         mask = detect_cosmic_rays(sci_data, existing_mask, saturation_level, gain, read_noise, config)
 
         # Check that we got a result
@@ -112,12 +99,6 @@ class TestCosmics(unittest.TestCase):
 
         config = {"sigclip": 4.5, "objlim": 5.0}
 
-        if not ASTROSCRAPPY_AVAILABLE:
-            with self.assertRaises(StageFailure):
-                detect_cosmic_rays(sci_data, existing_mask, saturation_level, gain, read_noise, config)
-            return
-
-        # If astroscrappy is available, run the full test
         mask = detect_cosmic_rays(sci_data, existing_mask, saturation_level, gain, read_noise, config)
 
         # Check that existing masked pixels are not in the result
@@ -138,15 +119,6 @@ class TestCosmics(unittest.TestCase):
         detector.assert_called_once()
         self.assertEqual(raised.exception.stage, "cosmic_ray.primary")
         self.assertIsInstance(raised.exception.__cause__, OSError)
-
-    def test_missing_astroscrappy_fails_when_primary_pass_is_required(self):
-        data = np.ones((16, 16), dtype=np.float32)
-
-        with patch("weightmask.cosmics.detect_cosmics", None):
-            with self.assertRaisesRegex(StageFailure, "cosmic_ray.primary") as raised:
-                detect_cosmic_rays(data, np.zeros_like(data, bool), 65000.0, 1.0, 0.0, {"niter": 1})
-
-        self.assertEqual(raised.exception.stage, "cosmic_ray.primary")
 
     def test_zero_primary_and_faint_iterations_are_successfully_disabled(self):
         data = np.ones((16, 16), dtype=np.float32)

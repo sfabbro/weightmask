@@ -167,37 +167,29 @@ class TestMeshNodeCoords(unittest.TestCase):
 class TestAutoBoxSize(unittest.TestCase):
     def test_scales_with_the_smaller_detector_dimension(self):
         # 2048/8 = 256 -> the auto ceiling; 64/8 = 8 -> the 32 px floor.
-        self.assertEqual(_auto_box_size((2048, 4096), 0.0, {}), 256)
-        self.assertEqual(_auto_box_size((64, 64), 0.0, {}), 32)
-        self.assertEqual(_auto_box_size((512, 512), 0.0, {}), 64)
+        self.assertEqual(_auto_box_size((2048, 4096), 0.0, 4096), 256)
+        self.assertEqual(_auto_box_size((64, 64), 0.0, 4096), 32)
+        self.assertEqual(_auto_box_size((512, 512), 0.0, 4096), 64)
 
     def test_uses_the_smaller_dimension(self):
-        self.assertEqual(_auto_box_size((4096, 256), 0.0, {}), _auto_box_size((256, 4096), 0.0, {}))
+        self.assertEqual(_auto_box_size((4096, 256), 0.0, 4096), _auto_box_size((256, 4096), 0.0, 4096))
 
     def test_crowded_fields_double_the_box_up_to_a_ceiling(self):
-        uncrowded = _auto_box_size((512, 512), 0.5, {})
-        crowded = _auto_box_size((512, 512), 0.51, {})
+        uncrowded = _auto_box_size((512, 512), 0.5, 4096)
+        crowded = _auto_box_size((512, 512), 0.51, 4096)
         self.assertEqual(crowded, 2 * uncrowded)
         # A large detector doubles from 256 to the 512 ceiling, not to 512+.
-        self.assertEqual(_auto_box_size((8192, 8192), 0.9, {}), 512)
+        self.assertEqual(_auto_box_size((8192, 8192), 0.9, 4096), 512)
 
     def test_config_box_is_a_ceiling_not_a_target(self):
         # Config cannot raise the box above what the image scale allows ...
-        self.assertEqual(_auto_box_size((2048, 2048), 0.0, {"box_size": 4096}), 256)
+        self.assertEqual(_auto_box_size((2048, 2048), 0.0, 4096), 256)
         # ... but it can lower it.
-        self.assertEqual(_auto_box_size((2048, 2048), 0.0, {"box_size": 50}), 50)
+        self.assertEqual(_auto_box_size((2048, 2048), 0.0, 50), 50)
 
     def test_never_returns_below_sixteen(self):
-        self.assertEqual(_auto_box_size((2048, 2048), 0.0, {"box_size": 4}), 16)
-        self.assertEqual(_auto_box_size((8, 8), 0.0, {"box_size": 1}), 16)
-
-    def test_unconvertible_config_falls_back_to_the_auto_box(self):
-        for value in ("junk", None, object()):
-            with self.subTest(value=value):
-                self.assertEqual(_auto_box_size((512, 512), 0.0, {"box_size": value}), 64)
-
-    def test_a_config_float_is_truncated_toward_zero(self):
-        self.assertEqual(_auto_box_size((2048, 2048), 0.0, {"box_size": 50.9}), 50)
+        self.assertEqual(_auto_box_size((2048, 2048), 0.0, 4), 16)
+        self.assertEqual(_auto_box_size((8, 8), 0.0, 1), 16)
 
 
 if __name__ == "__main__":

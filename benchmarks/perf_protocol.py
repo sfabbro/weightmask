@@ -189,10 +189,7 @@ def make_report(
             raise ValueError(f"warm samples for {arm} require at least {repeats} warm samples")
     if not samples.get("cold") or any(not values for values in samples["cold"].values()):
         raise ValueError("each arm requires a separate cold sample")
-    results = {
-        cache: {arm: summarize(values) for arm, values in arms.items()}
-        for cache, arms in samples.items()
-    }
+    results = {cache: {arm: summarize(values) for arm, values in arms.items()} for cache, arms in samples.items()}
     return {
         "instrument": instrument,
         "protocol": {

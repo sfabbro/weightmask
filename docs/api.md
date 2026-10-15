@@ -5,7 +5,7 @@ the names listed below in `weightmask.process`, `weightmask.contract`,
 `weightmask.config`, `weightmask.background`, `weightmask.reconstruct_sky`, and
 `weightmask.torchfits_adapter`. Other modules and names are callable internals,
 not a stability promise. Science methods are in [algorithms.md](algorithms.md).
-Config keys are in the canonical [`weightmask.yml`](../weightmask.yml).
+Config keys are in the canonical [`weightmask.yml`](../weightmask/weightmask.yml).
 
 ## `weightmask.config`
 
@@ -15,18 +15,29 @@ directly or copy it to a writable working directory:
 ```python
 from weightmask.config import (
     clean_config_dict,
+    configuration_errors,
     copy_default_config,
+    default_config,
     default_config_bytes,
     default_config_path,
     default_config_resource,
     default_config_sha256,
     default_config_text,
+    resolve_config,
+    section_config,
 )
 
 resource = default_config_resource()
 copy_default_config("weightmask.yml")
-config = clean_config_dict({"output_params": {"compress": "true"}})
+config = resolve_config(clean_config_dict({"output_params": {"compress": "true"}}))
 ```
+
+`resolve_config(overrides)` deep-merges a (possibly partial) config over the
+packaged defaults and raises `ValueError` listing every problem;
+`configuration_errors(overrides)` returns that list instead. Mappings merge
+key by key; any other value, including lists and `null`, replaces the default.
+`section_config(name, overrides)` does the same for one top-level section.
+`default_config()` returns a fresh copy of the packaged defaults.
 
 `default_config_resource()` returns an `importlib.resources.abc.Traversable`.
 `default_config_path()` is a context manager for a temporary filesystem path
@@ -37,7 +48,8 @@ atomically; symlink targets are still rejected.
 `default_config_bytes()`, `default_config_text()`, and
 `default_config_sha256()` expose the packaged bytes, UTF-8 text, and digest.
 `clean_config_dict()` converts YAML scalar strings to their typed values before
-validation.
+validation. Every stage entry point (`detect_cosmic_rays`, `estimate_background`,
+...) accepts its section as overrides and resolves it the same way.
 
 The reconstruction and torchfits names are module imports, not package-root
 re-exports. In particular, `weightmask.sky_to_mesh` and
@@ -46,10 +58,8 @@ re-exports. In particular, `weightmask.sky_to_mesh` and
 ## `weightmask.process`
 
 ```python
-from weightmask.process import process_image, validate_config
+from weightmask.process import process_image
 
-if not validate_config(config):
-    raise ValueError("Invalid weightmask configuration")
 mask, ivar, weight, confidence, sky, header_info = process_image(data, hdr, flat_data, config, tile_size=1024)
 ```
 

@@ -17,10 +17,20 @@ from unittest.mock import MagicMock, patch
 
 import fitsio
 import numpy as np
-import yaml
 
+from weightmask import bad as bad_mod
+from weightmask import cosmics as cosmics_mod
+from weightmask import mef as cli_mod
+from weightmask.bad import detect_non_illuminated
+from weightmask.config import configuration_errors, default_config
 from weightmask.contract import QualityBit, build_weight_product
-from weightmask.mef import process_all_hdus
+from weightmask.cosmics import _filter_faint_components
+from weightmask.mef import _rescale_confidence_to_global, _StreamingMapWriter, _veto_dead_ccd_hdus, process_all_hdus
+from weightmask.objects import ObjectDetection
+from weightmask.process import process_image
+from weightmask.satur import grow_bleed_trails
+from weightmask.streaks import StreakDetection
+from weightmask.variance import _calculate_inverse_variance_theoretical as f
 
 
 def _tiny_flat_config():
@@ -36,8 +46,6 @@ def _tiny_flat_config():
 
 class TestRetiredConfig(unittest.TestCase):
     def test_retired_keys_are_rejected_even_when_disabled(self):
-        from weightmask.process import validate_config
-
         for section, key in (
             ("saturation", "method"),
             ("variance", "unbias_variance"),
@@ -49,25 +57,18 @@ class TestRetiredConfig(unittest.TestCase):
             ("dark_masking", "unknown_key"),
         ):
             with self.subTest(section=section, key=key):
-                self.assertFalse(validate_config({section: {key: False}}))
+                self.assertTrue(configuration_errors({section: {key: False}}))
 
     def test_canonical_config_uses_current_options(self):
-        from weightmask.process import validate_config
-
-        with open("weightmask.yml") as stream:
-            config = yaml.safe_load(stream)
-        self.assertTrue(validate_config(config))
+        config = default_config()
+        self.assertEqual(configuration_errors(config), [])
         self.assertNotIn("method", config["saturation"])
         self.assertNotIn("flat_fielded_poisson", config["variance"])
 
     def test_retired_saturation_plateau_percentile_is_rejected(self):
-        from weightmask.process import validate_config
-
-        self.assertFalse(validate_config({"saturation": {"histogram_params": {"plateau_percentile": 99.8}}}))
+        self.assertTrue(configuration_errors({"saturation": {"histogram_params": {"plateau_percentile": 99.8}}}))
 
     def test_process_rejects_retired_keys_before_running_stages(self):
-        from weightmask.process import process_image
-
         for section, key in (
             ("variance", "unbias_variance"),
             ("variance", "flat_fielded_poisson"),
@@ -85,9 +86,6 @@ class TestRetiredConfig(unittest.TestCase):
 
 class TestSingleFlatPrecompute(unittest.TestCase):
     def test_each_flat_hdu_computed_once(self):
-        from weightmask import bad as bad_mod
-        from weightmask import mef as cli_mod
-
         config = _tiny_flat_config()
         flat_data = np.ones((32, 32), dtype=np.float32)
         hdu = MagicMock()
@@ -163,7 +161,7 @@ class TestInvalidVarianceWritten(unittest.TestCase):
                 "individual_mask_paths": {},
             }
             args = Namespace(tile_size=32, individual_masks=False, max_workers=1)
-            cfg = yaml.safe_load(open("weightmask.yml"))
+            cfg = default_config()
             cfg["streak_masking"]["enable"] = False
             with patch("weightmask.process.calculate_inverse_variance", side_effect=fake_ivar):
                 with fitsio.FITS(sp) as hi, fitsio.FITS(fp) as hf:
@@ -187,9 +185,7 @@ class TestInvalidVarianceWritten(unittest.TestCase):
 
 class TestProcessImageConfigIsolation(unittest.TestCase):
     def test_process_image_does_not_mutate_variance_config(self):
-        from weightmask.process import process_image
-
-        cfg = yaml.safe_load(open("weightmask.yml"))
+        cfg = default_config()
         cfg["streak_masking"]["enable"] = False
         self.assertNotIn("gain", cfg["variance"])
         rng = np.random.default_rng(1)
@@ -204,14 +200,12 @@ def _detector_prior_config():
 
 
 def _run_with_detector_prior(detector_result, detector_prior, bad_mask=None):
-    from weightmask.process import process_image
-
     shape = (8, 8)
     seen = {}
 
     def capture(_data_sub, _bkg_rms_map, existing_mask, _streak_cfg):
         seen["exclude"] = np.array(existing_mask, copy=True)
-        return np.array(detector_result, copy=True)
+        return StreakDetection(np.array(detector_result, copy=True), {})
 
     zero_mask = np.zeros(shape, dtype=bool)
     background = (np.zeros(shape, dtype=np.float32), np.ones(shape, dtype=np.float32))
@@ -219,7 +213,7 @@ def _run_with_detector_prior(detector_result, detector_prior, bad_mask=None):
         patch("weightmask.process.detect_saturated_pixels", return_value=(100.0, "test", zero_mask.copy())),
         patch("weightmask.process.estimate_background", return_value=background),
         patch("weightmask.process.detect_cosmic_rays", return_value=zero_mask.copy()),
-        patch("weightmask.process.detect_objects", return_value=zero_mask.copy()),
+        patch("weightmask.process.detect_objects", return_value=ObjectDetection(zero_mask.copy(), zero_mask.copy())),
         patch("weightmask.process.calculate_inverse_variance", return_value=np.ones(shape, dtype=np.float32)),
         patch(
             "weightmask.process.generate_weight_and_confidence",
@@ -240,8 +234,6 @@ def _run_with_detector_prior(detector_result, detector_prior, bad_mask=None):
 
 class TestDetectorPriorContract(unittest.TestCase):
     def test_shape_mismatch_is_rejected_explicitly(self):
-        from weightmask.process import process_image
-
         with self.assertRaisesRegex(ValueError, "detector prior shape"):
             process_image(
                 np.zeros((8, 8), dtype=np.float32),
@@ -328,7 +320,7 @@ class TestElixirKeepMap(unittest.TestCase):
                 "individual_mask_paths": {},
             }
             args = Namespace(tile_size=32, individual_masks=False, max_workers=1)
-            cfg = yaml.safe_load(open("weightmask.yml"))
+            cfg = default_config()
             cfg["streak_masking"]["enable"] = False
             with fitsio.FITS(sp) as hi, fitsio.FITS(fp) as hf, fitsio.FITS(bp) as hb:
                 n = process_all_hdus(
@@ -342,8 +334,6 @@ class TestElixirKeepMap(unittest.TestCase):
 
 class TestDeadCcdVeto(unittest.TestCase):
     def test_outlier_hdu_goes_fully_bad(self):
-        from weightmask.mef import _veto_dead_ccd_hdus
-
         masks = {i: np.zeros((8, 8), dtype=bool) for i in range(1, 9)}
         meds = {i: 0.94 for i in range(1, 9)}
         meds[4] = 1.53
@@ -354,8 +344,6 @@ class TestDeadCcdVeto(unittest.TestCase):
                 self.assertFalse(bool(masks[i].any()))
 
     def test_agreeing_ccds_untouched(self):
-        from weightmask.mef import _veto_dead_ccd_hdus
-
         masks = {i: np.zeros((8, 8), dtype=bool) for i in range(1, 9)}
         meds = {i: 0.94 + 0.001 * i for i in range(1, 9)}
         _veto_dead_ccd_hdus(masks, meds, {})
@@ -363,8 +351,6 @@ class TestDeadCcdVeto(unittest.TestCase):
             self.assertFalse(bool(masks[i].any()))
 
     def test_small_run_skipped(self):
-        from weightmask.mef import _veto_dead_ccd_hdus
-
         masks = {0: np.zeros((8, 8), dtype=bool)}
         _veto_dead_ccd_hdus(masks, {0: 99.0}, {})
         self.assertFalse(bool(masks[0].any()))
@@ -372,14 +358,7 @@ class TestDeadCcdVeto(unittest.TestCase):
 
 class TestConfidenceGlobalHookup(unittest.TestCase):
     def test_confidence_mode_uses_global_p99(self):
-        from argparse import Namespace
-
-        import fitsio
-        import yaml
-
-        from weightmask.mef import process_all_hdus
-
-        cfg = yaml.safe_load(open("weightmask.yml"))
+        cfg = default_config()
         cfg["streak_masking"]["enable"] = False
         cfg["output_params"]["output_map_format"] = "confidence"
         rng = np.random.default_rng(0)
@@ -421,14 +400,7 @@ class TestConfidenceGlobalHookup(unittest.TestCase):
 
 class TestDarkLeg(unittest.TestCase):
     def test_dark_hot_pixels_join_bad(self):
-        from argparse import Namespace
-
-        import fitsio
-        import yaml
-
-        from weightmask.mef import process_all_hdus
-
-        cfg = yaml.safe_load(open("weightmask.yml"))
+        cfg = default_config()
         cfg["streak_masking"]["enable"] = False
         rng = np.random.default_rng(0)
         with tempfile.TemporaryDirectory() as tmp:
@@ -460,8 +432,6 @@ class TestDarkLeg(unittest.TestCase):
 
 class TestGlobalConfidenceRescale(unittest.TestCase):
     def test_rescale_matches_global_p99(self):
-        from weightmask.mef import _rescale_confidence_to_global, _StreamingMapWriter
-
         with tempfile.TemporaryDirectory() as tmp:
             path = os.path.join(tmp, "conf.fits")
             hdul = [None, None, None]
@@ -472,7 +442,6 @@ class TestGlobalConfidenceRescale(unittest.TestCase):
             w.write(2, np.full((8, 8), 10.0, dtype=np.float32), hdr, "C2")
             cfg = {"output_params": {"output_map_format": "confidence"}}
             _rescale_confidence_to_global({"out_map_path": path}, {"map": w}, cfg)
-            import fitsio
 
             with fitsio.FITS(path) as f:
                 # global p99 ~10: HDU1 -> 0.1, HDU2 stays 1.0
@@ -480,8 +449,6 @@ class TestGlobalConfidenceRescale(unittest.TestCase):
                 self.assertAlmostEqual(float(f[2].read().mean()), 1.0, places=5)
 
     def test_skip_when_weight_format(self):
-        from weightmask.mef import _rescale_confidence_to_global
-
         # Must not touch anything when the map product holds weight.
         _rescale_confidence_to_global(
             {"out_map_path": "/nonexistent.fits"},
@@ -492,8 +459,6 @@ class TestGlobalConfidenceRescale(unittest.TestCase):
 
 class TestFlatNoiseVariance(unittest.TestCase):
     def test_term_raises_calibrated_variance_more_below_median(self):
-        from weightmask.variance import _calculate_inverse_variance_theoretical as f
-
         sky = np.full((32, 32), 2700.0, dtype=np.float64)
         flat = np.ones((32, 32))
         flat[:, :8] = 0.7
@@ -517,8 +482,6 @@ class TestBleedAdaptiveCap(unittest.TestCase):
         return sci, sat, sky, rms
 
     def test_adaptive_shrinks_single_pixel_core(self):
-        from weightmask.satur import grow_bleed_trails
-
         sci, sat, sky, rms = self._setup()
         base = {
             "mask_bleed_trails": True,
@@ -549,8 +512,6 @@ class TestBleedAdaptiveCap(unittest.TestCase):
 
 class TestFaintCrGate(unittest.TestCase):
     def test_worm_kept_single_dropped(self):
-        from weightmask.cosmics import _filter_faint_components
-
         sci = np.full((32, 32), 100.0, dtype=np.float32)
         rms = np.full((32, 32), 10.0, dtype=np.float32)
         raw = np.zeros((32, 32), dtype=bool)
@@ -568,17 +529,15 @@ class TestFaintCrGate(unittest.TestCase):
         self.assertFalse(bool(kept[20, 20]))
 
     def test_empty_in_empty_out(self):
-        from weightmask.cosmics import _filter_faint_components
-
         sci = np.full((16, 16), 100.0, dtype=np.float32)
-        out = _filter_faint_components(np.zeros((16, 16), dtype=bool), sci, None, {})
+        out = _filter_faint_components(
+            np.zeros((16, 16), dtype=bool), sci, None, default_config()["cosmic_ray"]["faint_cr"]
+        )
         self.assertEqual(int(out.sum()), 0)
 
 
 class TestCosmicNiterForwarding(unittest.TestCase):
     def test_niter_reaches_astroscrappy(self):
-        from weightmask import cosmics as cosmics_mod
-
         data = np.full((32, 32), 100.0, dtype=np.float32)
         existing = np.zeros((32, 32), dtype=bool)
         rms = np.full((32, 32), 10.0, dtype=np.float32)
@@ -595,7 +554,7 @@ class TestCosmicNiterForwarding(unittest.TestCase):
                 60000.0,
                 1.5,
                 5.0,
-                {"sigclip": 8.5, "objlim": 15.0, "niter": 2, "psf_aware": False},
+                {"sigclip": 8.5, "objlim": 15.0, "niter": 2, "psf_aware": False, "faint_cr": {"enable": False}},
                 bkg_rms_map=rms,
             )
         self.assertEqual(seen.get("niter"), 2)
@@ -604,8 +563,6 @@ class TestCosmicNiterForwarding(unittest.TestCase):
 
 class TestNonIlluminatedNoData(unittest.TestCase):
     def test_datasec_parses_to_exact_complement(self):
-        from weightmask.bad import detect_non_illuminated
-
         hdr = {"DATASEC": "[33:2080,1:4612]", "CCDSIZE": "[1:2048,1:4612]"}
         m = detect_non_illuminated((4644, 2112), hdr)
         self.assertEqual(m.shape, (4644, 2112))
@@ -620,8 +577,6 @@ class TestNonIlluminatedNoData(unittest.TestCase):
         self.assertEqual(int(m.sum()), 4644 * 2112 - 4612 * 2048)
 
     def test_missing_or_malformed_falls_back_to_empty(self):
-        from weightmask.bad import detect_non_illuminated
-
         for hdr in ({}, {"DATASEC": None}, {"DATASEC": "nonsense"}, {"DATASEC": "[0:0,0:0]"}):
             m = detect_non_illuminated((64, 64), hdr)
             self.assertFalse(bool(m.any()))

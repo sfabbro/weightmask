@@ -6,8 +6,8 @@ import unittest
 from pathlib import Path
 
 import numpy as np
-import yaml
 
+from weightmask.config import default_config
 from weightmask.contract import QualityBit
 from weightmask.process import process_image
 
@@ -27,7 +27,7 @@ def _aperture(shape, cy, cx, radius):
 
 
 def _config():
-    config = yaml.safe_load((ROOT / "weightmask.yml").read_text())
+    config = default_config()
     config["streak_masking"]["enable"] = False
     config["sep_background"].update({"method": "median_filter", "iterations": 1})
     config["sep_objects"]["extract_thresh"] = 100.0

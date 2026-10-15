@@ -15,9 +15,13 @@ than trusted.
 stale version quoted in the docs is a small but real trap for a reader.
 """
 
+import inspect
 import re
 import unittest
 from pathlib import Path
+
+import weightmask
+from weightmask.contract import ProducerMetadata
 
 REPO = Path(__file__).resolve().parents[1]
 
@@ -28,8 +32,6 @@ API_DOC = REPO / "docs" / "api.md"
 
 
 def _declared_version() -> str:
-    import weightmask
-
     return weightmask.__version__
 
 
@@ -54,9 +56,6 @@ class TestSingleSourceOfVersion(unittest.TestCase):
 
     def test_contract_stamps_the_module_version_not_a_literal(self):
         """The dangerous copy: this one reaches science products."""
-        import inspect
-
-        from weightmask.contract import ProducerMetadata
 
         self.assertIsNotNone(ProducerMetadata().version)
         source = inspect.getsource(inspect.getmodule(ProducerMetadata))

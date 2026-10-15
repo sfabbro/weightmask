@@ -25,7 +25,7 @@ def demonstrate_robustness():
         mask_pct = 0.0
         regime_type = "complex"
 
-    config_path = os.path.join(REPO_ROOT, "weightmask.yml")
+    config_path = os.path.join(REPO_ROOT, "weightmask", "weightmask.yml")
     print(f"Goal: Detect artifacts in a field with {Args.stars} stars and Poisson noise.")
 
     # Run masking test

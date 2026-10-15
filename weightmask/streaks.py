@@ -1,91 +1,24 @@
 import time
 import warnings
+from typing import NamedTuple
 
 import numpy as np
 import scipy.ndimage as ndi
 from astropy.stats import mad_std
 from skimage.draw import line
-from skimage.measure import LineModelND, label, ransac
+from skimage.measure import LineModelND, find_contours, label, ransac
 from skimage.morphology import dilation, disk
+from skimage.transform import hough_line, hough_line_peaks
 
+from .config import section_config
 from .utils import rms_or_robust, rms_valid_mask, robust_rms
 
 
-def _profile_outliers(profile, sigma):
-    """True where a 1-D profile exceeds ``sigma`` robust standard deviations."""
-    profile = np.asarray(profile, dtype=np.float64)
-    finite = np.isfinite(profile)
-    outliers = np.zeros(profile.shape, dtype=bool)
-    if not np.any(finite):
-        return outliers
-    values = profile[finite]
-    med = float(np.median(values))
-    mad = 1.4826 * float(np.median(np.abs(values - med)))
-    if not np.isfinite(mad) or mad <= 1e-12:
-        mad = 1e-12
-    outliers[finite] = values > med + float(sigma) * mad
-    return outliers
+class StreakDetection(NamedTuple):
+    """``mask`` of streak pixels and the per-stage ``report`` (candidates, accepted lines, vetoes)."""
 
-
-def _finite_axis_profiles(frame):
-    if np.all(np.isfinite(frame)):
-        return np.median(frame, axis=0), np.median(frame, axis=1)
-    values = frame.copy()
-    values[~np.isfinite(values)] = np.nan
-    with warnings.catch_warnings():
-        warnings.simplefilter("ignore", category=RuntimeWarning)
-        return np.nanmedian(values, axis=0), np.nanmedian(values, axis=1)
-
-
-class PersistenceProfileAccumulator:
-    def __init__(self, shape, min_other=2, sigma=3.0):
-        if len(shape) != 2:
-            raise ValueError("persistent_axis_mask frames must be 2-D")
-        self.shape = tuple(shape)
-        self.min_other = int(min_other)
-        self.sigma = float(sigma)
-        self.frame_count = 0
-        self.col_hits = np.zeros(self.shape[1], dtype=np.intp)
-        self.row_hits = np.zeros(self.shape[0], dtype=np.intp)
-
-    def add(self, frame):
-        frame = np.asarray(frame, dtype=np.float64)
-        if frame.shape != self.shape:
-            raise ValueError("persistent_axis_mask frames must share a shape")
-        col_profile, row_profile = _finite_axis_profiles(frame)
-        self.col_hits += _profile_outliers(col_profile, self.sigma)
-        self.row_hits += _profile_outliers(row_profile, self.sigma)
-        self.frame_count += 1
-
-    def mask(self):
-        mask = np.zeros(self.shape, dtype=bool)
-        hot_cols = np.nonzero(self.col_hits >= self.min_other)[0]
-        hot_rows = np.nonzero(self.row_hits >= self.min_other)[0]
-        if hot_cols.size:
-            mask[:, hot_cols] = True
-        if hot_rows.size:
-            mask[hot_rows, :] = True
-        return mask
-
-
-def persistent_axis_mask(frames, min_other=2, sigma=3.0):
-    """Columns and rows that are bright outliers in at least ``min_other`` frames.
-
-    ``frames`` are other exposures of one CCD (not the frame being masked). An
-    axis is detector-fixed when its median is a robust outlier in that many
-    frames — the same count the trail curator requires of other epochs. A trail
-    that exists in only one exposure does not qualify.
-    """
-    accumulator = None
-    for frame in frames:
-        array = np.asarray(frame, dtype=np.float64)
-        if accumulator is None:
-            accumulator = PersistenceProfileAccumulator(array.shape, min_other=min_other, sigma=sigma)
-        accumulator.add(array)
-        del array, frame
-    if accumulator is None:
-        raise ValueError("persistent_axis_mask needs at least one frame")
-    return accumulator.mask()
+    mask: np.ndarray
+    report: dict
 
 
 def _normalize_angle_deg(angle_deg):
@@ -98,35 +31,6 @@ def _bin_array(data_sub, bin_factor):
     bh = data_sub.shape[0] // bin_factor
     bw = data_sub.shape[1] // bin_factor
     return data_sub[: bh * bin_factor, : bw * bin_factor].reshape(bh, bin_factor, bw, bin_factor).mean(axis=(1, 3))
-
-
-_OBSOLETE_STREAK_KEYS = frozenset(
-    {
-        "method",
-        "dilation_radius",
-        "enable_ransac_trails",
-        "ransac_params",
-        "frangi_params",
-        "frangi_legacy_params",
-        "mrt_rescue_params",
-        "satdet_params",
-        "retry_without_existing_mask",
-        "retry_if_area_fraction_exceeds",
-        "retry_if_support_width_exceeds",
-        "sparse_on_primary_weak_only",
-    }
-)
-
-
-def _resolve_streak_mode(config):
-    """Production accepts only ``mode: auto_ground``."""
-    obsolete = sorted(_OBSOLETE_STREAK_KEYS & config.keys())
-    if obsolete:
-        raise ValueError(f"Unsupported streak parameters: {', '.join(obsolete)}")
-    requested = config.get("mode", "auto_ground")
-    if requested != "auto_ground":
-        raise ValueError(f"Unknown streak detection mode {requested!r}. Valid mode: 'auto_ground'.")
-    return "auto_ground"
 
 
 _EDGE_BUFFER_DEFAULT = 32
@@ -236,6 +140,31 @@ def _sample_trail_strip(image, endpoints, strip_length, strip_width, interpolati
         "x_coords": x_coords,
         "y_coords": y_coords,
     }
+
+
+def _strip_background(sampled, sideband):
+    """Row background and robust noise of a sampled strip from its sidebands.
+
+    Returns ``(background_pixels, bg_med, bg_std, row_bg)`` or None when the
+    sidebands hold fewer than 50 finite samples.
+    """
+    background_pixels = sampled[:, sideband]
+    bg_values = background_pixels[np.isfinite(background_pixels)]
+    if bg_values.size < 50:
+        return None
+    bg_med = np.median(bg_values)
+    bg_std = mad_std(bg_values, ignore_nan=True)
+    if not np.isfinite(bg_std) or bg_std <= 1e-6:
+        bg_std = np.std(bg_values)
+    if not np.isfinite(bg_std) or bg_std <= 1e-6:
+        bg_std = np.nanstd(sampled)
+    if not np.isfinite(bg_std) or bg_std <= 1e-6:
+        bg_std = 1e-3
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore", category=RuntimeWarning)
+        row_bg = np.nanmedian(background_pixels, axis=1)
+    row_bg = np.where(np.isfinite(row_bg), row_bg, bg_med)
+    return background_pixels, bg_med, bg_std, row_bg
 
 
 def _largest_near_center(mask_1d):
@@ -399,23 +328,24 @@ def _refine_trail_mask(data_sub, bkg_rms_map, candidate, mask_cfg, existing_mask
     if existing_mask is not None:
         detect_img = np.where(existing_mask, np.nan, detect_img)
 
-    strip_length = int(mask_cfg.get("strip_length", 256))
-    strip_width = int(mask_cfg.get("strip_width", 96))
-    profile_sigma = float(mask_cfg.get("profile_sigma_threshold", 3.0))
-    interpolation_order = int(mask_cfg.get("rotation_interpolation_order", 1))
-    padding = int(mask_cfg.get("padding", 4))
-    profile_percentile = float(mask_cfg.get("profile_percentile", 85.0))
-    min_mask_pixels = int(mask_cfg.get("min_mask_pixels", 64))
-    min_row_hits = int(mask_cfg.get("min_row_hits", 8))
-    min_row_hit_fraction = float(mask_cfg.get("min_row_hit_fraction", 0.5))
-    min_col_hit_fraction = float(mask_cfg.get("min_col_hit_fraction", 0.2))
-    max_support_width = int(mask_cfg.get("max_support_width", 16))
+    strip_length = mask_cfg["strip_length"]
+    strip_width = mask_cfg["strip_width"]
+    profile_sigma = mask_cfg["profile_sigma_threshold"]
+    interpolation_order = mask_cfg["rotation_interpolation_order"]
+    padding = mask_cfg["padding"]
+    profile_percentile = mask_cfg["profile_percentile"]
+    min_mask_pixels = mask_cfg["min_mask_pixels"]
+    min_row_hits = mask_cfg["min_row_hits"]
+    min_row_hit_fraction = mask_cfg["min_row_hit_fraction"]
+    min_col_hit_fraction = mask_cfg["min_col_hit_fraction"]
+    max_support_width = mask_cfg["max_support_width"]
+    is_hough = candidate["source"] == "houghpeaks"
     # Only the full-span Hough-peak candidate has independent line evidence
     # strong enough to bridge intermittent support. Contour candidates can
     # follow curved star/galaxy structure; extending those across gaps creates
     # long false-positive trails.
-    max_row_gap = int(mask_cfg.get("max_row_gap", 0)) if candidate.get("source") == "houghpeaks" else 0
-    min_row_run = int(mask_cfg.get("min_row_run", 0)) if max_row_gap > 0 else 0
+    max_row_gap = mask_cfg["max_row_gap"] if is_hough else 0
+    min_row_run = mask_cfg["min_row_run"] if max_row_gap > 0 else 0
 
     def _support_count(centered, inside, bg_std):
         # Padded support width for one sampled geometry (argmin criterion).
@@ -435,7 +365,7 @@ def _refine_trail_mask(data_sub, bkg_rms_map, candidate, mask_cfg, existing_mask
         # Otherwise a short noise fragment can replace and erase a valid line.
         hits = np.any(hot & sup[np.newaxis, :], axis=1)
         hits = ndi.binary_closing(hits, structure=np.ones(2 * padding + 1, dtype=bool))
-        observed = np.any(np.isfinite(centered[:, sup]), axis=1) if candidate.get("source") == "houghpeaks" else None
+        observed = np.any(np.isfinite(centered[:, sup]), axis=1) if is_hough else None
         hits = _largest_contiguous_run(hits, max_gap=max_row_gap, min_run_length=min_row_run, valid=observed)
         if np.count_nonzero(hits) < min_row_hits or np.mean(hits) < min_row_hit_fraction:
             return 0
@@ -464,23 +394,15 @@ def _refine_trail_mask(data_sub, bkg_rms_map, candidate, mask_cfg, existing_mask
         width_axis = np.arange(sampled.shape[1], dtype=np.float32)
         center_col = 0.5 * (sampled.shape[1] - 1)
         sideband = np.abs(width_axis - center_col) >= max(3.0, 0.25 * sampled.shape[1])
-        background_pixels = sampled[:, sideband]
-        bg_values = background_pixels[np.isfinite(background_pixels)]
-        if bg_values.size < 50:
+        background = _strip_background(sampled, sideband)
+        if background is None:
             return np.zeros(data_sub.shape, dtype=bool), {
                 "support_width": 0,
                 "row_hit_fraction": 0.0,
                 "mask_pixels": 0,
                 "reject_reason": "bg_starved",
             }
-        bg_med = np.median(bg_values)
-        bg_std = mad_std(bg_values, ignore_nan=True)
-        if not np.isfinite(bg_std) or bg_std <= 1e-6:
-            bg_std = np.std(bg_values)
-        if not np.isfinite(bg_std) or bg_std <= 1e-6:
-            bg_std = np.nanstd(sampled)
-        if not np.isfinite(bg_std) or bg_std <= 1e-6:
-            bg_std = 1e-3
+        background_pixels, bg_med, bg_std, row_bg = background
         # Check for asymmetric step discontinuity (e.g. amplifier boundary) across the strip
         left_band = sampled[:, : max(1, int(0.25 * sampled.shape[1]))]
         right_band = sampled[:, max(1, int(0.75 * sampled.shape[1])) :]
@@ -497,10 +419,6 @@ def _refine_trail_mask(data_sub, bkg_rms_map, candidate, mask_cfg, existing_mask
                     "mask_pixels": 0,
                     "reject_reason": "step_discontinuity",
                 }
-        with warnings.catch_warnings():
-            warnings.simplefilter("ignore", category=RuntimeWarning)
-            row_bg = np.nanmedian(background_pixels, axis=1)
-        row_bg = np.where(np.isfinite(row_bg), row_bg, bg_med)
         centered = sampled - row_bg[:, np.newaxis]
         if _pass == 0:
             width0 = _support_count(centered, inside, bg_std)
@@ -517,10 +435,8 @@ def _refine_trail_mask(data_sub, bkg_rms_map, candidate, mask_cfg, existing_mask
             # Near-miss fan: sub-degree grid errors still drift a 2000px strip
             # ~10px wide. Rotate the original endpoints around their midpoint
             # and keep the narrowest support. Bounded to near-misses only.
-            fan_slack = float(mask_cfg.get("angle_fan_slack", 13.0))
-            if (best_w == 0 and candidate.get("source") == "houghpeaks") or (
-                max_support_width < best_w <= max_support_width + fan_slack
-            ):
+            fan_slack = mask_cfg["angle_fan_slack"]
+            if (best_w == 0 and is_hough) or (max_support_width < best_w <= max_support_width + fan_slack):
                 (fx0, fy0), (fx1, fy1) = candidate["clipped_endpoints"]
                 fmx, fmy = 0.5 * (fx0 + fx1), 0.5 * (fy0 + fy1)
                 flen = max(np.hypot(fx1 - fx0, fy1 - fy0), 1.0)
@@ -551,22 +467,10 @@ def _refine_trail_mask(data_sub, bkg_rms_map, candidate, mask_cfg, existing_mask
                         continue
                     fsmp = fs["sampled"]
                     fins = fs["inside"]
-                    fbackground = fsmp[:, sideband]
-                    fbg_values = fbackground[np.isfinite(fbackground)]
-                    if fbg_values.size < 50:
+                    fan_background = _strip_background(fsmp, sideband)
+                    if fan_background is None:
                         continue
-                    fbg_med = np.median(fbg_values)
-                    fbg_std = mad_std(fbg_values, ignore_nan=True)
-                    if not np.isfinite(fbg_std) or fbg_std <= 1e-6:
-                        fbg_std = np.std(fbg_values)
-                    if not np.isfinite(fbg_std) or fbg_std <= 1e-6:
-                        fbg_std = np.nanstd(fsmp)
-                    if not np.isfinite(fbg_std) or fbg_std <= 1e-6:
-                        fbg_std = 1e-3
-                    with warnings.catch_warnings():
-                        warnings.simplefilter("ignore", category=RuntimeWarning)
-                        frbg = np.nanmedian(fbackground, axis=1)
-                    frbg = np.where(np.isfinite(frbg), frbg, fbg_med)
+                    _, fbg_med, fbg_std, frbg = fan_background
                     fcen = fsmp - frbg[:, np.newaxis]
                     wfan = _support_count(fcen, fins, fbg_std)
                     if _better(wfan, best_w):
@@ -614,9 +518,7 @@ def _refine_trail_mask(data_sub, bkg_rms_map, candidate, mask_cfg, existing_mask
     hot_pixels = hot_pixels & support_cols[np.newaxis, :]
     row_hits = np.any(hot_pixels, axis=1)
     row_hits = ndi.binary_closing(row_hits, structure=np.ones(2 * padding + 1, dtype=bool))
-    observed = (
-        np.any(np.isfinite(centered[:, support_cols]), axis=1) if candidate.get("source") == "houghpeaks" else None
-    )
+    observed = np.any(np.isfinite(centered[:, support_cols]), axis=1) if is_hough else None
     row_hits = _largest_contiguous_run(row_hits, max_gap=max_row_gap, min_run_length=min_row_run, valid=observed)
     if np.count_nonzero(row_hits) < min_row_hits:
         return np.zeros(data_sub.shape, dtype=bool), {
@@ -678,29 +580,26 @@ def _refine_trail_mask(data_sub, bkg_rms_map, candidate, mask_cfg, existing_mask
     }
 
 
+# Every candidate is a single line; the score was tuned with one of six
+# segment slots filled.
+_SEGMENT_SCORE = 1.0 / 6.0
+
+
 def _score_candidate(candidate, refined_mask, refine_info, existing_mask):
     """Score a refined candidate using support, continuity, and overlap penalties."""
     if refined_mask is None or np.count_nonzero(refined_mask) == 0:
         return 0.0
 
-    span = max(float(candidate.get("span", 1.0)), 1.0)
-    support_density = np.count_nonzero(refined_mask) / span
-    segment_score = min(1.0, len(candidate.get("segments", [])) / 6.0)
-    edge_score = min(1.0, float(candidate.get("edge_touches", 0)) / 2.0)
-    support_width = float(refine_info.get("support_width", 0))
-    row_hit_fraction = float(refine_info.get("row_hit_fraction", 0.0))
-    width_penalty = max(0.0, (support_width - 8.0) / 12.0)
-    overlap_penalty = 0.0
-    if existing_mask is not None:
-        overlap_penalty = float(np.mean(existing_mask[refined_mask])) if np.any(refined_mask) else 0.0
-    corridor_penalty = float(candidate.get("corridor_overlap", 0.0))
+    support_density = np.count_nonzero(refined_mask) / max(candidate["span"], 1.0)
+    edge_score = min(1.0, candidate["edge_touches"] / 2.0)
+    width_penalty = max(0.0, (refine_info["support_width"] - 8.0) / 12.0)
+    overlap_penalty = float(np.mean(existing_mask[refined_mask])) if existing_mask is not None else 0.0
     score = (
         0.45 * min(1.0, support_density / 6.0)
-        + 0.35 * segment_score
+        + 0.35 * _SEGMENT_SCORE
         + 0.20 * edge_score
-        + 0.25 * min(1.0, row_hit_fraction / 0.6)
+        + 0.25 * min(1.0, refine_info["row_hit_fraction"] / 0.6)
         - 0.35 * overlap_penalty
-        - 0.80 * corridor_penalty
         - 0.45 * width_penalty
     )
     return float(score)
@@ -717,14 +616,10 @@ def _candidate_from_rho_theta(rho, theta_deg, shape):
     if clipped is None:
         return None
     (x0, y0), (x1, y1) = clipped
-    span = np.hypot(x1 - x0, y1 - y0)
     return {
-        "segments": [((float(x0), float(y0)), (float(x1), float(y1)))],
-        "angle_deg": float(_normalize_angle_deg(theta_deg)),
-        "endpoints": clipped,
+        "source": "houghpeaks",
         "clipped_endpoints": clipped,
-        "span": float(span),
-        "raw_span": float(span),
+        "span": float(np.hypot(x1 - x0, y1 - y0)),
         "edge_touches": len(_edges_touched(clipped, shape, _EDGE_BUFFER_DEFAULT)),
     }
 
@@ -772,19 +667,16 @@ def _detect_streaks_houghpeaks(data_sub, bkg_rms_map, existing_mask, config, pre
     go through the same strip confirm + score gates as every other candidate.
     Misses dashed/intermittent trails by construction (left to RANSAC).
     """
-    from skimage.transform import hough_line, hough_line_peaks
-
-    cfg = config.get("houghpeak_params", {})
-    mask_cfg = config.get("mask_params", {})
-    if not cfg.get("enable", True):
+    cfg = config["houghpeak_params"]
+    mask_cfg = config["mask_params"]
+    if not cfg["enable"]:
         return np.zeros(data_sub.shape, dtype=bool), [], {"peaks": 0}
-    bfac = max(1, int(cfg.get("bin", 4)))
-    thresh_sig = float(cfg.get("thresh_sig", 2.5))
-    min_votes = int(cfg.get("min_votes", 100))
-    max_candidates = int(cfg.get("max_candidates", 6))
-    confidence_threshold = float(config.get("houghpeak_params", {}).get("confidence_threshold", 0.40))
-    min_refined_mask_pixels = int(mask_cfg.get("min_mask_pixels", 64))
-    confidence_threshold = _adjust_confidence_for_mask(confidence_threshold, existing_mask)
+    bfac = cfg["bin"]
+    thresh_sig = cfg["thresh_sig"]
+    min_votes = cfg["min_votes"]
+    max_candidates = cfg["max_candidates"]
+    min_refined_mask_pixels = mask_cfg["min_mask_pixels"]
+    confidence_threshold = _adjust_confidence_for_mask(cfg["confidence_threshold"], existing_mask)
 
     h, w = data_sub.shape
     bh, bw = h // bfac, w // bfac
@@ -833,7 +725,6 @@ def _detect_streaks_houghpeaks(data_sub, bkg_rms_map, existing_mask, config, pre
             candidate = _candidate_from_rho_theta(rho, theta_deg, data_sub.shape)
             if candidate is None:
                 continue
-            candidate["source"] = "houghpeaks"
             refined, refine_info = _refine_trail_mask(
                 data_sub, bkg_rms_map, candidate, mask_cfg, existing_mask=existing_mask
             )
@@ -842,7 +733,7 @@ def _detect_streaks_houghpeaks(data_sub, bkg_rms_map, existing_mask, config, pre
                 streak_mask |= refined
                 accepted.append({"theta_deg": theta_deg, "rho": rho, "confidence": conf})
                 used.append((rho, theta_deg))
-                if predictions is not None and refine_info.get("occluded_geometry") is not None:
+                if predictions is not None and refine_info["occluded_geometry"] is not None:
                     # ponytail: one boolean image per occluded candidate; use
                     # cropped masks if crowded-field memory becomes limiting.
                     predictions.append((refine_info["occluded_geometry"], refined))
@@ -858,14 +749,12 @@ def _contour_candidates(data_sub, existing_mask, bkg_rms_map, config):
     bright trails the Hough stages splinter or miss, at ~3s/HDU. Survivors
     go through the same strip confirm + score gates as every candidate.
     """
-    from skimage import measure as _measure
-
-    cfg = config.get("contour_params", {})
-    thresh_sig = float(cfg.get("thresh_sig", 2.5))
-    min_span = float(cfg.get("min_span", 150.0))
-    shape_cut = float(cfg.get("shape_cut", 0.2))
-    area_cut = float(cfg.get("area_cut", 100.0))
-    radius_dev_cut = float(cfg.get("radius_dev_cut", 0.5))
+    cfg = config["contour_params"]
+    thresh_sig = cfg["thresh_sig"]
+    min_span = cfg["min_span"]
+    shape_cut = cfg["shape_cut"]
+    area_cut = cfg["area_cut"]
+    radius_dev_cut = cfg["radius_dev_cut"]
     img = np.clip(data_sub, 0.0, None).astype(np.float32)
     if existing_mask is not None:
         img = np.where(existing_mask, 0.0, img)
@@ -879,7 +768,7 @@ def _contour_candidates(data_sub, existing_mask, bkg_rms_map, config):
         scale = 1.0
     if not np.isfinite(scale) or scale <= 0:
         return []
-    contours = _measure.find_contours(img, thresh_sig * scale, fully_connected="high")
+    contours = find_contours(img, thresh_sig * scale, fully_connected="high")
     h, w = data_sub.shape
     out = []
     for contour in contours:
@@ -917,18 +806,13 @@ def _contour_candidates(data_sub, existing_mask, bkg_rms_map, config):
         if clipped is None:
             continue
         (ex0, ey0), (ex1, ey1) = clipped
-        seg = ((float(ex0), float(ey0)), (float(ex1), float(ey1)))
         out.append(
             {
-                "segments": [seg],
-                "angle_deg": float(_normalize_angle_deg(np.degrees(theta))),
-                "endpoints": seg,
-                "clipped_endpoints": seg,
-                "span": float(np.hypot(ex1 - ex0, ey1 - ey0)),
-                "raw_span": span,
-                "edge_touches": len(_edges_touched(clipped, data_sub.shape, _EDGE_BUFFER_DEFAULT)),
-                "corridor_overlap": 0.0,
                 "source": "contours",
+                "angle_deg": float(_normalize_angle_deg(np.degrees(theta))),
+                "clipped_endpoints": ((float(ex0), float(ey0)), (float(ex1), float(ey1))),
+                "span": float(np.hypot(ex1 - ex0, ey1 - ey0)),
+                "edge_touches": len(_edges_touched(clipped, data_sub.shape, _EDGE_BUFFER_DEFAULT)),
             }
         )
     return out
@@ -936,13 +820,12 @@ def _contour_candidates(data_sub, existing_mask, bkg_rms_map, config):
 
 def _detect_streaks_contours(data_sub, bkg_rms_map, existing_mask, config):
     """Confirm contour-morphology candidates with the strip profiler."""
-    cfg = config.get("contour_params", {})
-    mask_cfg = config.get("mask_params", {})
-    if not cfg.get("enable", True):
+    cfg = config["contour_params"]
+    mask_cfg = config["mask_params"]
+    if not cfg["enable"]:
         return np.zeros(data_sub.shape, dtype=bool), [], {"candidates": 0}
-    confidence_threshold = float(config.get("contour_params", {}).get("confidence_threshold", 0.40))
-    min_refined_mask_pixels = int(mask_cfg.get("min_mask_pixels", 64))
-    confidence_threshold = _adjust_confidence_for_mask(confidence_threshold, existing_mask)
+    min_refined_mask_pixels = mask_cfg["min_mask_pixels"]
+    confidence_threshold = _adjust_confidence_for_mask(cfg["confidence_threshold"], existing_mask)
     print("--> Contour-morphology candidate search...")
     candidates = _contour_candidates(data_sub, existing_mask, bkg_rms_map, config)
     print(f"    Contour stage proposed {len(candidates)} candidate(s).")
@@ -962,14 +845,14 @@ def _detect_streaks_contours(data_sub, bkg_rms_map, existing_mask, config):
 
 def _detect_trails_sparse_ransac(data_sub, bkg_rms_map, existing_mask, config):
     """Detect intermittent trails using iterative RANSAC on residual candidate points."""
-    cfg = config.get("sparse_ransac_params", {})
-    detect_thresh_sig = float(cfg.get("detect_thresh_sig", 5.0))
-    residual_threshold = float(cfg.get("residual_threshold", 2.0))
-    min_inliers = int(cfg.get("min_inliers", 10))
-    min_length = float(cfg.get("min_length", 100))
-    min_line_density = float(cfg.get("min_line_density", 0.2))
-    max_trials = int(cfg.get("max_trials", 1000))
-    max_trails = int(cfg.get("max_trails", 3))
+    cfg = config["sparse_ransac_params"]
+    detect_thresh_sig = cfg["detect_thresh_sig"]
+    residual_threshold = cfg["residual_threshold"]
+    min_inliers = cfg["min_inliers"]
+    min_length = cfg["min_length"]
+    min_line_density = cfg["min_line_density"]
+    max_trials = cfg["max_trials"]
+    max_trails = cfg["max_trails"]
     # Cost bounds for crowded fields. Both are inert on the fields this stage was
     # tuned on (2.3-4.6k candidates, tens of rejected models per HDU) and bind
     # only where the loop is unbounded otherwise. Measured 2026-10-14 on
@@ -979,8 +862,8 @@ def _detect_trails_sparse_ransac(data_sub, bkg_rms_map, existing_mask, config):
     # (~6,800 passes at ~3.5 s each on one core). The same HDU over the same
     # exposure took 24 passes locally and 230+ on a pod -- the cascade length is
     # chaotic, so it is bounded here rather than hoped for.
-    max_candidates = int(cfg.get("max_candidates", 20000))
-    max_rejected = int(cfg.get("max_rejected", 200))
+    max_candidates = cfg["max_candidates"]
+    max_rejected = cfg["max_rejected"]
 
     if bkg_rms_map is not None:
         # Detection threshold: no measurable RMS means no detectable excess, so
@@ -1054,7 +937,7 @@ def _detect_trails_sparse_ransac(data_sub, bkg_rms_map, existing_mask, config):
         rr, cc = line(int(p0[0]), int(p0[1]), int(p1[0]), int(p1[1]))
         current = np.zeros_like(trail_mask)
         current[rr, cc] = True
-        dilation_r = int(cfg.get("dilation_radius", 1))
+        dilation_r = cfg["dilation_radius"]
         current = dilation(current, footprint=disk(dilation_r)) if dilation_r > 0 else current
         trail_mask |= current
         residual_mask[inlier_coords[:, 0], inlier_coords[:, 1]] = False
@@ -1077,24 +960,8 @@ def _label_components(mask):
     return labeled, n_components, sizes
 
 
-def _keep_by_component(labeled, n_components, sizes, min_pixels, keep_component):
-    """Apply ``keep_component(index, size)`` to each labelled component.
-
-    ``keep_component`` is consulted only for components of at least ``min_pixels``
-    pixels. A smaller one is always kept: a size floor is a poor judge on its own,
-    and the profile gate downstream has the geometry to be a better one.
-    """
-    keep = np.ones(n_components + 1, dtype=bool)
-    keep[0] = False
-    for index in range(1, n_components + 1):
-        if sizes[index] < int(min_pixels):
-            continue
-        keep[index] = bool(keep_component(index, int(sizes[index])))
-    return keep[labeled]
-
-
-def _drop_bright_components(mask, data_sub, bkg_rms_map, max_sigma, min_pixels=24, existing_mask=None):
-    """Drop streak components too bright to be a trail.
+def _too_bright(labeled, n_components, data_sub, bkg_rms_map, max_sigma, existing_mask):
+    """Per-component flag: the p90 of ``data_sub / rms`` exceeds ``max_sigma``.
 
     Measured on real MegaCam amps, as a multiple of the local background RMS:
 
@@ -1114,31 +981,29 @@ def _drop_bright_components(mask, data_sub, bkg_rms_map, max_sigma, min_pixels=2
     stage; it lives here because it cannot mask a real trail, and because a
     satellite trail in a 560 s exposure has no headroom to spare. 6x margin
     above the two trails measured so far, 7x below the brightest false positive.
+    A component with nothing measurable is never flagged.
     """
-    if max_sigma is None or bkg_rms_map is None or not np.any(mask):
-        return mask
-    components = _label_components(mask)
-    if components is None:
-        return mask
-    labeled, n_components, sizes = components
-
-    def keep_component(index, _size):
-        sel = labeled == index
-        values = data_sub[sel].astype(np.float64)
-        noise = bkg_rms_map[sel].astype(np.float64)
-        good = np.isfinite(values) & np.isfinite(noise) & (noise > 0)
-        if existing_mask is not None:
-            good &= ~existing_mask[sel]
-        if not np.any(good):
-            return True  # nothing measurable here, so nothing to judge it by
-        sigma = float(np.percentile(values[good] / noise[good], 90))
-        return sigma <= float(max_sigma)
-
-    return _keep_by_component(labeled, n_components, sizes, min_pixels, keep_component)
+    flagged = np.zeros(n_components + 1, dtype=bool)
+    if max_sigma is None or bkg_rms_map is None:
+        return flagged
+    pixels = np.flatnonzero(labeled)
+    labels = labeled.ravel()[pixels]
+    values = data_sub.ravel()[pixels].astype(np.float64)
+    noise = bkg_rms_map.ravel()[pixels].astype(np.float64)
+    good = np.isfinite(values) & np.isfinite(noise) & (noise > 0)
+    if existing_mask is not None:
+        good &= ~existing_mask.ravel()[pixels]
+    labels, ratio = labels[good], values[good] / noise[good]
+    order = np.argsort(labels, kind="stable")
+    labels, ratio = labels[order], ratio[order]
+    starts = np.flatnonzero(np.r_[True, labels[1:] != labels[:-1]]) if labels.size else labels
+    for index, group in zip(labels[starts], np.split(ratio, starts[1:])):
+        flagged[index] = float(np.percentile(group, 90)) > float(max_sigma)
+    return flagged
 
 
-def _drop_premasked_components(mask, existing_mask, max_fraction, min_pixels=24):
-    """Drop streak components that lie mostly inside the mask the pipeline already has.
+def _premasked(labeled, n_components, sizes, existing_mask, max_fraction):
+    """Per-component flag: more than ``max_fraction`` of it lies in the upstream mask.
 
     A component the upstream stages already flagged is not a new finding, and on
     real MegaCam amps the dominant false positive is a saturated star's bleed:
@@ -1148,26 +1013,11 @@ def _drop_premasked_components(mask, existing_mask, max_fraction, min_pixels=24)
     bleed wing changes intensity, versus a constant-width band) separate the two
     classes, but the pre-masked fraction is free -- both masks are already in
     hand here -- and separates them by a factor of 22.
-
-    Applied per component, not to the whole mask, so a stage that returns a bleed
-    *and* a trail keeps the trail.
     """
     if existing_mask is None or max_fraction is None or max_fraction >= 1.0:
-        return mask
-    if not np.any(mask):
-        return mask
-    components = _label_components(mask)
-    if components is None:
-        return mask
-    labeled, n_components, sizes = components
+        return np.zeros(n_components + 1, dtype=bool)
     overlap = np.bincount(labeled.ravel(), weights=existing_mask.ravel().astype(np.float64), minlength=n_components + 1)
-    return _keep_by_component(
-        labeled,
-        n_components,
-        sizes,
-        min_pixels,
-        lambda index, _size: (overlap[index] / sizes[index]) <= float(max_fraction),
-    )
+    return overlap / np.maximum(sizes, 1) > float(max_fraction)
 
 
 def _component_geometry(labeled, n_components):
@@ -1308,12 +1158,12 @@ def frame_trail_family(data_sub, bkg_rms_map, existing_mask=None, config=None):
     length scale a satellite trail has to be compared against: the telescope sets
     the star-trail length, a satellite's own angular rate sets its own.
     """
-    cfg = dict(config or {})
-    thresh_sig = float(cfg.get("thresh_sig", 2.5))
-    min_sources = int(cfg.get("min_sources", 20))
-    max_spread_deg = float(cfg.get("max_angle_spread_deg", 10.0))
-    min_elongation = float(cfg.get("min_elongation", 3.0))
-    min_length_px = float(cfg.get("min_length", 8.0))
+    cfg = section_config("streak_masking", {"star_trail_veto": config or {}})["star_trail_veto"]
+    thresh_sig = cfg["thresh_sig"]
+    min_sources = cfg["min_sources"]
+    max_spread_deg = cfg["max_angle_spread_deg"]
+    min_elongation = cfg["min_elongation"]
+    min_length_px = cfg["min_length"]
     if data_sub is None:
         return None
     values = np.clip(np.asarray(data_sub, dtype=np.float64), 0.0, None)
@@ -1340,7 +1190,7 @@ def frame_trail_family(data_sub, bkg_rms_map, existing_mask=None, config=None):
     population = int(np.count_nonzero(member))
     if population < min_sources:
         return None
-    mode_window_deg = float(cfg.get("mode_window_deg", 10.0))
+    mode_window_deg = cfg["mode_window_deg"]
     mode_angles = _dominant_angle_mode(geometry["angle_deg"][member], min_sources, mode_window_deg)
     if mode_angles is None:
         return None
@@ -1364,8 +1214,8 @@ def frame_trail_family(data_sub, bkg_rms_map, existing_mask=None, config=None):
     }
 
 
-def _drop_star_trail_family_components(mask, family, config=None, min_pixels=24):
-    """Drop a chain of the field's own star trails; keep a trail with its own rate.
+def _star_trail_family_members(labeled, n_components, family, cfg):
+    """Per-component flag: a chain of the field's own star trails, not a trail with its own rate.
 
     The campaign's dominant diagonal false positive is not a satellite. On
     ``1851960`` HDU 17 the flagged component runs 931 px at 40.2 degrees while the
@@ -1380,31 +1230,18 @@ def _drop_star_trail_family_components(mask, family, config=None, min_pixels=24)
     satellite that happens to be parallel to the field's motion -- ``1774908``
     HDU 19 was 1.8 degrees off -- while a chain of star trails cannot outgrow the
     trails it is made of, and a satellite's length comes from its own angular
-    rate. Returns the surviving mask and what it dropped, for the stage's debug
-    record.
+    rate. Returns the per-component flag.
     """
-    if family is None or not np.any(mask):
-        return mask, {"components": 0, "px": 0}
-    components = _label_components(mask)
-    if components is None:
-        return mask, {"components": 0, "px": 0}
-    labeled, n_components, sizes = components
+    flagged = np.zeros(n_components + 1, dtype=bool)
+    if family is None:
+        return flagged
     geometry = _component_geometry(labeled, n_components)
-    cfg = dict(config or {})
-    angle_tol = float(cfg.get("angle_tol_deg", 10.0))
-    length_factor = float(cfg.get("length_factor", 4.0))
     family_length = max(float(family["length_px"]), 1.0)
-    parallel = (np.abs(_angular_distance_deg(geometry["angle_deg"], float(family["angle_deg"]))) <= angle_tol) & (
-        geometry["length_px"] <= length_factor * family_length
-    )
-    dropped = parallel & (sizes >= int(min_pixels))
-    dropped[0] = False
-    if not np.any(dropped):
-        return mask, {"components": 0, "px": 0}
-    return mask & ~dropped[labeled], {
-        "components": int(np.count_nonzero(dropped[1:])),
-        "px": int(np.count_nonzero(mask & dropped[labeled])),
-    }
+    flagged = (
+        np.abs(_angular_distance_deg(geometry["angle_deg"], float(family["angle_deg"]))) <= cfg["angle_tol_deg"]
+    ) & (geometry["length_px"] <= cfg["length_factor"] * family_length)
+    flagged[0] = False
+    return flagged
 
 
 def _gate_mask_by_profile(mask, max_half_width=6.0, min_pixels=24):
@@ -1452,45 +1289,62 @@ def _gate_mask_by_profile(mask, max_half_width=6.0, min_pixels=24):
     return out
 
 
+def _veto_components(mask, data_sub, bkg_rms_map, existing_mask, config, family):
+    """Drop whole connected components that are not new trails.
+
+    A component the upstream stages already flagged is not a new finding, and a
+    component orders of magnitude above the sky is not a trail; components below
+    ``min_mask_pixels`` are left to ``_gate_mask_by_profile``. ``config`` is the
+    resolved ``streak_masking`` section. Returns the kept mask and the count of
+    components and pixels dropped by the star-trail family veto alone.
+    """
+    dropped = {"components": 0, "px": 0}
+    components = _label_components(mask)
+    if components is None:
+        return mask, dropped
+    labeled, n_components, sizes = components
+    mask_cfg = config["mask_params"]
+    judged = sizes >= mask_cfg["min_mask_pixels"]
+    judged[0] = False
+    upstream = _too_bright(labeled, n_components, data_sub, bkg_rms_map, mask_cfg["max_component_sigma"], existing_mask)
+    upstream |= _premasked(labeled, n_components, sizes, existing_mask, mask_cfg["max_premasked_fraction"])
+    upstream &= judged
+    trail_family = _star_trail_family_members(labeled, n_components, family, config["star_trail_veto"])
+    trail_family &= judged & ~upstream
+    dropped["components"] = int(np.count_nonzero(trail_family))
+    dropped["px"] = int(sizes[trail_family].sum())
+    return mask & ~(upstream | trail_family)[labeled], dropped
+
+
 def detect_streaks(data_sub, bkg_rms_map, existing_mask, config):
-    """
-    Detect linear streaks via the production ``auto_ground`` path plus optional sparse RANSAC.
+    """Detect linear streaks: binned-Hough peaks and contour morphology, then residual RANSAC.
 
-    Raises ValueError on unknown modes (fail fast on config typos).
-    Mode ``auto_ground``: binned-Hough peaks and
-    contour morphology, then residual RANSAC.
-
-    Benchmark-only Frangi lives in ``benchmarks.frangi_legacy``.
+    ``config`` is the ``streak_masking`` section (overrides merged over the
+    packaged defaults). Returns a ``StreakDetection``. Benchmark-only Frangi
+    lives in ``benchmarks.frangi_legacy``.
     """
-    mode = _resolve_streak_mode(config)
-    if not config.get("enable", False):
+    config = section_config("streak_masking", config)
+    if not config["enable"]:
         print("Streak masking disabled in main config.")
-        return np.zeros(data_sub.shape, dtype=bool)
+        return StreakDetection(np.zeros(data_sub.shape, dtype=bool), {})
 
     streak_mask_bool = np.zeros(data_sub.shape, dtype=bool)
-    debug_info = {"mode": mode, "houghpeaks": {}, "contours": {}, "sparse_ransac": None}
-    min_streak_px = int(config.get("mask_params", {}).get("min_mask_pixels", 64))
-    # A component the upstream stages already flagged is not a new finding, and a
-    # component orders of magnitude above the sky is not a trail.
-    max_premasked = config.get("mask_params", {}).get("max_premasked_fraction", 0.25)
-    max_sigma = config.get("mask_params", {}).get("max_component_sigma", 20.0)
-
-    family_cfg = config.get("star_trail_veto") or {}
+    report = {"houghpeaks": {}, "contours": {}, "sparse_ransac": None}
+    mask_cfg = config["mask_params"]
+    min_streak_px = mask_cfg["min_mask_pixels"]
+    family_cfg = config["star_trail_veto"]
     family = None
     veto_dropped = {"components": 0, "px": 0}
 
     def _veto(mask):
-        mask = _drop_bright_components(mask, data_sub, bkg_rms_map, max_sigma, min_streak_px, existing_mask)
-        mask = _drop_premasked_components(mask, existing_mask, max_premasked, min_streak_px)
-        if family is not None:
-            mask, dropped = _drop_star_trail_family_components(mask, family, family_cfg, min_streak_px)
-            veto_dropped["components"] += dropped["components"]
-            veto_dropped["px"] += dropped["px"]
-        return mask
+        kept, dropped = _veto_components(mask, data_sub, bkg_rms_map, existing_mask, config, family)
+        veto_dropped["components"] += dropped["components"]
+        veto_dropped["px"] += dropped["px"]
+        return kept
 
-    print(f"  Detecting streaks (mode: {mode})...")
+    print("  Detecting streaks...")
     streak_t0 = time.time()
-    if family_cfg.get("enable", False):
+    if family_cfg["enable"]:
         t_family = time.time()
         family = frame_trail_family(data_sub, bkg_rms_map, existing_mask, family_cfg)
         if family is None:
@@ -1510,11 +1364,11 @@ def detect_streaks(data_sub, bkg_rms_map, existing_mask, config):
     )
     hp_mask = _veto(hp_mask)
     streak_mask_bool |= hp_mask
-    debug_info["houghpeaks"] = {"accepted": hp_accepted, **hp_debug}
+    report["houghpeaks"] = {"accepted": hp_accepted, **hp_debug}
     ct_mask, ct_accepted, ct_debug = _detect_streaks_contours(data_sub, bkg_rms_map, existing_mask, config)
     ct_mask = _veto(ct_mask)
     streak_mask_bool |= ct_mask
-    debug_info["contours"] = {"accepted": ct_accepted, **ct_debug}
+    report["contours"] = {"accepted": ct_accepted, **ct_debug}
     n_prescreen_accepted = len(hp_accepted) + len(ct_accepted)
     print(
         f"    [streak] prescreen done in {time.time() - streak_t0:.1f}s: "
@@ -1529,7 +1383,7 @@ def detect_streaks(data_sub, bkg_rms_map, existing_mask, config):
     # and benchmarks/streak_stage_sweep.py; both must be re-run, not assumed, if
     # anyone proposes restoring a faint-trail stage.
 
-    if config.get("enable_sparse_ransac", True):
+    if config["enable_sparse_ransac"]:
         residual_existing = streak_mask_bool.copy()
         if existing_mask is not None:
             residual_existing |= existing_mask
@@ -1537,22 +1391,20 @@ def detect_streaks(data_sub, bkg_rms_map, existing_mask, config):
         sparse_mask = _detect_trails_sparse_ransac(data_sub, bkg_rms_map, residual_existing, config)
         sparse_mask = _veto(sparse_mask)
         streak_mask_bool |= sparse_mask
-        debug_info["sparse_ransac"] = int(np.count_nonzero(sparse_mask))
+        report["sparse_ransac"] = int(np.count_nonzero(sparse_mask))
     else:
-        debug_info["sparse_ransac"] = 0
-    debug_info["star_trail_family"] = family
-    debug_info["star_trail_dropped"] = dict(veto_dropped)
+        report["sparse_ransac"] = 0
+    report["star_trail_family"] = family
+    report["star_trail_dropped"] = dict(veto_dropped)
     if family is not None and veto_dropped["components"]:
         print(
             f"    [streak] star-trail veto dropped {veto_dropped['components']} component(s), "
             f"{veto_dropped['px']} px parallel to the field's own trails."
         )
 
-    if config.get("profile_accept", True):
-        mask_cfg = config.get("mask_params", {})
-        half_width = float(mask_cfg.get("max_support_width", 16)) / 2.0
-        min_pixels = int(mask_cfg.get("min_mask_pixels", 64))
-        streak_mask_bool = _gate_mask_by_profile(streak_mask_bool, max_half_width=half_width, min_pixels=min_pixels)
+    half_width = mask_cfg["max_support_width"] / 2.0
+    if config["profile_accept"]:
+        streak_mask_bool = _gate_mask_by_profile(streak_mask_bool, max_half_width=half_width, min_pixels=min_streak_px)
 
     if predictions:
         # Predictions are added after every evidence gate. They cannot reject
@@ -1561,19 +1413,19 @@ def detect_streaks(data_sub, bkg_rms_map, existing_mask, config):
         for (yy, xx, occluded), candidate_mask in predictions:
             # Unrelated crossing trails cannot revive a vetoed candidate.
             confirmed = _veto(candidate_mask)
-            if config.get("profile_accept", True):
-                confirmed = _gate_mask_by_profile(confirmed, max_half_width=half_width, min_pixels=min_pixels)
+            if config["profile_accept"]:
+                confirmed = _gate_mask_by_profile(confirmed, max_half_width=half_width, min_pixels=min_streak_px)
             confirmed &= streak_mask_bool
-            mask_cfg = config.get("mask_params", {})
-            max_gap = int(mask_cfg.get("max_row_gap", 0))
+            max_gap = mask_cfg["max_row_gap"]
             row_hits = _largest_contiguous_run(
                 np.any(confirmed[yy, xx], axis=1),
                 max_gap=max_gap,
-                min_run_length=int(mask_cfg.get("min_row_run", 0)) if max_gap > 0 else 0,
+                min_run_length=mask_cfg["min_row_run"] if max_gap > 0 else 0,
                 valid=~occluded,
             )
-            if np.count_nonzero(row_hits) < int(mask_cfg.get("min_row_hits", 8)) or np.mean(row_hits) < float(
-                mask_cfg.get("min_row_hit_fraction", 0.5)
+            if (
+                np.count_nonzero(row_hits) < mask_cfg["min_row_hits"]
+                or np.mean(row_hits) < mask_cfg["min_row_hit_fraction"]
             ):
                 continue
             rows = np.flatnonzero(row_hits)
@@ -1590,13 +1442,9 @@ def detect_streaks(data_sub, bkg_rms_map, existing_mask, config):
     else:
         num_new_pixels = int(np.count_nonzero(streak_mask_bool))
 
-    if config.get("debug", False):
-        config["_last_run"] = debug_info
-
     streak_elapsed = time.time() - streak_t0
     if num_new_pixels > 0:
-        print(f"  Final streak mask includes {num_new_pixels} new pixels (Mode: {mode}, {streak_elapsed:.1f}s).")
+        print(f"  Final streak mask includes {num_new_pixels} new pixels ({streak_elapsed:.1f}s).")
     else:
-        print(f"  No new streak pixels added by mode '{mode}' ({streak_elapsed:.1f}s).")
-
-    return streak_mask_bool
+        print(f"  No new streak pixels added ({streak_elapsed:.1f}s).")
+    return StreakDetection(streak_mask_bool, report)

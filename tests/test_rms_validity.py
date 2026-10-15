@@ -22,26 +22,31 @@ from pathlib import Path
 
 import numpy as np
 
+from weightmask.config import section_config
+from weightmask.cosmics import _apply_psf_protection, _filter_components
+from weightmask.objects import detect_objects
 from weightmask.streaks import (
     _detect_streaks_contours,
     _detect_trails_sparse_ransac,
     _refine_trail_mask,
 )
 from weightmask.utils import rms_or_robust, rms_valid_mask, robust_rms
+from weightmask.variance import _calculate_inverse_variance_rms
 
 PACKAGE_ROOT = Path(__file__).resolve().parents[1] / "weightmask"
 
 
-def _trail_candidate(endpoints, segments=3):
+def _trail_candidate(endpoints):
     return {
+        "source": "houghpeaks",
         "clipped_endpoints": endpoints,
-        "endpoints": endpoints,
-        "segments": [endpoints] * segments,
         "span": float(np.hypot(endpoints[1][0] - endpoints[0][0], endpoints[1][1] - endpoints[0][1])),
-        "raw_span": float(np.hypot(endpoints[1][0] - endpoints[0][0], endpoints[1][1] - endpoints[0][1])),
         "edge_touches": 2,
-        "corridor_overlap": 0.0,
     }
+
+
+def _streak_cfg(overrides):
+    return section_config("streak_masking", overrides)
 
 
 def _trail_image(shape=(320, 320), noise=0.0, seed=0):
@@ -106,16 +111,20 @@ class TestDetectionThresholdsAreInertOnUnknownRms(unittest.TestCase):
     def setUp(self):
         self.data = _trail_image()
         self.candidate = _trail_candidate(((10.0, 160.0), (310.0, 160.0)))
-        self.mask_cfg = {
-            "strip_length": 256,
-            "strip_width": 96,
-            "profile_sigma_threshold": 1.5,
-            "min_mask_pixels": 24,
-            "min_row_hits": 4,
-            "min_row_hit_fraction": 0.2,
-            "min_col_hit_fraction": 0.1,
-            "max_support_width": 12,
-        }
+        self.mask_cfg = _streak_cfg(
+            {
+                "mask_params": {
+                    "strip_length": 256,
+                    "strip_width": 96,
+                    "profile_sigma_threshold": 1.5,
+                    "min_mask_pixels": 24,
+                    "min_row_hits": 4,
+                    "min_row_hit_fraction": 0.2,
+                    "min_col_hit_fraction": 0.1,
+                    "max_support_width": 12,
+                }
+            }
+        )["mask_params"]
 
     def test_trail_is_confirmed_when_the_rms_is_measured(self):
         rms = np.full(self.data.shape, 5.0, dtype=np.float32)
@@ -137,18 +146,20 @@ class TestDetectionThresholdsAreInertOnUnknownRms(unittest.TestCase):
         self.assertEqual(int(np.count_nonzero(mask)), 0)
 
     def test_sparse_ransac_skips_unknown_rms_pixels(self):
-        config = {
-            "enable_sparse_ransac": True,
-            "sparse_ransac_params": {
-                "detect_thresh_sig": 5.0,
-                "residual_threshold": 3.0,
-                "min_inliers": 25,
-                "min_length": 50.0,
-                "min_line_density": 0.2,
-                "max_trials": 50,
-                "max_trails": 2,
-            },
-        }
+        config = _streak_cfg(
+            {
+                "enable_sparse_ransac": True,
+                "sparse_ransac_params": {
+                    "detect_thresh_sig": 5.0,
+                    "residual_threshold": 3.0,
+                    "min_inliers": 25,
+                    "min_length": 50.0,
+                    "min_line_density": 0.2,
+                    "max_trials": 50,
+                    "max_trails": 2,
+                },
+            }
+        )
         measured = _detect_trails_sparse_ransac(
             self.data, np.full(self.data.shape, 5.0, dtype=np.float32), None, config
         )
@@ -167,7 +178,7 @@ class TestDetectionThresholdsAreInertOnUnknownRms(unittest.TestCase):
         scale estimate rather than counted into it (which is what
         ``np.nanmedian`` would fail to do, since it does not ignore ``inf``).
         """
-        config = {"contour_params": {"thresh_sig": 2.5}, "mask_params": {}}
+        config = _streak_cfg({"contour_params": {"thresh_sig": 2.5}})
         data = _trail_image() + 60.0
         measured = _detect_streaks_contours(data, np.full(data.shape, 5.0, dtype=np.float32), None, config)
         half_sentinel = np.full(data.shape, np.inf, dtype=np.float32)
@@ -188,19 +199,15 @@ class TestRejectionGatesSubstitute(unittest.TestCase):
     """Gates that must still judge a component borrow a robust value instead."""
 
     def test_post_filter_keeps_a_bright_component_in_an_unmeasured_region(self):
-        from weightmask.cosmics import _post_filter_components
-
         sci = np.zeros((60, 60), dtype=np.float32)
         sci[30, 30:33] = 500.0
         flag = np.zeros(sci.shape, dtype=bool)
         flag[30, 30:33] = True
         rms = np.full(sci.shape, np.inf, dtype=np.float32)
-        kept = _post_filter_components(flag, sci, rms, {"max_component_area": 12, "min_component_contrast_sigma": 4.0})
+        kept = _filter_components(flag, sci, rms, None, max_area=12, min_contrast=4.0)
         self.assertTrue(np.array_equal(kept, flag))
 
     def test_psf_protection_is_not_claimed_without_an_rms(self):
-        from weightmask.cosmics import _apply_psf_protection
-
         yy, xx = np.mgrid[0:80, 0:80]
         blob = 200.0 * np.exp(-(((yy - 40.0) ** 2 + (xx - 40.0) ** 2) / (2 * 2.0**2)))
         sci = (100.0 + blob).astype(np.float32)
@@ -208,16 +215,15 @@ class TestRejectionGatesSubstitute(unittest.TestCase):
         flag[38:43, 38:43] = True
 
         rms = np.full(sci.shape, 5.0, dtype=np.float32)
-        protected = _apply_psf_protection(flag.copy(), sci, {"psf_aware": True, "psf_fwhm_guess": 3.0}, 1.5, 5.0, rms)
+        protected = _apply_psf_protection(flag.copy(), sci, 3.0, 1.5, 5.0, rms)
         self.assertLess(int(np.count_nonzero(protected)), int(np.count_nonzero(flag)))
 
         rms[:] = np.inf
-        unprotected = _apply_psf_protection(flag.copy(), sci, {"psf_aware": True, "psf_fwhm_guess": 3.0}, 1.5, 5.0, rms)
+        unprotected = _apply_psf_protection(flag.copy(), sci, 3.0, 1.5, 5.0, rms)
         self.assertTrue(np.array_equal(unprotected, flag))
 
     def test_sep_is_given_no_objects_in_an_unmeasured_region(self):
         """``err=inf`` is honoured by SEP, so ``detect_objects`` needs no substitution."""
-        from weightmask.objects import detect_objects
 
         rng = np.random.default_rng(3)
         data = rng.normal(0.0, 1.0, (200, 200)).astype(np.float32)
@@ -226,15 +232,13 @@ class TestRejectionGatesSubstitute(unittest.TestCase):
         rms = np.full(data.shape, 1.0, dtype=np.float32)
         rms[:, :100] = np.inf
 
-        mask = detect_objects(data, rms, None, {"extract_thresh": 3.0, "min_area": 5})
+        mask, _handoff = detect_objects(data, rms, None, {"extract_thresh": 3.0, "min_area": 5})
         self.assertTrue(mask[145:156, 145:156].any(), "measured half should still detect its source")
         self.assertFalse(mask[:, :100].any(), "no object may be claimed where the RMS is unknown")
 
 
 class TestSentinelWeightAndGrowth(unittest.TestCase):
     def test_variance_sentinel_yields_zero_weight(self):
-        from weightmask.variance import _calculate_inverse_variance_rms
-
         rms = np.array([[5.0, np.inf, 0.0]], dtype=np.float32)
         inv_var = _calculate_inverse_variance_rms(rms, epsilon=1e-6)
         self.assertAlmostEqual(float(inv_var[0, 0]), 1.0 / 25.0, places=6)

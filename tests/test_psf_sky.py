@@ -3,8 +3,8 @@
 import unittest
 
 import numpy as np
-import yaml
 
+from weightmask.config import default_config
 from weightmask.cosmics import _apply_psf_protection, _fwhm_from_header
 
 
@@ -23,15 +23,14 @@ class TestPsfSky(unittest.TestCase):
         crmask = np.zeros(shape, dtype=bool)
         crmask[2:5, 2:5] = True
         rms = np.ones(shape, dtype=np.float32)
-        cfg = {"psf_aware": True, "psf_fwhm_guess": 3.0}
-        with_sky = _apply_psf_protection(crmask.copy(), sci, cfg, 1.5, 5.0, rms, sky_map=sky)
-        without = _apply_psf_protection(crmask.copy(), sci, cfg, 1.5, 5.0, rms, sky_map=None)
+        with_sky = _apply_psf_protection(crmask.copy(), sci, 3.0, 1.5, 5.0, rms, sky_map=sky)
+        without = _apply_psf_protection(crmask.copy(), sci, 3.0, 1.5, 5.0, rms, sky_map=None)
         self.assertFalse(bool(with_sky[3, 3]))
         self.assertTrue(bool(without[3, 3]))
 
     def test_single_pass_stays_off(self):
-        cosmic = yaml.safe_load(open("weightmask.yml"))["cosmic_ray"]
-        self.assertFalse(bool(cosmic.get("single_pass", False)))
+        cosmic = default_config()["cosmic_ray"]
+        self.assertFalse(cosmic["single_pass"])
 
 
 if __name__ == "__main__":

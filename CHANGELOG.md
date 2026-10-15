@@ -2,12 +2,50 @@
 
 ## Unreleased
 
+Products from a complete configuration (such as a copy of the bundled
+`weightmask.yml`) are bit-identical to 0.2.1. Partial configurations now get the
+bundled defaults for every key they omit, so their products can change.
+
+### Changed
+
+- The bundled `weightmask/weightmask.yml` is the single source of defaults.
+  `--config` (and any dict passed to the Python API) is an override that is
+  deep-merged over it; without `--config` the CLI runs on the bundled defaults
+  instead of requiring a `weightmask.yml` in the working directory. Previously
+  each stage fell back to its own in-code default for a missing key, and those
+  disagreed with the shipped file (for example `variance.flat_rel_noise` 0 vs
+  0.003, `variance.rescale_variance` off vs on, `cosmic_ray.faint_cr.enable` off
+  vs on), so a partial config silently ran a different pipeline.
+- Cross-field checks see the merged configuration, so an override such as
+  `sep_background.box_size: 2048` must also raise `max_box_size` (default 1024).
+- `validate_config` is replaced by `weightmask.config.configuration_errors`
+  (returns the list of problems) and `resolve_config` (returns the merged
+  configuration or raises `ValueError`). `section_config(name, overrides)`
+  resolves one section.
+- Stage functions return their results instead of writing them into the config
+  dict: `detect_streaks` returns `StreakDetection(mask, report)` (the report is
+  also kept in `header_info["streaks"]`), `detect_objects` returns
+  `ObjectDetection(added, handoff)`, `estimate_background` takes a
+  `diagnostics` dict argument, and `calculate_inverse_variance` takes `gain` and
+  `read_noise_e` as arguments.
+- Persistence-prior helpers moved from `weightmask.streaks` to
+  `weightmask.persistence`.
+
+### Removed
+
+- The repository-root `weightmask.yml` copy; use
+  `weightmask.config.copy_default_config` to write an editable copy.
+- The `streak_masking.mode` and `streak_masking.debug` keys (now rejected), and
+  `bad.detect_bad_pixels` (use `compute_flat_bad_mask`).
+
 ### Fixed
 
 - Supplying `--dark_image` no longer drops the flat-field bad-pixel mask. The
   dark's hot pixels (and the dead-CCD veto) used to replace the flat mask
   instead of adding to it, so every flat defect lost its BAD flag and kept full
   weight.
+- The residual faint cosmic-ray pass protects PSF-like sources with the
+  configured `cosmic_ray.psf_fwhm_guess` instead of a hard-coded 3 px.
 
 ## 0.2.1 - 2026-10-14
 

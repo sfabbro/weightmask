@@ -36,6 +36,7 @@ Usage:
     pixi run exposure-time -- --repeats 5                # five repeats per arm
     pixi run exposure-time -- --scaling 1 2 4 8         # how it uses the cores
 """
+
 from __future__ import annotations
 
 import argparse
@@ -52,10 +53,9 @@ from pathlib import Path
 import fitsio
 
 REPO = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-if REPO not in sys.path:
-    sys.path.insert(0, REPO)
+sys.path.insert(0, REPO)
 
-from benchmarks import perf_protocol
+from benchmarks import perf_megacam, perf_protocol
 
 FLAT = os.path.join(REPO, "benchmark_data", "megacam", "perf", "flat_08Bm01_r.fits.fz")
 
@@ -71,7 +71,7 @@ def make_config(outdir, enable_streaks, *, config_id=None, cache_dir=None):
     to rewrite would leave both arms identical and the comparison meaningless.
     """
     os.makedirs(outdir, exist_ok=True)
-    with open(os.path.join(REPO, "weightmask.yml")) as handle:
+    with open(os.path.join(REPO, "weightmask", "weightmask.yml")) as handle:
         text = handle.read()
     if not enable_streaks:
         text = text.replace("streak_masking:\n  enable: true", "streak_masking:\n  enable: false", 1)
@@ -255,8 +255,6 @@ def scaling(args, exposure, outdir, chips):
 
 
 def _arm_output_equivalent(output_dirs):
-    from benchmarks import perf_megacam
-
     if len(output_dirs) < 2:
         return True
     reference = output_dirs[0]
@@ -398,7 +396,6 @@ def comparison(args, exposure, outdir, chips, report_path=None):
     if args.keep:
         print(f"\noutputs kept in {outdir}")
     return report
-
 
 
 if __name__ == "__main__":

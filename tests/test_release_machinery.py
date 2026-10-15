@@ -25,8 +25,16 @@ import tempfile
 import threading
 import unittest
 import zipfile
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 from unittest.mock import patch
+
+import tomllib
+import yaml
+
+from benchmarks.release_evidence import validate_manifest
+from weightmask.config import copy_default_config, default_config_bytes, default_config_path, default_config_resource
+from weightmask.contract import QUALITY_BITS
 
 REPO = Path(__file__).resolve().parents[1]
 WORKFLOWS = REPO / ".github" / "workflows"
@@ -97,8 +105,6 @@ class TestVersionParsing(unittest.TestCase):
 
 class TestReleaseEvidence(unittest.TestCase):
     def test_manifest_validates_all_release_identity_fields(self):
-        from benchmarks.release_evidence import validate_manifest
-
         self.assertEqual(
             validate_manifest(
                 _evidence_fixture(),
@@ -111,8 +117,6 @@ class TestReleaseEvidence(unittest.TestCase):
         )
 
     def test_manifest_mutations_are_unqualified(self):
-        from benchmarks.release_evidence import validate_manifest
-
         for mutation in (
             {"status": "skipped"},
             {"status": "failed"},
@@ -140,8 +144,6 @@ class TestReleaseEvidence(unittest.TestCase):
                 self.assertTrue(errors)
 
     def test_excluded_real_trail_recall_is_qualified(self):
-        from benchmarks.release_evidence import validate_manifest
-
         errors = validate_manifest(
             _evidence_fixture(real_trail_recall="n/a", scope_exclusions=["real_trail_recall"]),
             version="0.2.1",
@@ -154,8 +156,6 @@ class TestReleaseEvidence(unittest.TestCase):
         self.assertEqual(errors, [])
 
     def test_missing_manifest_is_rejected_only_for_qualified_release(self):
-        from benchmarks.release_evidence import validate_manifest
-
         self.assertTrue(validate_manifest(None, version="0.2.1", require_qualified=True))
         self.assertTrue(validate_manifest(None, version="0.2.1", require_qualified=False))
 
@@ -202,8 +202,6 @@ class TestChangelogSectionExtraction(unittest.TestCase):
 
 class TestReleaseWorkflowShape(unittest.TestCase):
     def test_it_exists_and_is_valid_yaml(self):
-        import yaml
-
         config = yaml.safe_load(RELEASE_WORKFLOW.read_text())
         self.assertIn("jobs", config)
         self.assertIn("release", config["jobs"])
@@ -226,7 +224,6 @@ class TestReleaseWorkflowShape(unittest.TestCase):
         """Parsed, not grepped. A `dry_run:[\\s\\S]*?default: true` regex is
         satisfied by any later `default: true` anywhere in the file, so it
         cannot tell this input's default from the next block's."""
-        import yaml
 
         config = yaml.safe_load(RELEASE_WORKFLOW.read_text())
         dry_run = config[True]["workflow_dispatch"]["inputs"]["dry_run"]
@@ -278,8 +275,6 @@ class TestReleaseWorkflowShape(unittest.TestCase):
             self.assertRegex(config_text, rf"{re.escape(action)}@[0-9a-f]{{40}}")
 
     def test_release_evidence_is_checked_and_attached_before_tagging(self):
-        import yaml
-
         steps = yaml.safe_load(RELEASE_WORKFLOW.read_text())["jobs"]["release"]["steps"]
         evidence = next(i for i, step in enumerate(steps) if step.get("name") == "Validate release evidence")
         tag = next(i for i, step in enumerate(steps) if step.get("name") == "Tag")
@@ -291,8 +286,6 @@ class TestReleaseWorkflowShape(unittest.TestCase):
         self.assertIn("evidence", release["with"]["files"])
 
     def test_publish_requires_supplied_evidence_and_does_not_inline_it(self):
-        import yaml
-
         config = yaml.safe_load(RELEASE_WORKFLOW.read_text())
         evidence_input = config[True]["workflow_dispatch"]["inputs"]["evidence_b64"]
         self.assertEqual(evidence_input["default"], "")
@@ -306,8 +299,6 @@ class TestReleaseWorkflowShape(unittest.TestCase):
         self.assertIn("base64 -d", install["run"])
 
     def test_release_permissions_are_narrow_and_publish_is_not_tagged_by_dry_run(self):
-        import yaml
-
         job = yaml.safe_load(RELEASE_WORKFLOW.read_text())["jobs"]["release"]
         self.assertEqual(set(job["permissions"]), {"contents", "id-token"})
         self.assertEqual(job["permissions"]["contents"], "write")
@@ -371,8 +362,6 @@ class TestReleaseWorkflowShape(unittest.TestCase):
         )
 
     def test_publishing_requires_upstream_main(self):
-        import yaml
-
         steps = yaml.safe_load(RELEASE_WORKFLOW.read_text())["jobs"]["release"]["steps"]
         guard = next((step for step in steps if step.get("name") == "Check release source"), None)
         self.assertIsNotNone(guard, "publishing must reject fork repositories and unmerged branches")
@@ -392,8 +381,6 @@ class TestReleaseWorkflowShape(unittest.TestCase):
             self.assertEqual(result.returncode, code, (repository, ref, result.stdout, result.stderr))
 
     def test_lint_and_tests_pass_before_tagging(self):
-        import yaml
-
         steps = yaml.safe_load(RELEASE_WORKFLOW.read_text())["jobs"]["release"]["steps"]
         tag = next(i for i, step in enumerate(steps) if step.get("name") == "Tag")
         for command in ("pixi run lint", "pixi run test"):
@@ -403,16 +390,12 @@ class TestReleaseWorkflowShape(unittest.TestCase):
             self.assertNotIn("continue-on-error", steps[index])
 
     def test_version_inputs_are_data_instead_of_script_text(self):
-        import yaml
-
         job = yaml.safe_load(RELEASE_WORKFLOW.read_text())["jobs"]["release"]
         self.assertEqual(job.get("env", {}).get("RELEASE_VERSION"), "${{ inputs.version }}")
         for step in job["steps"]:
             self.assertNotIn("${{ inputs.version }}", step.get("run", ""))
 
     def test_failed_runs_do_not_claim_a_release_or_successful_build(self):
-        import yaml
-
         steps = yaml.safe_load(RELEASE_WORKFLOW.read_text())["jobs"]["release"]["steps"]
         summary = next(step for step in steps if step.get("name") == "Summary")
         self.assertEqual(summary.get("env", {}).get("RELEASE_STATUS"), "${{ job.status }}")
@@ -437,8 +420,6 @@ class TestReleaseWorkflowShape(unittest.TestCase):
                 self.assertNotIn("Validated and built", text)
 
     def test_validated_artifacts_are_saved_before_tagging(self):
-        import yaml
-
         steps = yaml.safe_load(RELEASE_WORKFLOW.read_text())["jobs"]["release"]["steps"]
         upload = next(
             (i for i, step in enumerate(steps) if step.get("uses", "").startswith("actions/upload-artifact@")), None
@@ -451,8 +432,6 @@ class TestReleaseWorkflowShape(unittest.TestCase):
         self.assertEqual(steps[upload]["with"]["if-no-files-found"], "error")
 
     def test_github_release_attaches_the_validated_config(self):
-        import yaml
-
         steps = yaml.safe_load(RELEASE_WORKFLOW.read_text())["jobs"]["release"]["steps"]
         release = next(step for step in steps if step.get("name") == "Create the GitHub release")
         self.assertIn("dist/*", release["with"]["files"])
@@ -461,8 +440,6 @@ class TestReleaseWorkflowShape(unittest.TestCase):
 
 class TestCheckTaskIsWiredUp(unittest.TestCase):
     def test_pixi_exposes_release_check(self):
-        import tomllib
-
         tasks = tomllib.loads((REPO / "pixi.toml").read_text())["tasks"]
         self.assertIn("release-check", tasks, "the workflow calls `pixi run release-check`")
 
@@ -474,7 +451,6 @@ class TestCheckTaskIsWiredUp(unittest.TestCase):
         passed evidence is releasable. This ran green only while the tree was
         dirty, so the unqualified verdict -- the state a clean release tree
         reaches without evidence -- was never actually exercised."""
-        import tomllib
 
         declared = tomllib.loads((REPO / "pyproject.toml").read_text())["project"]["version"]
         result = subprocess.run(
@@ -589,11 +565,8 @@ class TestCheckTaskIsWiredUp(unittest.TestCase):
 
 
 class TestPackagedConfiguration(unittest.TestCase):
-    def test_root_copy_matches_packaged_resource(self):
-        from weightmask.config import default_config_path, default_config_resource
-
+    def test_default_config_path_serves_packaged_resource(self):
         packaged = default_config_resource().read_bytes()
-        self.assertEqual(packaged, (REPO / "weightmask.yml").read_bytes())
         with default_config_path() as path:
             self.assertEqual(path.read_bytes(), packaged)
 
@@ -614,19 +587,15 @@ class TestPackagedConfiguration(unittest.TestCase):
         self.assertEqual(result.stdout.strip(), "0.2.1 0.2.1")
 
     def test_default_config_can_be_copied_without_source_tree(self):
-        from weightmask.config import copy_default_config
-
         with tempfile.TemporaryDirectory() as tmp:
             destination = Path(tmp) / "config.yml"
             self.assertEqual(copy_default_config(destination), destination)
-            self.assertEqual(destination.read_bytes(), (REPO / "weightmask.yml").read_bytes())
+            self.assertEqual(destination.read_bytes(), default_config_resource().read_bytes())
             with self.assertRaises(FileExistsError):
                 copy_default_config(destination)
             copy_default_config(destination, overwrite=True)
 
     def test_copy_rejects_existing_and_dangling_symlinks_even_when_overwriting(self):
-        from weightmask.config import copy_default_config
-
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
             target = root / "real.yml"
@@ -641,10 +610,6 @@ class TestPackagedConfiguration(unittest.TestCase):
             self.assertEqual(target.read_text(), "do not clobber")
 
     def test_concurrent_no_overwrite_copy_has_one_winner(self):
-        from concurrent.futures import ThreadPoolExecutor
-
-        from weightmask.config import copy_default_config, default_config_bytes
-
         with tempfile.TemporaryDirectory() as tmp:
             destination = Path(tmp) / "config.yml"
             barrier = threading.Barrier(8)
@@ -663,10 +628,6 @@ class TestPackagedConfiguration(unittest.TestCase):
             self.assertEqual(destination.read_bytes(), default_config_bytes())
 
     def test_overwrite_failure_preserves_existing_file_and_cleans_temporary(self):
-        from unittest.mock import patch
-
-        from weightmask.config import copy_default_config
-
         with tempfile.TemporaryDirectory() as tmp:
             destination = Path(tmp) / "config.yml"
             destination.write_text("keep this generation")
@@ -677,8 +638,6 @@ class TestPackagedConfiguration(unittest.TestCase):
             self.assertEqual(list(Path(tmp).glob(".config.yml.*")), [])
 
     def test_overwrite_preserves_existing_regular_file_mode(self):
-        from weightmask.config import copy_default_config, default_config_bytes
-
         with tempfile.TemporaryDirectory() as tmp:
             destination = Path(tmp) / "config.yml"
             destination.write_bytes(b"old generation")
@@ -688,8 +647,6 @@ class TestPackagedConfiguration(unittest.TestCase):
             self.assertEqual(destination.stat().st_mode & 0o777, 0o640)
 
     def test_overwrite_rejects_fifo_and_device_targets(self):
-        from weightmask.config import copy_default_config
-
         with tempfile.TemporaryDirectory() as tmp:
             fifo = Path(tmp) / "config.fifo"
             os.mkfifo(fifo)
@@ -705,8 +662,6 @@ class TestPackagedConfiguration(unittest.TestCase):
             self.assertNotIn("not bundled", text.lower())
 
     def test_readme_doc_links_use_the_release_tag(self):
-        import re
-
         version = re.search(r'^version = "([^"]+)"$', (REPO / "pyproject.toml").read_text(), re.MULTILINE).group(1)
         prefix = f"https://github.com/astroai/weightmask/blob/v{version}/"
         text = (REPO / "README.md").read_text()
@@ -852,8 +807,6 @@ class TestDocsMatchCurrentSurface(unittest.TestCase):
             self.assertNotIn("weightmask.pipeline", text, f"{rel} still references deleted weightmask.pipeline")
 
     def test_user_docs_list_all_quality_bits(self):
-        from weightmask.contract import QUALITY_BITS
-
         for rel in ("docs/api.md", "docs/usage.md", "docs/algorithms.md"):
             text = (REPO / rel).read_text()
             for bit_name in QUALITY_BITS:

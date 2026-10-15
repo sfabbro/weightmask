@@ -18,11 +18,9 @@ import numpy as np
 from weightmask.config import (
     _KEYWORDS,
     CONFIG_SCHEMA,
-    _cross_field_errors,
     _destination_path,
     _enum,
     _integer,
-    _nested,
     _number,
     _parse_config_value,
     _Rule,
@@ -234,11 +232,10 @@ class TestSchemaEndToEnd(unittest.TestCase):
     def test_casefolded_schema_values_are_accepted(self):
         self.assertEqual(configuration_errors({"output_params": {"sky_format": "MESH"}}), [])
 
-    def test_streak_mode_is_closed_to_the_single_production_value(self):
-        self.assertEqual(configuration_errors({"streak_masking": {"mode": "auto_ground"}}), [])
+    def test_streak_mode_is_not_a_key(self):
         self.assertEqual(
-            configuration_errors({"streak_masking": {"mode": "radon"}}),
-            ["'streak_masking.mode' must be one of 'auto_ground'."],
+            configuration_errors({"streak_masking": {"mode": "auto_ground"}}),
+            ["Unsupported configuration key 'streak_masking.mode'."],
         )
 
     def test_a_boolean_is_not_accepted_where_an_integer_is_required(self):
@@ -254,28 +251,12 @@ class TestSchemaEndToEnd(unittest.TestCase):
         )
 
 
-class TestNested(unittest.TestCase):
-    def test_present_values_are_returned_and_missing_ones_use_the_default(self):
-        config = {"a": {"b": {"c": 7}}}
-        self.assertEqual(_nested(config, ("a", "b", "c")), 7)
-        self.assertEqual(_nested(config, ("a", "b", "missing"), "fallback"), "fallback")
-        self.assertEqual(_nested(config, ("a", "z"), None), None)
-
-    def test_a_non_mapping_intermediate_uses_the_default(self):
-        self.assertEqual(_nested({"a": 5}, ("a", "b"), "fallback"), "fallback")
-
-    def test_lookups_do_not_mutate_the_config(self):
-        config = {"a": {"b": {"c": 7}}}
-        _nested(config, ("a", "b", "c"))
-        self.assertEqual(config, {"a": {"b": {"c": 7}}})
-
-
 class TestCrossFieldErrors(unittest.TestCase):
     def test_the_default_configuration_has_no_cross_field_conflicts(self):
-        self.assertEqual(_cross_field_errors({}), [])
+        self.assertEqual(configuration_errors({}), [])
 
     def test_inverted_thresholds_are_reported_with_both_paths(self):
-        errors = _cross_field_errors({"flat_masking": {"local_low_thresh": 2.0, "local_high_thresh": 1.0}})
+        errors = configuration_errors({"flat_masking": {"local_low_thresh": 2.0, "local_high_thresh": 1.0}})
         self.assertEqual(
             errors,
             ["'flat_masking.local_low_thresh' must be < 'flat_masking.local_high_thresh'."],
@@ -284,37 +265,39 @@ class TestCrossFieldErrors(unittest.TestCase):
     def test_strict_comparisons_reject_equality_and_inclusive_ones_allow_it(self):
         # local_low_thresh < local_high_thresh is strict.
         self.assertEqual(
-            _cross_field_errors({"flat_masking": {"local_low_thresh": 1.0, "local_high_thresh": 1.0}}),
+            configuration_errors({"flat_masking": {"local_low_thresh": 1.0, "local_high_thresh": 1.0}}),
             ["'flat_masking.local_low_thresh' must be < 'flat_masking.local_high_thresh'."],
         )
         # bleed_cap_min <= bleed_cap_max is inclusive, so equality is legal.
-        self.assertEqual(_cross_field_errors({"saturation": {"bleed_cap_min": 200, "bleed_cap_max": 200}}), [])
+        self.assertEqual(configuration_errors({"saturation": {"bleed_cap_min": 200, "bleed_cap_max": 200}}), [])
         self.assertEqual(
-            _cross_field_errors({"saturation": {"bleed_cap_min": 201, "bleed_cap_max": 200}}),
+            configuration_errors({"saturation": {"bleed_cap_min": 201, "bleed_cap_max": 200}}),
             ["'saturation.bleed_cap_min' must be <= 'saturation.bleed_cap_max'."],
         )
 
     def test_box_size_may_not_exceed_max_box_size(self):
-        errors = _cross_field_errors({"sep_background": {"box_size": 2048, "max_box_size": 512}})
+        errors = configuration_errors({"sep_background": {"box_size": 2048, "max_box_size": 512}})
         self.assertEqual(errors, ["'sep_background.box_size' must be <= 'sep_background.max_box_size'."])
 
     def test_histogram_bounds_must_be_ordered_when_both_are_given(self):
-        errors = _cross_field_errors({"saturation": {"histogram_params": {"hist_min_adu": 500, "hist_max_adu": 500}}})
+        errors = configuration_errors({"saturation": {"histogram_params": {"hist_min_adu": 500, "hist_max_adu": 500}}})
         self.assertEqual(
             errors,
             ["'saturation.histogram_params.hist_min_adu' must be < 'saturation.histogram_params.hist_max_adu'."],
         )
         self.assertEqual(
-            _cross_field_errors({"saturation": {"histogram_params": {"hist_min_adu": 100, "hist_max_adu": 200}}}),
+            configuration_errors({"saturation": {"histogram_params": {"hist_min_adu": 100, "hist_max_adu": 200}}}),
             [],
         )
 
     def test_a_single_histogram_bound_is_not_a_conflict(self):
-        self.assertEqual(_cross_field_errors({"saturation": {"histogram_params": {"hist_min_adu": 500}}}), [])
-        self.assertEqual(_cross_field_errors({"saturation": {"histogram_params": {"hist_max_adu": 500}}}), [])
+        self.assertEqual(configuration_errors({"saturation": {"histogram_params": {"hist_min_adu": 500}}}), [])
+        self.assertEqual(
+            configuration_errors({"saturation": {"histogram_params": {"hist_min_adu": None, "hist_max_adu": 500}}}), []
+        )
 
     def test_streak_support_may_not_exceed_the_strip(self):
-        errors = _cross_field_errors({"streak_masking": {"mask_params": {"min_row_hits": 300}}})
+        errors = configuration_errors({"streak_masking": {"mask_params": {"min_row_hits": 300}}})
         self.assertEqual(
             errors,
             ["'streak_masking.mask_params.min_row_hits' must be <= 'streak_masking.mask_params.strip_length'."],

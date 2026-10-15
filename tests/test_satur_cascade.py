@@ -11,6 +11,7 @@ import unittest
 
 import numpy as np
 
+from weightmask.config import configuration_errors, section_config
 from weightmask.satur import (
     _MIN_CLUMP_PIXELS,
     _choose_saturation_level,
@@ -22,10 +23,12 @@ from weightmask.satur import (
 )
 
 
+def _sat(**overrides):
+    return section_config("saturation", overrides)
+
+
 def _hist_config(**overrides):
-    params = {"guard_fraction": 0.75, "max_upper_factor": 1.05}
-    params.update(overrides)
-    return {"histogram_params": params}
+    return _sat(histogram_params={"guard_fraction": 0.75, "max_upper_factor": 1.05, **overrides})["histogram_params"]
 
 
 class TestSaturationFromHeader(unittest.TestCase):
@@ -62,19 +65,19 @@ class TestSaturationFromHeader(unittest.TestCase):
 class TestEstimateEffectiveFullScale(unittest.TestCase):
     def test_explicit_config_scale_is_used(self):
         data = np.array([0.0, 100.0], dtype=np.float32)
-        effective, advisory = _estimate_effective_full_scale(data, None, {"effective_full_scale": 65535.0}, "SATURATE")
-        self.assertEqual(effective, 65535.0)
+        effective, advisory = _estimate_effective_full_scale(data, None, _sat(effective_full_scale=60000.0), data)
+        self.assertEqual(effective, 60000.0)
         self.assertIsNone(advisory)
 
     def test_a_small_integer_ceiling_beats_the_float_fallback(self):
         data = np.array([0, 100], dtype=np.uint8)
-        effective, _ = _estimate_effective_full_scale(data, None, {}, "SATURATE")
+        effective, _ = _estimate_effective_full_scale(data, None, _sat(), data)
         self.assertEqual(effective, 255.0)
 
     def test_a_header_advisory_becomes_a_candidate_and_is_returned(self):
         data = np.array([0.0, 100.0], dtype=np.float32)
         header = {"SATURATE": 3000.0}
-        effective, advisory = _estimate_effective_full_scale(data, header, {}, "SATURATE")
+        effective, advisory = _estimate_effective_full_scale(data, header, _sat(), data)
         self.assertEqual(effective, 3000.0)
         self.assertEqual(advisory, 3000.0)
 
@@ -83,43 +86,34 @@ class TestEstimateEffectiveFullScale(unittest.TestCase):
         # the largest candidate is the only safe bound left.
         data = np.array([0.0, 1.0e5], dtype=np.float32)
         config = {"effective_full_scale": 1000.0, "fallback_level": 2000.0}
-        effective, _ = _estimate_effective_full_scale(data, None, config, "SATURATE")
+        effective, _ = _estimate_effective_full_scale(data, None, _sat(**config), data)
         self.assertEqual(effective, 2000.0)
-
-    def test_non_positive_candidates_leave_the_hard_floor(self):
-        data = np.array([0.0, 10.0], dtype=np.float32)
-        config = {"effective_full_scale": -5.0, "fallback_level": 0.0}
-        effective, _ = _estimate_effective_full_scale(data, None, config, "SATURATE")
-        self.assertEqual(effective, 65535.0)
 
     def test_histogram_max_adu_is_honoured_as_a_candidate(self):
         data = np.array([0.0, 100.0], dtype=np.float32)
-        config = {"histogram_params": {"hist_max_adu": 4096.0}}
-        effective, _ = _estimate_effective_full_scale(data, None, config, "SATURATE")
+        config = {"histogram_params": {"hist_min_adu": None, "hist_max_adu": 4096.0}}
+        effective, _ = _estimate_effective_full_scale(data, None, _sat(**config), data)
         self.assertEqual(effective, 4096.0)
 
 
 class TestEstimatePlateauTail(unittest.TestCase):
     def test_min_tail_pixels_must_be_a_positive_int(self):
-        data = np.array([900.0, 900.0])
         for bad in (True, False, 2.5, 0, -3):
             with self.subTest(value=bad):
-                config = {"histogram_params": {"min_tail_pixels": bad}}
-                with self.assertRaises(ValueError):
-                    _estimate_plateau_tail(data, 1000.0, config)
+                self.assertTrue(configuration_errors({"saturation": {"histogram_params": {"min_tail_pixels": bad}}}))
 
     def test_data_below_the_guard_fraction_has_no_plateau(self):
         data = np.zeros(50, dtype=np.float64) + 100.0
-        self.assertEqual(_estimate_plateau_tail(data, 1000.0, {}), (None, 0))
+        self.assertEqual(_estimate_plateau_tail(data, 1000.0, _hist_config()), (None, 0))
 
     def test_a_tail_smaller_than_min_tail_pixels_has_no_plateau(self):
         data = np.array([900.0, 900.0, 100.0])
-        config = {"histogram_params": {"min_tail_pixels": 8}}
+        config = _hist_config(min_tail_pixels=8)
         self.assertEqual(_estimate_plateau_tail(data, 1000.0, config), (None, 0))
 
     def test_repeated_levels_that_never_reach_the_count_have_no_plateau(self):
         data = np.array([760.0, 770.0, 780.0, 790.0, 800.0, 810.0, 820.0, 830.0])
-        config = {"histogram_params": {"min_tail_pixels": 8}}
+        config = _hist_config(min_tail_pixels=8)
         self.assertEqual(_estimate_plateau_tail(data, 1000.0, config), (None, 0))
 
     def test_the_highest_qualifying_repeated_level_wins(self):
@@ -130,15 +124,15 @@ class TestEstimatePlateauTail(unittest.TestCase):
                 np.full(8, 900.0),
             ]
         )
-        config = {"histogram_params": {"min_tail_pixels": 8}}
+        config = _hist_config(min_tail_pixels=8)
         self.assertEqual(_estimate_plateau_tail(data, 1000.0, config), (900.0, 8))
 
     def test_empty_finite_data_has_no_plateau(self):
-        self.assertEqual(_estimate_plateau_tail(np.array([]), 1000.0, {}), (None, 0))
+        self.assertEqual(_estimate_plateau_tail(np.array([]), 1000.0, _hist_config()), (None, 0))
 
     def test_non_finite_values_are_excluded_from_the_tail(self):
         raw = np.array([np.nan, np.nan, 900.0, 900.0, 900.0, 900.0, 900.0, 900.0, 900.0, 900.0])
-        config = {"histogram_params": {"min_tail_pixels": 8}}
+        config = _hist_config(min_tail_pixels=8)
         levels, support = _estimate_plateau_tail(raw, 1000.0, config)
         self.assertEqual((levels, support), (900.0, 8))
 

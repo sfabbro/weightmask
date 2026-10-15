@@ -6,6 +6,7 @@ import argparse
 import concurrent.futures
 import os
 import threading
+import traceback
 import uuid
 from typing import Optional, Tuple
 
@@ -1269,8 +1270,6 @@ def _process_all_hdus_to_paths(
                 exc.hdu_index = i
             raise
         except Exception as e:
-            import traceback
-
             print(f"FATAL ERROR processing HDU {i}: {e}\n{traceback.format_exc()}")
             return (i, (None, None, None, None, None, None), None, f"HDU{i}")
         finally:
@@ -1323,8 +1322,6 @@ def _process_all_hdus_to_paths(
             _flush_hdu_output(writers, hdu_output, i)
             process_success_count += 1
         except Exception as e:
-            import traceback
-
             print(f"FATAL ERROR processing HDU {i}: {e}\n{traceback.format_exc()}")
 
     # Each HDU leaves memory as soon as it is produced, and at most
@@ -1362,8 +1359,6 @@ def _process_all_hdus_to_paths(
                         pending.cancel()
                     raise
                 except Exception as e:
-                    import traceback
-
                     print(f"FATAL ERROR processing HDU {i}: {e}\n{traceback.format_exc()}")
                     _i, _res, _hdr, _nm = i, (None, None, None, None, None, None), None, f"HDU{i}"
                 _emit(_i, _res, _hdr, _nm)

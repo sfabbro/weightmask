@@ -2,10 +2,12 @@
 
 import copy
 import json
+import resource
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import patch
 
+import fitsio
 import numpy as np
 import pytest
 from astropy.io import fits
@@ -23,6 +25,7 @@ from benchmarks import (
 )
 from benchmarks import curate_trail_truth as curator
 from benchmarks import score_trail_truth as scorer
+from weightmask import cli, mef
 
 
 class LocalPool:
@@ -555,7 +558,6 @@ def test_product_comparison_ignores_compression_transport_cards_for_supported_dt
     plain.header["WMSEM"] = semantics
     fits.HDUList([fits.PrimaryHDU(), compressed]).writeto(current / "run.weight.fits.fz")
     fits.HDUList([fits.PrimaryHDU(), plain]).writeto(baseline / "run.weight.fits.fz")
-    import fitsio
 
     with fitsio.FITS(str(current / "run.weight.fits.fz"), "rw") as handle:
         handle[1].write_key("ZSIMPLE", True)
@@ -846,10 +848,6 @@ def test_cr_off_truth_pixels_ignore_preexisting_detections():
 
 
 def test_perf_cpu_seconds_only_cover_the_timed_processing_region(tmp_path):
-    import resource
-
-    from weightmask import cli, mef
-
     image = SimpleNamespace(get_info=lambda: {"dims": [4, 5]})
 
     class Handle:
@@ -869,7 +867,7 @@ def test_perf_cpu_seconds_only_cover_the_timed_processing_region(tmp_path):
         patch.object(cli, "get_hdus_to_process", return_value=[0]),
         patch.object(cli, "determine_output_paths", return_value={}),
         patch.object(mef, "process_all_hdus", return_value=1),
-        patch.object(perf_megacam, "_install_timing_collector", return_value=([], None, None, None)),
+        patch.object(perf_megacam, "_install_timing_collector", return_value=([], None)),
         patch.object(perf_megacam, "_uninstall_timing_collector"),
         patch.object(resource, "getrusage", side_effect=rusage),
     ):
@@ -892,7 +890,7 @@ def test_perf_failed_hdus_are_a_failure_and_sweep_preserves_flat(tmp_path):
         patch.object(perf_megacam, "OUT_DIR", tmp_path / "outputs"),
         patch.object(perf_megacam, "resolve_exposures", return_value=[rec]),
         patch.object(perf_megacam, "_process_one_exposure", side_effect=process),
-        patch("tests.benchmarks.download_data.validate_case_file", return_value=(True, None)),
+        patch.object(perf_megacam, "validate_case_file", return_value=(True, None)),
     ):
         code = perf_megacam.main(["--flat", str(flat), "--no-cprofile", "--config-set", "variance.default_gain=2"])
     assert code == 1

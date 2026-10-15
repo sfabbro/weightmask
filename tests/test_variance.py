@@ -4,7 +4,9 @@ from unittest.mock import patch
 
 import numpy as np
 
+from weightmask.config import default_config
 from weightmask.variance import (
+    _calculate_empirical_noise_params,
     _calculate_inverse_variance_theoretical,
     _rescale_variance_robust,
     amplifier_gain_map,
@@ -27,12 +29,12 @@ class TestVariance(unittest.TestCase):
             variance_cfg={
                 "method": "theoretical",
                 "epsilon": epsilon,
-                "gain": gain,
-                "read_noise": read_noise_e,
             },
             sky_map=sky_map,
             flat_map=flat_map,
             bkg_rms_map=bkg_rms_map,
+            gain=gain,
+            read_noise_e=read_noise_e,
             sci_data=None,
             obj_mask=None,
         )
@@ -118,9 +120,7 @@ class TestVariance(unittest.TestCase):
         np.testing.assert_allclose(got, [[1.0 / 562.5, 1.0 / 2250.0]], rtol=1e-6)
 
     def test_canonical_yaml_rel_term_is_not_the_bare_kernel(self):
-        import yaml
-
-        rel = float(yaml.safe_load(open("weightmask.yml"))["variance"]["flat_rel_noise"])
+        rel = float(default_config()["variance"]["flat_rel_noise"])
         self.assertGreater(rel, 0.0)
         sky = np.full((8, 8), 1000.0, dtype=np.float32)
         flat = np.ones((8, 8), dtype=np.float32)
@@ -189,12 +189,12 @@ class TestVariance(unittest.TestCase):
             variance_cfg={
                 "method": "rms_map",
                 "epsilon": epsilon,
-                "gain": gain,
-                "read_noise": read_noise_e,
             },
             sky_map=sky_map,
             flat_map=flat_map,
             bkg_rms_map=bkg_rms_map,
+            gain=gain,
+            read_noise_e=read_noise_e,
             sci_data=None,
             obj_mask=None,
         )
@@ -214,23 +214,8 @@ class TestVariance(unittest.TestCase):
             self.assertTrue(np.all(inv_variance >= 0))
 
     def test_calculate_inverse_variance_invalid_method(self):
-        """Test inverse variance calculation with invalid method."""
-        inv_variance = calculate_inverse_variance(
-            variance_cfg={
-                "method": "invalid",
-                "epsilon": 1e-9,
-                "gain": 1.5,
-                "read_noise": 5.0,
-            },
-            sky_map=None,
-            flat_map=None,
-            bkg_rms_map=None,
-            sci_data=None,
-            obj_mask=None,
-        )
-
-        # Should return None for invalid method
-        self.assertIsNone(inv_variance)
+        with self.assertRaisesRegex(ValueError, "variance.method"):
+            calculate_inverse_variance({"method": "invalid"}, None, None, None, 1.5, 5.0)
 
     @patch("weightmask.variance._calculate_empirical_noise_params")
     def test_calculate_inverse_variance_empirical_fit_fallback(self, mock_emp_noise):
@@ -251,10 +236,10 @@ class TestVariance(unittest.TestCase):
         variance_cfg = {
             "method": "empirical_fit",
             "epsilon": epsilon,
-            "gain": gain,
-            "read_noise": read_noise_e,
             "empirical_patch_size": 128,
             "empirical_clip_sigma": 3.0,
+            "flat_rel_noise": 0.0,
+            "rescale_variance": False,
         }
 
         # Calculate inverse variance
@@ -263,6 +248,8 @@ class TestVariance(unittest.TestCase):
             sky_map=sky_map,
             flat_map=flat_map,
             bkg_rms_map=None,
+            gain=gain,
+            read_noise_e=read_noise_e,
             sci_data=sci_data,
             obj_mask=obj_mask,
         )
@@ -280,8 +267,6 @@ class TestVariance(unittest.TestCase):
         mock_emp_noise.assert_called_once_with(sci_data, obj_mask, 128, 3.0)
 
     def test_rescale_variance_robust_ignores_invalid_inverse_variance(self):
-        from weightmask.variance import _rescale_variance_robust
-
         inv_variance = np.array([[0.04, -1.0], [np.nan, 0.04]], dtype=np.float32)
         sci_data = np.full((2, 2), 110.0, dtype=np.float32)
         sky_map = np.full((2, 2), 100.0, dtype=np.float32)
@@ -299,7 +284,6 @@ class TestVariance(unittest.TestCase):
 
     def test_calculate_empirical_noise_params_success(self):
         """Test successful calculation of empirical noise parameters."""
-        from weightmask.variance import _calculate_empirical_noise_params
 
         rng = np.random.default_rng(42)
 
@@ -337,7 +321,6 @@ class TestVariance(unittest.TestCase):
 
     def test_calculate_empirical_noise_params_not_enough_pixels(self):
         """Test empirical calculation when mostly masked."""
-        from weightmask.variance import _calculate_empirical_noise_params
 
         shape = (256, 256)
         patch_size = 64
@@ -354,7 +337,6 @@ class TestVariance(unittest.TestCase):
 
     def test_calculate_empirical_noise_params_not_enough_patches(self):
         """Test empirical calculation with too few patches."""
-        from weightmask.variance import _calculate_empirical_noise_params
 
         # Shape 128x128 with patch size 64 -> only 4 patches (needs 10)
         shape = (128, 128)
@@ -370,7 +352,6 @@ class TestVariance(unittest.TestCase):
 
     def test_calculate_empirical_noise_params_zero_variance(self):
         """Test empirical calculation when patches have zero variance."""
-        from weightmask.variance import _calculate_empirical_noise_params
 
         shape = (512, 512)
         patch_size = 64
@@ -385,7 +366,6 @@ class TestVariance(unittest.TestCase):
 
     def test_calculate_empirical_noise_params_linear_regression_failure(self):
         """Test empirical calculation when linear regression fails (invalid slope/intercept)."""
-        from weightmask.variance import _calculate_empirical_noise_params
 
         rng = np.random.default_rng(42)
 
@@ -415,7 +395,6 @@ class TestVariance(unittest.TestCase):
 
     def test_rescale_variance_robust_none_inputs(self):
         """Test _rescale_variance_robust with None inputs."""
-        from weightmask.variance import _rescale_variance_robust
 
         inv_variance = np.ones((10, 10))
         sci_data = np.ones((10, 10))
@@ -436,7 +415,6 @@ class TestVariance(unittest.TestCase):
 
     def test_rescale_variance_robust_few_valid_pixels(self):
         """Test _rescale_variance_robust when there are fewer than 100 valid pixels."""
-        from weightmask.variance import _rescale_variance_robust
 
         inv_variance = np.ones((10, 10))
         sci_data = np.ones((10, 10))
@@ -448,7 +426,6 @@ class TestVariance(unittest.TestCase):
 
     def test_rescale_variance_robust_zero_stdev(self):
         """Test _rescale_variance_robust when robust standard deviation is zero."""
-        from weightmask.variance import _rescale_variance_robust
 
         # Constant data means variance and stdev is 0
         inv_variance = np.ones((20, 20))
@@ -461,7 +438,6 @@ class TestVariance(unittest.TestCase):
 
     def test_rescale_variance_robust_success(self):
         """Test _rescale_variance_robust happy path where scaling should happen."""
-        from weightmask.variance import _rescale_variance_robust
 
         rng = np.random.default_rng(42)
         shape = (100, 100)
@@ -497,7 +473,6 @@ class TestVariance(unittest.TestCase):
 
     def test_rescale_variance_robust_non_finite_snr(self):
         """Test _rescale_variance_robust with non-finite SNR values."""
-        from weightmask.variance import _rescale_variance_robust
 
         rng = np.random.default_rng(42)
         shape = (20, 20)
@@ -532,10 +507,12 @@ class TestVariance(unittest.TestCase):
         rms = np.ones((8, 8), dtype=np.float32)
         rms[:, 3] = np.inf
         inv = calculate_inverse_variance(
-            {"method": "theoretical", "gain": 1.5, "read_noise": 5.0, "rescale_variance": False},
+            {"method": "theoretical", "rescale_variance": False},
             sky,
             flat,
             rms,
+            1.5,
+            5.0,
         )
         self.assertEqual(float(inv[0, 3]), 0.0)
         self.assertGreater(float(inv[0, 0]), 0.0)
@@ -586,10 +563,12 @@ class TestVariance(unittest.TestCase):
     def test_theoretical_per_pixel_gain_ignores_object_flux(self):
         gain = np.array([[1.0, 2.0]], dtype=np.float32)
         result = calculate_inverse_variance(
-            {"method": "theoretical", "gain": gain},
+            {"method": "theoretical", "flat_rel_noise": 0.0, "rescale_variance": False},
             np.full((1, 2), 100.0, dtype=np.float32),
             np.ones((1, 2), dtype=np.float32),
             np.full((1, 2), 10.0, dtype=np.float32),
+            gain,
+            0.0,
             sci_data=np.full((1, 2), 199.0, dtype=np.float32),
         )
         np.testing.assert_allclose(result, [[0.01, 0.02]], rtol=1e-6)
@@ -600,12 +579,14 @@ class TestVariance(unittest.TestCase):
                 for value in (True, False, None):
                     with self.subTest(method=method, key=key, value=value):
                         with self.assertRaisesRegex(ValueError, key):
-                            calculate_inverse_variance({"method": method, key: value}, None, None, None)
+                            calculate_inverse_variance({"method": method, key: value}, None, None, None, 1.0, 0.0)
 
     def test_public_theoretical_default_is_flat_fielded_poisson(self):
         sky = np.array([[100.0, 100.0]], dtype=np.float32)
         flat = np.array([[0.5, 1.0]], dtype=np.float32)
-        result = calculate_inverse_variance({"gain": 2.0, "read_noise": 4.0}, sky, flat, None)
+        result = calculate_inverse_variance(
+            {"flat_rel_noise": 0.0, "rescale_variance": False}, sky, flat, None, 2.0, 4.0
+        )
         np.testing.assert_allclose(result, [[1.0 / 116.0, 4.0 / 216.0]], rtol=1e-6)
 
     def test_background_only_variance_rejects_duplicate_poisson_subtraction(self):
@@ -613,11 +594,11 @@ class TestVariance(unittest.TestCase):
         flat = np.ones_like(sky)
         rms = np.full_like(sky, 10.0)
         data = sky + 10.0
-        config = {"method": "theoretical", "gain": 1.0}
-        result = calculate_inverse_variance(config, sky, flat, rms, sci_data=data)
+        config = {"method": "theoretical", "flat_rel_noise": 0.0, "rescale_variance": False}
+        result = calculate_inverse_variance(config, sky, flat, rms, 1.0, 0.0, sci_data=data)
         np.testing.assert_allclose(result, 0.01, rtol=1e-6)
-        with self.assertRaisesRegex(ValueError, "background-only"):
-            calculate_inverse_variance({**config, "unbias_variance": True}, sky, flat, rms, sci_data=data)
+        with self.assertRaisesRegex(ValueError, "unbias_variance"):
+            calculate_inverse_variance({**config, "unbias_variance": True}, sky, flat, rms, 1.0, 0.0, sci_data=data)
 
 
 if __name__ == "__main__":

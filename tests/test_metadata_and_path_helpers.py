@@ -7,6 +7,7 @@ is used at all. None of them had direct coverage: a regression reached the
 release only as a wrong EXTNAME or a missing auxiliary input.
 """
 
+import json
 import unittest
 
 import numpy as np
@@ -73,8 +74,6 @@ class TestProducerMetadata(unittest.TestCase):
         self.assertEqual(sorted(producer.to_dict()), sorted(ProducerMetadata().to_dict()))
 
     def test_to_dict_is_json_serialisable_and_round_trips_at_every_field(self):
-        import json
-
         payload = json.loads(json.dumps(ProducerMetadata(kind="ml", model_id="m").to_dict()))
         restored = ProducerMetadata.from_dict(payload)
         self.assertEqual(restored, ProducerMetadata(kind="ml", model_id="m", version=payload["version"]))

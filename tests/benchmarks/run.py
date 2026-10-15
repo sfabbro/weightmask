@@ -5,16 +5,19 @@ from pathlib import Path
 from types import SimpleNamespace
 
 import numpy as np
-import yaml
 
 try:
     import fitsio
 except Exception:  # pragma: no cover
     fitsio = None
 
+from scipy.ndimage import binary_dilation
+from skimage.transform import hough_line, hough_line_peaks
+
 from tests.benchmarks.download_data import process_suite, validate_case_file
 from tests.simulate_and_test import GENERATOR_REVISION, METRIC_REVISION, _f1, run_masking_test
-from weightmask.bad import detect_bad_pixels, detect_dark_hot_pixels
+from weightmask.bad import compute_flat_bad_mask, detect_dark_hot_pixels
+from weightmask.config import default_config
 from weightmask.contract import (
     INVERSE_VARIANCE_SEMANTICS,
     MASK_POLARITY,
@@ -43,8 +46,7 @@ _SYNTHETIC_CASE_GATES = {
 
 
 def _load_repo_config():
-    with open(ROOT / "weightmask.yml", "r") as handle:
-        return yaml.safe_load(handle)
+    return default_config()
 
 
 def load_manifest(suite_name):
@@ -80,8 +82,6 @@ def _mask_stats(pred_mask, gt_mask, eval_gt_mask=None):
 
 
 def _streak_geometry_stats(pred_mask, components, centerlines):
-    from scipy.ndimage import binary_dilation
-
     components = np.asarray(components)
     centerlines = np.asarray(centerlines)
     tolerant = binary_dilation(pred_mask, iterations=2)
@@ -129,6 +129,7 @@ def _synthetic_case_gate_failures(case_name, result):
         "object recall": object_metrics[1] if len(object_metrics) > 1 else np.nan,
         "bad-pixel F1": bad_pixels.get("f1"),
     }
+
     def finite(value):
         try:
             return bool(np.isfinite(float(value)))
@@ -169,7 +170,6 @@ def _simple_hough_baseline(data_sub, bkg_rms, thresh_sig=5.0, half_width=3):
     transform, keep up to four strongest lines, paint their corridors. No candidate scoring,
     no strip refinement, no vetoes -- the point is to be simple.
     """
-    from skimage.transform import hough_line, hough_line_peaks
 
     binary = np.isfinite(data_sub) & (data_sub > thresh_sig * bkg_rms)
     if not binary.any():
@@ -243,9 +243,7 @@ def _radon_baseline(data_sub, bkg_rms, thresh_sig=4.0, theta_step_deg=2.0, min_l
         for index in candidates:
             # Local maximum along rho within its own connected run, so a star
             # cluster at one rho cannot borrow a neighbouring angle's peak.
-            if projection_sum[index] < projection_sum[index - 1] or projection_sum[index] < projection_sum[
-                index + 1
-            ]:
+            if projection_sum[index] < projection_sum[index - 1] or projection_sum[index] < projection_sum[index + 1]:
                 continue
             # Bin i is the geometric offset (i + rho_offset); the corridor is
             # drawn around that, in the same padded-grid units the window uses.
@@ -270,7 +268,7 @@ def _benchmark_synthetic_bad_pixels(seed, size):
     flat[:, bad_col] = 0.05
     truth[:, bad_col] = True
 
-    pred = detect_bad_pixels(
+    pred = compute_flat_bad_mask(
         flat,
         {
             "local_filter_size": 9,
@@ -280,7 +278,6 @@ def _benchmark_synthetic_bad_pixels(seed, size):
             "col_deriv_sigma": 5.0,
             "col_dead_thresh": 0.1,
         },
-        using_unit_flat=False,
     )
     return _mask_stats(pred, truth)
 
@@ -342,9 +339,10 @@ def _synthetic_v2_cases():
 
 def _evaluate_synthetic_case(case, with_baselines=False):
     args = SimpleNamespace(**case)
-    metrics, products = run_masking_test(str(ROOT / "weightmask.yml"), args, save_fits=False, return_products=True)
+    metrics, products = run_masking_test(
+        str(ROOT / "weightmask" / "weightmask.yml"), args, save_fits=False, return_products=True
+    )
     case_result = {"weightmask": metrics}
-    from scipy.ndimage import binary_dilation
 
     dilated_streak_gt = binary_dilation(products["ground_truth"]["streak"], iterations=2)
     streak_stats = _mask_stats(
@@ -391,8 +389,12 @@ def run_synthetic_v2(with_baselines=False, selected_cases=None):
             bkg_rms=products["bkg_rms"],
             streak_pred=products["masks"]["streaks"].astype(np.uint8),
             streak_truth=products["ground_truth"]["streak"].astype(np.uint8),
-            streak_components=products["ground_truth"].get("streak_components", np.zeros_like(products["ground_truth"]["streak"], dtype=np.int16)),
-            streak_centerlines=products["ground_truth"].get("streak_centerlines", np.zeros_like(products["ground_truth"]["streak"], dtype=np.int16)),
+            streak_components=products["ground_truth"].get(
+                "streak_components", np.zeros_like(products["ground_truth"]["streak"], dtype=np.int16)
+            ),
+            streak_centerlines=products["ground_truth"].get(
+                "streak_centerlines", np.zeros_like(products["ground_truth"]["streak"], dtype=np.int16)
+            ),
         )
     failures = [] if results else ["No benchmark cases were evaluated"]
     for name, result in results.items():
@@ -523,7 +525,12 @@ def _run_manifest_suite(manifest, with_baselines=False, selected_cases=None):
         suite_results[case["case_id"]] = result
     if not suite_results:
         failures.append("No benchmark cases were evaluated")
-    return {"suite": manifest["suite"], "metric_revision": METRIC_REVISION, "results": suite_results, "gate_failures": failures}
+    return {
+        "suite": manifest["suite"],
+        "metric_revision": METRIC_REVISION,
+        "results": suite_results,
+        "gate_failures": failures,
+    }
 
 
 def _load_case_image(case_path):
@@ -788,14 +795,14 @@ def _image_inverse_variance(data, source_mask, header):
     sky_map = np.full(data.shape, max(sky_level, 0.0), dtype=np.float32)
     flat_map = np.ones(data.shape, dtype=np.float32)
     bkg_rms = np.full(data.shape, max(noise, 1e-6), dtype=np.float32)
-    variance_cfg = dict(_load_repo_config().get("variance", {}))
-    variance_cfg["gain"] = float(header.get("GAIN", variance_cfg.get("default_gain", 1.5)))
-    variance_cfg["read_noise"] = float(header.get("RDNOISE", variance_cfg.get("default_rdnoise", 5.0)))
+    variance_cfg = _load_repo_config()["variance"]
     return calculate_inverse_variance(
         variance_cfg,
         sky_map,
         flat_map,
         bkg_rms,
+        float(header.get("GAIN", variance_cfg["default_gain"])),
+        float(header.get("RDNOISE", variance_cfg["default_rdnoise"])),
         sci_data=data,
         obj_mask=source_mask,
     )
@@ -914,8 +921,8 @@ def _evaluate_blank_control(data, bkg_rms, with_baselines):
         data - np.nanmedian(data),
         bkg_rms,
         np.zeros_like(data, dtype=bool),
-        {**streak_cfg, "enable": True, "mode": "auto_ground", "debug": True, "enable_sparse_ransac": True},
-    )
+        {**streak_cfg, "enable": True, "enable_sparse_ransac": True},
+    ).mask
     metrics = {
         "weightmask": {
             "streak_area_fraction": float(np.mean(streak_mask)),
@@ -927,9 +934,7 @@ def _evaluate_blank_control(data, bkg_rms, with_baselines):
         baselines["simple_hough"] = {
             "streak_pixels": int(np.sum(_simple_hough_baseline(data - np.nanmedian(data), bkg_rms)))
         }
-        baselines["radon"] = {
-            "streak_pixels": int(np.sum(_radon_baseline(data - np.nanmedian(data), bkg_rms)))
-        }
+        baselines["radon"] = {"streak_pixels": int(np.sum(_radon_baseline(data - np.nanmedian(data), bkg_rms)))}
     return metrics, streak_mask, baselines
 
 
@@ -967,7 +972,7 @@ def _evaluate_dark_injection(case, data, hdr, with_baselines):
     else:
         truth = dark > np.percentile(finite_dark, 99.5)
 
-    pred_bad = detect_dark_hot_pixels(dark, _load_repo_config().get("dark_masking", {}))
+    pred_bad = detect_dark_hot_pixels(dark, _load_repo_config()["dark_masking"])
     existing = np.zeros_like(injected, dtype=bool)
     pred_cr = detect_cosmic_rays(
         injected,
@@ -1006,8 +1011,8 @@ def _evaluate_streak_case(
         data_sub,
         bkg_rms,
         np.zeros_like(data, dtype=bool),
-        {**streak_cfg, "enable": True, "mode": "auto_ground", "debug": True, "enable_sparse_ransac": True},
-    )
+        {**streak_cfg, "enable": True, "enable_sparse_ransac": True},
+    ).mask
     metrics = {
         "weightmask": {
             "streak_pixels": int(np.sum(weightmask_mask)),
@@ -1141,7 +1146,11 @@ def run_suite(suite, with_baselines=False, selected_cases=None, download=False):
         }
         unknown = selected_cases - set().union(*known.values())
         if unknown:
-            return {"suite": suite, "results": {}, "gate_failures": [f"Unknown benchmark case(s): {', '.join(sorted(unknown))}"]}
+            return {
+                "suite": suite,
+                "results": {},
+                "gate_failures": [f"Unknown benchmark case(s): {', '.join(sorted(unknown))}"],
+            }
     if suite == "synthetic_v2":
         return run_synthetic_v2(with_baselines=with_baselines, selected_cases=selected_cases)
     if suite in {"megacam_real", "acs_compare"}:

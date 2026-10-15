@@ -33,47 +33,8 @@ import io
 
 import numpy as np
 
-
-def _lookup_header(header, keys, default):
-    values = keys if isinstance(keys, (list, tuple)) else [keys]
-    for key in values:
-        if not isinstance(key, str) or not key:
-            continue
-        value = None
-        getter = getattr(header, "get", None)
-        if callable(getter):
-            value = getter(key, None)
-        if value is None:
-            try:
-                value = header[key]
-            except (KeyError, TypeError, AttributeError):
-                value = None
-        if value is not None:
-            return value
-    return default
-
-
-def production_gain_read_noise(header, config):
-    """Resolve gain/read noise with the same precedence as ``process_image``."""
-    variance = config.get("variance", {}) if isinstance(config, dict) else {}
-    gain_default = variance.get("default_gain", 1.0)
-    read_default = variance.get("default_rdnoise", 0.0)
-    gain_raw = _lookup_header(header, variance.get("gain_keyword", "GAIN"), gain_default)
-    read_raw = _lookup_header(header, variance.get("rdnoise_keyword", "RDNOISE"), read_default)
-    def coerce(raw, fallback, minimum, label):
-        try:
-            value = float(raw)
-            if not np.isfinite(value) or value < minimum:
-                raise ValueError
-        except (TypeError, ValueError):
-            value = float(fallback)
-        if not np.isfinite(value) or value < minimum:
-            raise ValueError(f"invalid {label} in production variance configuration")
-        return value
-
-    gain = coerce(gain_raw, gain_default, 1e-12, "gain")
-    read_noise = coerce(read_raw, read_default, 0.0, "read noise")
-    return gain, read_noise
+import weightmask.process as proc
+from weightmask.streaks import StreakDetection
 
 
 def _snapshot(value):
@@ -103,7 +64,6 @@ def capture_detector_inputs(sci, header, config, detector_prior=None, flat=None)
     which is the loud failure mode: a silently un-captured input would put the
     harness back on the non-production path without saying so.
     """
-    import weightmask.process as proc
 
     captured = {}
 
@@ -115,7 +75,7 @@ def capture_detector_inputs(sci, header, config, detector_prior=None, flat=None)
             np.zeros(shape, dtype=bool) if existing_mask is None else existing_mask.astype(bool, copy=True)
         )
         # Hand back an empty mask so the pipeline's own bookkeeping stays clean.
-        return np.zeros(shape, dtype=bool)
+        return StreakDetection(np.zeros(shape, dtype=bool), {})
 
     original = proc.detect_streaks
     proc.detect_streaks = _capture
@@ -131,7 +91,6 @@ def capture_detector_inputs(sci, header, config, detector_prior=None, flat=None)
 
 def capture_detector_calls(sci, header, config, detector_prior=None, flat=None, stop_after=None):
     """Run production and return immutable snapshots of detector call boundaries."""
-    import weightmask.process as proc
 
     calls = {name: [] for name in ("saturation", "cosmics", "objects", "streaks")}
     calls["order"] = []

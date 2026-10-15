@@ -12,32 +12,15 @@ a stable multi-seed floor.
 
 import contextlib
 import io
-import sys
 import unittest
-from pathlib import Path
 
 import numpy as np
-import yaml
 
-ROOT = Path(__file__).resolve().parents[1]
-if str(ROOT) not in sys.path:
-    sys.path.insert(0, str(ROOT))
-if str(ROOT / "benchmarks") not in sys.path:
-    sys.path.insert(0, str(ROOT / "benchmarks"))
-
-from benchmarks.production_inputs import (  # noqa: E402
-    capture_detector_inputs,
-    production_gain_read_noise,
-    streak_config,
-)
-from benchmarks.streak_inject import (  # noqa: E402
-    inject_grid,
-    inject_source_poisson,
-    score_mask,
-    scoreable_truth,
-    trail_recall,
-)
-from weightmask.streaks import detect_streaks  # noqa: E402
+from benchmarks.production_inputs import capture_detector_inputs, streak_config
+from benchmarks.streak_inject import inject_grid, inject_source_poisson, score_mask, scoreable_truth, trail_recall
+from weightmask.config import default_config, resolve_config
+from weightmask.process import header_gain_read_noise
+from weightmask.streaks import detect_streaks
 
 SHAPE = (700, 700)
 CONTINUOUS_SPECS = [(400, 8.0, False), (400, 4.0, False)]
@@ -82,7 +65,7 @@ def synthetic_hdu(shape=SHAPE, seed=0, noise=5.0, sky=1000.0, n_stars=14):
 class TestStreakRecallFloor(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
-        config = yaml.safe_load(open("weightmask.yml"))
+        config = default_config()
         cls.streak_cfg = dict(config["streak_masking"])
         cls.streak_cfg["enable"] = True
 
@@ -107,7 +90,7 @@ class TestStreakRecallFloor(unittest.TestCase):
             noise = float(np.median(np.abs(finite - np.median(finite))) * 1.4826)
 
         cfg = dict(cls.streak_cfg_full)
-        cls.clean_mask = detect_streaks(data_sub, rms, cls.empty_mask, cfg)
+        cls.clean_mask = detect_streaks(data_sub, rms, cls.empty_mask, cfg).mask
         rng = np.random.default_rng(0)
         flux, cls.truth, cls.trails, cls.rejected_cells = inject_grid(
             cls.sci.shape,
@@ -118,7 +101,7 @@ class TestStreakRecallFloor(unittest.TestCase):
             return_rejected=True,
         )
         cls.n_continuous = sum(1 for trail in cls.trails if not trail["dashed"])
-        gain, _read_noise = production_gain_read_noise({"GAIN": 1.5, "RDNOISE": 5.0}, config)
+        gain, _read_noise = header_gain_read_noise({"GAIN": 1.5, "RDNOISE": 5.0}, resolve_config(config)["variance"])
         raw_test = inject_source_poisson(
             cls.sci,
             flux * noise,
@@ -133,7 +116,7 @@ class TestStreakRecallFloor(unittest.TestCase):
                 config,
                 flat=np.ones(cls.sci.shape, dtype=np.float32),
             )
-        cls.mask = detect_streaks(injected_sub, injected_rms, injected_existing, dict(cfg))
+        cls.mask = detect_streaks(injected_sub, injected_rms, injected_existing, dict(cfg)).mask
         cls.scoreable = np.zeros(cls.sci.shape, dtype=bool)
         cls.rejected_truth = np.zeros(cls.sci.shape, dtype=bool)
         for trail in cls.trails:

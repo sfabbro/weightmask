@@ -7,16 +7,16 @@ import unittest
 from pathlib import Path
 
 import numpy as np
-import yaml
 
 from weightmask import streaks
+from weightmask.config import default_config
 from weightmask.streaks import detect_streaks
 
 REPO = Path(__file__).resolve().parents[1]
 
 
 def _shipped_streak_config():
-    return yaml.safe_load(open(REPO / "weightmask.yml"))["streak_masking"]
+    return default_config()["streak_masking"]
 
 
 def _quiet_scene(shape=(256, 256)):
@@ -39,19 +39,15 @@ class TestRescueStageIsGone(unittest.TestCase):
         ):
             self.assertFalse(hasattr(streaks, gone), f"{gone} should be removed")
 
-    def test_debug_flag_populates_last_run_without_mrt(self):
+    def test_report_records_every_stage_without_mrt(self):
         data, rms, existing_mask = _quiet_scene((64, 64))
-        config = dict(_shipped_streak_config())
-        config["debug"] = True
+        config = _shipped_streak_config()
         with contextlib.redirect_stdout(io.StringIO()):
-            detect_streaks(data, rms, existing_mask, config)
-        self.assertIn("_last_run", config)
-        self.assertNotIn("mrt", config["_last_run"])
-        debug = config["_last_run"]
+            debug = detect_streaks(data, rms, existing_mask, config).report
+        self.assertNotIn("_last_run", config)
         self.assertEqual(
             set(debug.keys()),
             {
-                "mode",
                 "houghpeaks",
                 "contours",
                 "sparse_ransac",
@@ -80,7 +76,7 @@ class TestRescueStageIsGone(unittest.TestCase):
         config = dict(_shipped_streak_config())
         config["mrt_rescue_params"] = {"enable": True, "max_candidates": 4}
         with self.assertRaisesRegex(ValueError, "mrt_rescue_params"):
-            detect_streaks(data, rms, existing_mask, config)
+            detect_streaks(data, rms, existing_mask, config).mask
 
 
 class TestDetectorStillWorksWithoutTheRescue(unittest.TestCase):
@@ -88,13 +84,13 @@ class TestDetectorStillWorksWithoutTheRescue(unittest.TestCase):
         data, rms, existing_mask = _quiet_scene((400, 400))
         data[195:199, 20:380] = 40.0
         with contextlib.redirect_stdout(io.StringIO()):
-            mask = detect_streaks(data, rms, existing_mask, dict(_shipped_streak_config()))
+            mask = detect_streaks(data, rms, existing_mask, dict(_shipped_streak_config())).mask
         self.assertGreater(int(mask[195:199, 20:380].sum()), 0)
 
     def test_a_quiet_frame_still_produces_nothing(self):
         data, rms, existing_mask = _quiet_scene()
         with contextlib.redirect_stdout(io.StringIO()):
-            mask = detect_streaks(data, rms, existing_mask, dict(_shipped_streak_config()))
+            mask = detect_streaks(data, rms, existing_mask, dict(_shipped_streak_config())).mask
         self.assertEqual(int(np.count_nonzero(mask)), 0)
 
 
@@ -111,7 +107,7 @@ class TestSurvivingStagesEarnTheirCost(unittest.TestCase):
         rms = np.full(data.shape, 5.0, dtype=np.float32)
         existing = np.zeros(data.shape, dtype=bool)
         with contextlib.redirect_stdout(io.StringIO()):
-            return detect_streaks(data, rms, existing, config)
+            return detect_streaks(data, rms, existing, config).mask
 
     def test_contour_stage_is_the_sole_finder_in_a_current_fixture(self):
         data = np.zeros((256, 256), dtype=np.float32)

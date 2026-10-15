@@ -1,19 +1,28 @@
+import argparse
 import contextlib
 import copy
+import inspect
 import io
 import os
-import sys
+import re
 import tempfile
 import unittest
 from argparse import Namespace
+from io import StringIO
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
 import fitsio
 import numpy as np
-import yaml
+import sep
 
-from weightmask.cli import run_pipeline, validate_config, validate_fits_file, validate_input_files
+from weightmask import __version__, cli
+from weightmask import cli as cli_mod
+from weightmask.background import sky_to_mesh
+from weightmask.cli import load_configuration, parse_arguments, run_pipeline, validate_fits_file, validate_input_files
+from weightmask.config import configuration_errors, default_config
+from weightmask.reconstruct_sky import main as reconstruct_sky_main
+from weightmask.reconstruct_sky import parse_args
 
 
 class TestValidateFitsFile(unittest.TestCase):
@@ -49,8 +58,7 @@ class TestValidateFitsFile(unittest.TestCase):
 class TestValidateConfig(unittest.TestCase):
     @staticmethod
     def _canonical_config():
-        path = Path(__file__).resolve().parents[1] / "weightmask.yml"
-        return yaml.safe_load(path.read_text())
+        return default_config()
 
     @staticmethod
     def _replace(config, path, value):
@@ -83,36 +91,36 @@ class TestValidateConfig(unittest.TestCase):
             "confidence_params": {},
             "output_params": {},
         }
-        self.assertTrue(validate_config(valid_config))
+        self.assertEqual(configuration_errors(valid_config), [])
 
     def test_validate_config_missing_sections(self):
         """Test with missing sections. It should print warnings but return True."""
         empty_config = {}
-        self.assertTrue(validate_config(empty_config))
+        self.assertEqual(configuration_errors(empty_config), [])
 
     def test_validate_config_invalid_variance_not_dict(self):
         """Test with an invalid variance section (not a dictionary)."""
         invalid_config = {"variance": "not_a_dict"}
-        self.assertFalse(validate_config(invalid_config))
+        self.assertTrue(configuration_errors(invalid_config))
 
     def test_validate_config_invalid_variance_method(self):
         """Test with an invalid variance method."""
         invalid_config = {"variance": {"method": "invalid_method"}}
-        self.assertFalse(validate_config(invalid_config))
+        self.assertTrue(configuration_errors(invalid_config))
 
     def test_validate_config_valid_variance_methods(self):
         """Test with all valid variance methods."""
         for method in ["theoretical", "rms_map", "empirical_fit"]:
             valid_config = {"variance": {"method": method}}
-            self.assertTrue(validate_config(valid_config))
+            self.assertEqual(configuration_errors(valid_config), [])
 
     def test_validate_config_invalid_streak_method(self):
         invalid_config = {"streak_masking": {"method": "hough"}}
-        self.assertFalse(validate_config(invalid_config))
+        self.assertTrue(configuration_errors(invalid_config))
 
     def test_validate_config_rejects_stale_top_level_background(self):
         invalid_config = {"background": {}, "variance": {"method": "theoretical"}}
-        self.assertFalse(validate_config(invalid_config))
+        self.assertTrue(configuration_errors(invalid_config))
 
     def test_validate_config_rejects_misplaced_flat_keys(self):
         invalid_config = {
@@ -121,7 +129,7 @@ class TestValidateConfig(unittest.TestCase):
                 "local_filter_size": 15,
             }
         }
-        self.assertFalse(validate_config(invalid_config))
+        self.assertTrue(configuration_errors(invalid_config))
 
     def test_every_canonical_leaf_has_declared_type_validation(self):
         config = self._canonical_config()
@@ -139,7 +147,7 @@ class TestValidateConfig(unittest.TestCase):
             else:
                 self.fail(f"No malformed-value fixture for {'.'.join(path)} ({type(value).__name__})")
             with self.subTest(path=".".join(path)):
-                self.assertFalse(validate_config(self._replace(config, path, malformed)))
+                self.assertTrue(configuration_errors(self._replace(config, path, malformed)))
 
     def test_numeric_values_must_be_finite(self):
         config = self._canonical_config()
@@ -147,7 +155,7 @@ class TestValidateConfig(unittest.TestCase):
             if isinstance(value, float):
                 for malformed in (float("nan"), float("inf")):
                     with self.subTest(path=".".join(path), malformed=malformed):
-                        self.assertFalse(validate_config(self._replace(config, path, malformed)))
+                        self.assertTrue(configuration_errors(self._replace(config, path, malformed)))
 
     def test_every_canonical_leaf_is_consumed_by_its_runtime_section(self):
         package = Path(__file__).resolve().parents[1] / "weightmask"
@@ -200,7 +208,7 @@ class TestValidateConfig(unittest.TestCase):
                 target = target[key]
             target["misspelled_setting"] = 1
             with self.subTest(path=".".join(path)):
-                self.assertFalse(validate_config(changed))
+                self.assertTrue(configuration_errors(changed))
 
     def test_rejects_invalid_ranges_and_cross_field_combinations(self):
         cases = [
@@ -226,7 +234,7 @@ class TestValidateConfig(unittest.TestCase):
         config = self._canonical_config()
         for path, value in cases:
             with self.subTest(path=".".join(path), value=value):
-                self.assertFalse(validate_config(self._replace(config, path, value)))
+                self.assertTrue(configuration_errors(self._replace(config, path, value)))
 
         cross_field_cases = [
             (("flat_masking", "local_low_thresh"), 2.0, ("flat_masking", "local_high_thresh"), 1.0),
@@ -267,10 +275,11 @@ class TestValidateConfig(unittest.TestCase):
             changed = self._replace(config, first_path, first_value)
             changed = self._replace(changed, second_path, second_value)
             with self.subTest(first=".".join(first_path), second=".".join(second_path)):
-                self.assertFalse(validate_config(changed))
+                self.assertTrue(configuration_errors(changed))
 
-    def test_background_max_box_default_tracks_explicit_box_size(self):
-        self.assertTrue(validate_config({"sep_background": {"box_size": 2048}}))
+    def test_box_size_above_the_default_cap_must_raise_max_box_size(self):
+        self.assertTrue(configuration_errors({"sep_background": {"box_size": 2048}}))
+        self.assertEqual(configuration_errors({"sep_background": {"box_size": 2048, "max_box_size": 2048}}), [])
 
     def test_iteration_counts_follow_runtime_zero_semantics(self):
         zero_disables = [
@@ -280,7 +289,7 @@ class TestValidateConfig(unittest.TestCase):
         ]
         for config in zero_disables:
             with self.subTest(config=config):
-                self.assertTrue(validate_config(config))
+                self.assertEqual(configuration_errors(config), [])
 
         zero_is_invalid = [
             {"streak_masking": {"sparse_ransac_params": {"max_trials": 0}}},
@@ -288,7 +297,7 @@ class TestValidateConfig(unittest.TestCase):
         ]
         for config in zero_is_invalid:
             with self.subTest(config=config):
-                self.assertFalse(validate_config(config))
+                self.assertTrue(configuration_errors(config))
 
 
 class TestRunPipeline(unittest.TestCase):
@@ -413,74 +422,31 @@ output_params:
             self.assertEqual(result, 1)
 
 
-class TestCLIConfigFallback(unittest.TestCase):
-    @patch("weightmask.cli.validate_fits_file")
-    @patch("os.path.exists")
-    @patch.object(sys, "argv", ["weightmask", "dummy.fits"])
-    def test_missing_default_config(self, mock_exists, mock_validate_fits):
-        def exists_side_effect(path):
-            if path == "dummy.fits":
-                return True
-            return False
-
-        mock_exists.side_effect = exists_side_effect
-        mock_validate_fits.return_value = True
-
-        with patch("builtins.print") as mock_print:
-            result = run_pipeline()
-            self.assertEqual(result, 1)
-            mock_print.assert_any_call("ERROR: Config file not specified and no default found.")
-
-    @patch("weightmask.cli.validate_fits_file")
-    @patch("os.path.exists")
-    @patch("builtins.open")
-    @patch.object(sys, "argv", ["weightmask", "dummy.fits"])
-    def test_first_fallback_config_found(self, mock_open, mock_exists, mock_validate_fits):
-        def exists_side_effect(path):
-            if path == "dummy.fits":
-                return True
-            if path == "weightmask.yml":
-                return True
-            return False
-
-        mock_exists.side_effect = exists_side_effect
-        mock_validate_fits.return_value = True
-        mock_open.side_effect = OSError("Mocked error to stop pipeline")
-
-        with patch("builtins.print") as mock_print:
-            result = run_pipeline()
-            self.assertEqual(result, 1)
-            mock_print.assert_any_call("Using default config file found at: weightmask.yml")
-
-    def test_only_weightmask_yml_is_implicitly_loaded(self):
-        from weightmask.cli import load_configuration
-
+class TestCLIConfigDefaults(unittest.TestCase):
+    def test_no_config_uses_packaged_defaults(self):
         with tempfile.TemporaryDirectory() as tmp, contextlib.chdir(tmp):
-            for name in ("config.yml", ".weightmask.yml"):
-                with self.subTest(name=name):
-                    with open(name, "w") as handle:
-                        handle.write("{}\n")
-                    self.assertIsNone(load_configuration(None))
-                    self.assertIsNotNone(load_configuration(name))
             with open("weightmask.yml", "w") as handle:
-                handle.write("{}\n")
-            self.assertIsNotNone(load_configuration(None))
+                handle.write("cosmic_ray: {niter: 1}\n")
+            self.assertEqual(load_configuration(None), default_config())
+
+    def test_config_file_overrides_packaged_defaults(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "overrides.yml"
+            path.write_text("cosmic_ray: {niter: 1}\n")
+            config = load_configuration(str(path))
+        expected = default_config()
+        expected["cosmic_ray"]["niter"] = 1
+        self.assertEqual(config, expected)
 
 
 class TestCliHelp(unittest.TestCase):
     def test_nproc_is_the_only_worker_option(self):
-        from weightmask.cli import parse_arguments
-
         self.assertEqual(parse_arguments(["in.fits", "--nproc", "4"]).max_workers, 4)
         with self.assertRaises(SystemExit) as cm:
             parse_arguments(["in.fits", "--max-workers", "4"])
         self.assertEqual(cm.exception.code, 2)
 
     def test_weightmask_help_mentions_config(self):
-        from io import StringIO
-
-        from weightmask.cli import parse_arguments
-
         buf = StringIO()
         with patch("sys.stdout", buf):
             with self.assertRaises(SystemExit) as cm:
@@ -498,10 +464,6 @@ class TestCliHelp(unittest.TestCase):
         self.assertNotIn("not bundled", text.lower())
 
     def test_reconstruct_sky_help_mentions_output(self):
-        from io import StringIO
-
-        from weightmask.reconstruct_sky import parse_args
-
         buf = StringIO()
         with patch("sys.stdout", buf):
             with self.assertRaises(SystemExit) as cm:
@@ -517,10 +479,6 @@ class TestCliHelp(unittest.TestCase):
         argparse derives prog from sys.argv[0], so the same install reported
         "cli.py" by module and "weightmask" as the console script.
         """
-        from io import StringIO
-
-        from weightmask import __version__
-        from weightmask.cli import parse_arguments
 
         buf = StringIO()
         with patch("sys.stdout", buf):
@@ -537,11 +495,6 @@ class TestCliHelp(unittest.TestCase):
         dest must be referenced somewhere besides its own declaration, or the
         flag shows in help and silently does nothing.
         """
-        import argparse
-        import inspect
-        import re
-
-        from weightmask import cli
 
         # Spy on the method rather than rebinding argparse.ArgumentParser to a
         # subclass: Python 3.13's argparse calls super(ArgumentParser, self),
@@ -575,11 +528,6 @@ class TestCliHelp(unittest.TestCase):
 
 class TestReconstructSkyCLI(unittest.TestCase):
     def test_reconstruct_sky_roundtrip_fits(self):
-        import sep
-
-        from weightmask.background import sky_to_mesh
-        from weightmask.reconstruct_sky import main as reconstruct_sky_main
-
         rng = np.random.default_rng(1)
         data = (1100.0 + rng.normal(0.0, 5.0, (96, 128))).astype(np.float64)
         sky = sep.Background(data, bw=32, bh=32, fw=3, fh=3).back().astype(np.float32)
@@ -598,8 +546,6 @@ class TestReconstructSkyCLI(unittest.TestCase):
             self.assertLess(float(np.max(np.abs(rec - sky))), 0.05)
 
     def test_reconstruct_sky_missing_output_flag(self):
-        from weightmask.reconstruct_sky import main as reconstruct_sky_main
-
         with self.assertRaises(SystemExit) as cm:
             reconstruct_sky_main(["missing.fits"])
         self.assertEqual(cm.exception.code, 2)
@@ -607,8 +553,6 @@ class TestReconstructSkyCLI(unittest.TestCase):
     def test_reconstruct_sky_is_an_ordinary_science_filename(self):
         with tempfile.TemporaryDirectory() as tmp, contextlib.chdir(tmp):
             fitsio.write("reconstruct-sky", np.full((32, 32), 1000.0, dtype=np.float32), clobber=True)
-            with open("weightmask.yml", "w") as handle:
-                handle.write("{}\n")
             self.assertEqual(run_pipeline(["reconstruct-sky", "-o", "out.weight.fits"]), 0)
             self.assertEqual(fitsio.read("out.weight.fits").shape, (32, 32))
 
@@ -665,7 +609,6 @@ class TestValidateInputFiles(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             sp = os.path.join(tmp, "s.fits")
             fitsio.write(sp, np.full((32, 32), 1000.0, dtype=np.float32), clobber=True)
-            from weightmask import cli as cli_mod
 
             calls = []
             real = cli_mod._cleanup_hdul
@@ -684,7 +627,6 @@ class TestValidateInputFiles(unittest.TestCase):
 
     def test_open_fits_files_closes_the_input_when_the_flat_fails(self):
         """Returning (None, None) used to drop an already-open input handle."""
-        from weightmask import cli as cli_mod
 
         with tempfile.TemporaryDirectory() as tmp:
             sp = os.path.join(tmp, "s.fits")

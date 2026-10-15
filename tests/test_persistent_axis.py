@@ -5,7 +5,7 @@ import weakref
 
 import numpy as np
 
-from weightmask.streaks import _profile_outliers, persistent_axis_mask
+from weightmask.persistence import _profile_outliers, persistent_axis_mask
 
 
 class TestPersistentAxisMask(unittest.TestCase):

@@ -58,8 +58,16 @@ weightmask-reconstruct-sky = "weightmask.reconstruct_sky:main"
 
 [tool.ruff]
 line-length = 120
-extend-exclude = ["benchmarks", ".pixi"]
+# The CANFAR manifest pins this validator's SHA-256, so it must stay byte-identical.
+extend-exclude = [".pixi", "benchmarks/canfar/manifest.py"]
 
 [tool.ruff.lint]
-select = ["E", "F", "W", "I"]
+select = ["E", "F", "W", "I", "PLC0415"]
 ignore = ["E501"]
+
+[tool.ruff.lint.per-file-ignores]
+# Scripts run as files put the repository root on sys.path before importing siblings.
+"benchmarks/*.py" = ["E402"]
+# Shipped alone to CANFAR pods, where the sibling layout differs from the repository's.
+"benchmarks/canfar/plot_trail_cutouts.py" = ["PLC0415"]
+"benchmarks/canfar/process_exposure.py" = ["PLC0415"]

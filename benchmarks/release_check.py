@@ -27,7 +27,6 @@ Usage:
 from __future__ import annotations
 
 import argparse
-import hashlib
 import json
 import os
 import re
@@ -41,16 +40,14 @@ from pathlib import Path
 
 import tomllib
 
-try:
-    from benchmarks.release_evidence import git_commit, read_manifest, sha256, validate_manifest
-except ModuleNotFoundError:
-    from release_evidence import git_commit, read_manifest, sha256, validate_manifest
-
 REPO = Path(__file__).resolve().parents[1]
+sys.path.insert(0, str(REPO))
+
+from benchmarks.release_evidence import git_commit, read_manifest, sha256, validate_manifest
+
 PYPROJECT = REPO / "pyproject.toml"
 VERSION_MODULE = REPO / "weightmask" / "_version.py"
 CHANGELOG = REPO / "CHANGELOG.md"
-ROOT_CONFIG = REPO / "weightmask.yml"
 PACKAGED_CONFIG = REPO / "weightmask" / "weightmask.yml"
 INPUT_MANIFEST = REPO / "benchmarks" / "trail_truth" / "megacam_real_labels.json"
 REQUIRED_METRIC_REVISIONS = ["truth-band-recall-v2", "truth-pixel-recall-v3", "additive-finite-injection-v3"]
@@ -203,12 +200,6 @@ def main(argv=None):
     check(pyproject == version, f"pyproject.toml declares {pyproject}")
     check(module == version, f"weightmask/_version.py declares {module}")
     check(PACKAGED_CONFIG.is_file(), "the canonical configuration is packaged under weightmask/")
-    check(ROOT_CONFIG.is_file(), "the source-tree configuration copy exists")
-    if PACKAGED_CONFIG.is_file() and ROOT_CONFIG.is_file():
-        check(
-            PACKAGED_CONFIG.read_bytes() == ROOT_CONFIG.read_bytes(),
-            f"root and packaged configurations match ({config_sha256(PACKAGED_CONFIG)})",
-        )
     if not args.skip_build:
         installed = run([sys.executable, "-c", "import weightmask; print(weightmask.__version__)"])
         check(
@@ -334,7 +325,9 @@ def main(argv=None):
                 if sdist:
                     with tarfile.open(sdist, "r:gz") as archive:
                         packaged_configs = [
-                            member for member in archive.getmembers() if member.name.endswith("/weightmask/weightmask.yml")
+                            member
+                            for member in archive.getmembers()
+                            if member.name.endswith("/weightmask/weightmask.yml")
                         ]
                         check(len(packaged_configs) == 1, "the sdist contains one canonical configuration resource")
                         if packaged_configs:

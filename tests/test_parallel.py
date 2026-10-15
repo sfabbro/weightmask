@@ -11,6 +11,7 @@ branches decide whether a partial exposure is reported or lost.
 import contextlib
 import io
 import os
+import os as _os
 import tempfile
 import unittest
 from argparse import Namespace
@@ -18,13 +19,15 @@ from unittest.mock import patch
 
 import fitsio
 import numpy as np
-import yaml
 
+import weightmask.mef as mef
+from weightmask.config import default_config
+from weightmask.contract import CONFIDENCE_SEMANTICS_SCALED
 from weightmask.mef import _resolve_max_workers, process_all_hdus
 
 
 def _load_cfg():
-    cfg = yaml.safe_load(open("weightmask.yml"))
+    cfg = default_config()
     cfg["streak_masking"]["enable"] = False
     cfg["output_params"]["output_map_format"] = "weight"
     return cfg
@@ -345,7 +348,6 @@ class TestParallelEquivalence(unittest.TestCase):
         above 1% of the normalisation to 1.0, while the header still claimed
         `normalized_weight_0_to_1`.
         """
-        from weightmask.contract import CONFIDENCE_SEMANTICS_SCALED
 
         shape = (48, 48)
         with tempfile.TemporaryDirectory() as tmp:
@@ -381,8 +383,6 @@ class TestParallelEquivalence(unittest.TestCase):
             self.assertEqual(semantics, CONFIDENCE_SEMANTICS_SCALED)
 
     def test_resolve_workers(self):
-        import os as _os
-
         self.assertEqual(_resolve_max_workers(0, 36), 1)
         self.assertEqual(_resolve_max_workers(1, 36), 1)
         self.assertEqual(_resolve_max_workers(4, 2), 2)
@@ -495,7 +495,6 @@ class TestStreamingFailureContainment(unittest.TestCase):
         ``fail_index`` are made to raise, so the surrounding streaming path is
         the production one. Returns ``(success_count, stdout, paths)``.
         """
-        import weightmask.mef as mef
 
         sp = os.path.join(tmp, f"{tag}.fits")
         fp = os.path.join(tmp, f"{tag}_flat.fits")

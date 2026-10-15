@@ -2,6 +2,7 @@ import re
 from pathlib import Path
 
 import tomllib
+import yaml
 
 REPO = Path(__file__).resolve().parents[1]
 PYPROJECT = tomllib.loads((REPO / "pyproject.toml").read_text())
@@ -10,8 +11,6 @@ LOCK = (REPO / "pixi.lock").read_text()
 
 
 def _workflow_config():
-    import yaml
-
     return yaml.safe_load(WORKFLOW)
 
 

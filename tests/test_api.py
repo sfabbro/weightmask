@@ -1,15 +1,42 @@
 from argparse import Namespace
+from io import StringIO
 from pathlib import Path
+from unittest.mock import patch
 
 import numpy as np
 import pytest
-import yaml
 
 import weightmask
 import weightmask.background as background
 import weightmask.config as config_module
 import weightmask.reconstruct_sky as reconstruct_sky
 import weightmask.torchfits_adapter as torchfits_adapter
+from weightmask.background import parse_sky_mesh_header, reconstruct_sky_from_header, reconstruct_sky_mesh, sky_to_mesh
+from weightmask.cli import determine_output_paths, parse_arguments
+from weightmask.config import (
+    clean_config_dict,
+    configuration_errors,
+    copy_default_config,
+    default_config,
+    default_config_bytes,
+    default_config_path,
+    default_config_resource,
+    default_config_sha256,
+    default_config_text,
+    resolve_config,
+    section_config,
+)
+from weightmask.contract import (
+    INVERSE_VARIANCE_SEMANTICS,
+    MASK_POLARITY,
+    QUALITY_BITS,
+    ArrayHeaderIO,
+    WeightMaskProduct,
+    build_weight_product,
+)
+from weightmask.process import _format_sky_output, process_image
+from weightmask.reconstruct_sky import main, reconstruct_sky_fits
+from weightmask.torchfits_adapter import TorchfitsArrayHeaderIO, TorchfitsUnavailableError, torchfits_available
 
 ROOT = Path(__file__).resolve().parents[1]
 
@@ -19,12 +46,16 @@ def test_root_all_is_exact_and_does_not_grow_with_module_apis():
     assert set(weightmask.__all__) == {"MASK_BITS", "MASK_DTYPE", "QUALITY_BITS", "__version__"}
     assert config_module.__all__ == [
         "clean_config_dict",
+        "configuration_errors",
         "copy_default_config",
+        "default_config",
         "default_config_bytes",
         "default_config_path",
         "default_config_resource",
         "default_config_sha256",
         "default_config_text",
+        "resolve_config",
+        "section_config",
     ]
 
 
@@ -47,37 +78,6 @@ def test_supported_reconstruction_and_adapter_exports_are_explicit():
 
 
 def test_supported_reconstruction_import_paths_are_importable():
-    from weightmask.background import (
-        parse_sky_mesh_header,
-        reconstruct_sky_from_header,
-        reconstruct_sky_mesh,
-        sky_to_mesh,
-    )
-    from weightmask.config import (
-        clean_config_dict,
-        copy_default_config,
-        default_config_bytes,
-        default_config_path,
-        default_config_resource,
-        default_config_sha256,
-        default_config_text,
-    )
-    from weightmask.contract import (
-        INVERSE_VARIANCE_SEMANTICS,
-        MASK_POLARITY,
-        QUALITY_BITS,
-        ArrayHeaderIO,
-        WeightMaskProduct,
-        build_weight_product,
-    )
-    from weightmask.process import process_image, validate_config
-    from weightmask.reconstruct_sky import main, reconstruct_sky_fits
-    from weightmask.torchfits_adapter import (
-        TorchfitsArrayHeaderIO,
-        TorchfitsUnavailableError,
-        torchfits_available,
-    )
-
     assert callable(parse_sky_mesh_header)
     assert callable(reconstruct_sky_from_header)
     assert callable(reconstruct_sky_mesh)
@@ -93,7 +93,9 @@ def test_supported_reconstruction_import_paths_are_importable():
     assert callable(default_config_sha256)
     assert callable(default_config_text)
     assert callable(process_image)
-    assert callable(validate_config)
+    assert callable(configuration_errors)
+    assert callable(resolve_config)
+    assert callable(section_config)
     assert callable(build_weight_product)
     assert WeightMaskProduct is not None
     assert QUALITY_BITS is not None
@@ -132,8 +134,6 @@ def test_usage_docs_define_derived_output_names_and_mesh_fallback():
 
 
 def test_derived_output_paths_follow_the_primary_map_stem(tmp_path):
-    from weightmask.cli import determine_output_paths
-
     cases = (
         ("science.fits", False, None, "science.weight.fits"),
         ("science.fits.fz", True, None, "science.weight.fits.fz"),
@@ -170,11 +170,6 @@ def test_derived_output_paths_follow_the_primary_map_stem(tmp_path):
 
 
 def test_cli_help_describes_the_bundled_config_copy_path():
-    from io import StringIO
-    from unittest.mock import patch
-
-    from weightmask.cli import parse_arguments
-
     output = StringIO()
     with patch("sys.stdout", output), pytest.raises(SystemExit) as raised:
         parse_arguments(["--help"])
@@ -186,8 +181,6 @@ def test_cli_help_describes_the_bundled_config_copy_path():
 
 
 def test_mesh_output_without_sep_geometry_falls_back_to_full_sky():
-    from weightmask.process import _format_sky_output
-
     sky = np.arange(20, dtype=np.float32).reshape(4, 5)
     output, cards = _format_sky_output(sky, {"sky_format": "mesh"}, None)
     np.testing.assert_array_equal(output, sky)
@@ -199,9 +192,7 @@ def test_mesh_output_without_sep_geometry_falls_back_to_full_sky():
     (("sep", True), ("median_filter", False), ("robust_median_fallback", False)),
 )
 def test_sky_format_mesh_is_consistent_for_every_valid_background_method(method, mesh_expected):
-    from weightmask.process import process_image
-
-    config = yaml.safe_load((ROOT / "weightmask.yml").read_text())
+    config = default_config()
     config["sep_background"].update({"method": method, "iterations": 0})
     config["cosmic_ray"].update({"niter": 0})
     config["cosmic_ray"]["faint_cr"]["enable"] = False

@@ -10,8 +10,8 @@ from unittest.mock import patch
 
 import fitsio
 import numpy as np
-import yaml
 
+from weightmask.config import default_config
 from weightmask.contract import QualityBit
 from weightmask.mef import (
     _replica_component_indices,
@@ -20,6 +20,7 @@ from weightmask.mef import (
     process_all_hdus,
     replica_indices,
 )
+from weightmask.streaks import StreakDetection
 
 
 def _column(shape, x):
@@ -183,7 +184,7 @@ class TestChipReplicaOnDisk(unittest.TestCase):
         shape = (48, 48)
 
         def column_streak(data_sub, _rms, _existing, _cfg):
-            return _column(data_sub.shape, data_sub.shape[1] // 2)
+            return StreakDetection(_column(data_sub.shape, data_sub.shape[1] // 2), {})
 
         with tempfile.TemporaryDirectory() as tmp:
             science = os.path.join(tmp, "sci.fits")
@@ -205,7 +206,7 @@ class TestChipReplicaOnDisk(unittest.TestCase):
                 "individual_mask_paths": {},
             }
             args = Namespace(tile_size=32, individual_masks=False, max_workers=1)
-            cfg = yaml.safe_load(open("weightmask.yml"))
+            cfg = default_config()
             cfg["streak_masking"]["enable"] = True
             with patch("weightmask.process.detect_streaks", side_effect=column_streak):
                 with fitsio.FITS(science) as hdul, fitsio.FITS(flat) as hdul_flat:
@@ -236,7 +237,7 @@ class TestChipReplicaOnDisk(unittest.TestCase):
         shape = (48, 48)
 
         def column_streak(data_sub, _rms, _existing, _cfg):
-            return _column(data_sub.shape, data_sub.shape[1] // 2)
+            return StreakDetection(_column(data_sub.shape, data_sub.shape[1] // 2), {})
 
         with tempfile.TemporaryDirectory() as tmp:
             science = os.path.join(tmp, "sci.fits")
@@ -262,7 +263,7 @@ class TestChipReplicaOnDisk(unittest.TestCase):
                 "individual_mask_paths": {},
             }
             args = Namespace(tile_size=32, individual_masks=False, max_workers=1)
-            cfg = yaml.safe_load(open("weightmask.yml"))
+            cfg = default_config()
             cfg["streak_masking"]["enable"] = True
             buf = io.StringIO()
             with contextlib.redirect_stdout(buf):
@@ -287,7 +288,7 @@ class TestChipReplicaOnDisk(unittest.TestCase):
         shape = (48, 48)
 
         def column_streak(data_sub, _rms, _existing, _cfg):
-            return _column(data_sub.shape, data_sub.shape[1] // 2)
+            return StreakDetection(_column(data_sub.shape, data_sub.shape[1] // 2), {})
 
         with tempfile.TemporaryDirectory() as tmp:
             science = os.path.join(tmp, "sci.fits")
@@ -311,7 +312,7 @@ class TestChipReplicaOnDisk(unittest.TestCase):
                 "individual_mask_paths": {},
             }
             args = Namespace(tile_size=32, individual_masks=False, max_workers=1)
-            cfg = yaml.safe_load(open("weightmask.yml"))
+            cfg = default_config()
             cfg["streak_masking"]["enable"] = True
             with patch("weightmask.process.detect_streaks", side_effect=column_streak):
                 with fitsio.FITS(science) as hdul, fitsio.FITS(flat) as hdul_flat:

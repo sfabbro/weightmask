@@ -1,8 +1,18 @@
 import unittest
 
 import numpy as np
+import sep
+from astropy.io import fits
 
-from weightmask.background import estimate_background
+from weightmask.background import (
+    _repair_negative_dips,
+    estimate_background,
+    parse_sky_mesh_header,
+    reconstruct_sky_from_header,
+    reconstruct_sky_mesh,
+    sky_to_mesh,
+)
+from weightmask.process import process_image
 
 
 class TestBackground(unittest.TestCase):
@@ -45,7 +55,8 @@ class TestBackground(unittest.TestCase):
         estimate_background(
             sci_data,
             mask,
-            {"method": "sep", "mask_threshold": 0.8, "_diagnostics": diagnostics},
+            {"method": "sep", "mask_threshold": 0.8},
+            diagnostics,
         )
         self.assertEqual(diagnostics.get("fallback"), "global_sep")
 
@@ -93,9 +104,6 @@ class TestBackground(unittest.TestCase):
 
     def test_big_endian_fits_array_uses_sep_without_fallback(self):
         """astropy.io.fits returns big-endian (>f4) arrays; SEP requires native byte order."""
-        from astropy.io import fits
-
-        from weightmask.process import process_image
 
         rng = np.random.default_rng(7)
         native = (1000.0 + rng.normal(0.0, 5.0, (128, 128))).astype(np.float32)
@@ -105,7 +113,8 @@ class TestBackground(unittest.TestCase):
         bkg_be, rms_be = estimate_background(
             big_endian,
             mask,
-            {"method": "sep", "box_size": 32, "filter_size": 3, "_diagnostics": diag},
+            {"method": "sep", "box_size": 32, "filter_size": 3},
+            diag,
         )
         bkg_ne, rms_ne = estimate_background(
             native,
@@ -130,14 +139,6 @@ class TestBackground(unittest.TestCase):
 class TestSkyMeshRoundtrip(unittest.TestCase):
     def test_sep_back_roundtrip_sub_adu(self):
         """Codec recovers SEP back() to sub-ADU (wrong phase / Keys cubic fails this)."""
-        import sep
-
-        from weightmask.background import (
-            parse_sky_mesh_header,
-            reconstruct_sky_from_header,
-            reconstruct_sky_mesh,
-            sky_to_mesh,
-        )
 
         rng = np.random.default_rng(0)
         data = (1200.0 + rng.normal(0.0, 5.0, (200, 150))).astype(np.float64)
@@ -154,8 +155,6 @@ class TestSkyMeshRoundtrip(unittest.TestCase):
             parse_sky_mesh_header({"SKYH": 10, "SKYW": 10})
 
     def test_mesh_header_requires_complete_consistent_positive_dimensions(self):
-        from weightmask.background import parse_sky_mesh_header
-
         valid = {"SKYMESH": True, "MESHBW": 8, "MESHBH": 8, "SKYH": 32, "SKYW": 24}
         invalid = (
             {key: value for key, value in valid.items() if key != "MESHBH"},
@@ -169,8 +168,6 @@ class TestSkyMeshRoundtrip(unittest.TestCase):
                 parse_sky_mesh_header(header)
 
     def test_mesh_data_requires_rank_finiteness_and_implied_shape(self):
-        from weightmask.background import reconstruct_sky_mesh
-
         invalid = (
             np.ones(16, dtype=np.float32),
             np.ones((4, 4, 1), dtype=np.float32),
@@ -184,8 +181,6 @@ class TestSkyMeshRoundtrip(unittest.TestCase):
                 reconstruct_sky_mesh(mesh, (32, 32), 8)
 
     def test_one_node_mesh_dimensions_roundtrip(self):
-        from weightmask.background import reconstruct_sky_from_header, sky_to_mesh
-
         for shape in ((1, 1), (1, 7), (7, 1)):
             with self.subTest(shape=shape):
                 sky = np.full(shape, 1234.0, dtype=np.float32)
@@ -202,7 +197,6 @@ class TestSkyMeshRoundtrip(unittest.TestCase):
         HDU with box 32 gives a (125, 1) mesh). The reconstruction used to
         return (h, 1), silently writing a wrong-shaped sky FITS product.
         """
-        from weightmask.background import reconstruct_sky_mesh, sky_to_mesh
 
         for shape, box in (((4000, 30), 32), ((4000, 200), 128), ((300, 200), 128)):
             sky = np.full(shape, 1234.0, dtype=np.float32)
@@ -213,9 +207,6 @@ class TestSkyMeshRoundtrip(unittest.TestCase):
 
     def test_megaprime_scale_roundtrip_sub_adu(self):
         """Pin MegaPrime CCD geometry in CI (SEP back -> mesh -> reconstruct)."""
-        import sep
-
-        from weightmask.background import reconstruct_sky_mesh, sky_to_mesh
 
         rng = np.random.default_rng(0)
         h, w, box = 4612, 2048, 128
@@ -237,7 +228,6 @@ class TestSkyMeshRoundtrip(unittest.TestCase):
 
     def test_gradient_roundtrip_uses_clipped_node_abscissae(self):
         """Encode and decode must share clipped (k+0.5)*box nodes."""
-        from weightmask.background import reconstruct_sky_mesh, sky_to_mesh
 
         h, w, box = 300, 200, 128
         sky = (1200.0 + 0.5 * np.arange(w) + 0.3 * np.arange(h)[:, None]).astype(np.float32)
@@ -248,8 +238,6 @@ class TestSkyMeshRoundtrip(unittest.TestCase):
         self.assertLess(float(diff.max()), 0.5)
 
     def test_diagnostics_records_actual_sep_box(self):
-        from weightmask.background import estimate_background
-
         rng = np.random.default_rng(0)
         data = (100.0 + rng.normal(0.0, 1.0, (128, 128))).astype(np.float32)
         mask = np.zeros((128, 128), dtype=bool)
@@ -257,33 +245,31 @@ class TestSkyMeshRoundtrip(unittest.TestCase):
         estimate_background(
             data,
             mask,
-            {"box_size": 32, "auto_box_scaling": False, "filter_size": 3, "_diagnostics": diag},
+            {"box_size": 32, "auto_box_scaling": False, "filter_size": 3},
+            diag,
         )
         self.assertEqual(diag.get("box_size"), 32)
         diag2 = {}
         estimate_background(
             data,
             np.ones((128, 128), dtype=bool),
-            {"mask_threshold": 0.5, "_diagnostics": diag2},
+            {"mask_threshold": 0.5},
+            diag2,
         )
         self.assertNotIn("box_size", diag2)
 
 
 class TestDipRepair(unittest.TestCase):
     def test_unmeasured_rms_dip_is_not_repaired(self):
-        from weightmask.background import _repair_negative_dips
-
         data = np.full((20, 20), 1000.0, dtype=np.float32)
         sky = data.copy()
         sky[10, 10] = -100.0
         rms = np.full_like(sky, 10.0)
         rms[10, 10] = np.inf
-        out = _repair_negative_dips(sky, data, rms, np.zeros_like(sky, dtype=bool), {})
+        out = _repair_negative_dips(sky, data, rms, np.zeros_like(sky, dtype=bool), 5.0, 0.05)
         self.assertEqual(float(out[10, 10]), -100.0)
 
     def test_overshoot_filled_blanks_untouched(self):
-        from weightmask.background import _repair_negative_dips
-
         rng = np.random.default_rng(0)
         sky = np.full((200, 200), 1000.0)
         data = (1000 + 10 * rng.standard_normal((200, 200))).astype(np.float32)
@@ -294,29 +280,16 @@ class TestDipRepair(unittest.TestCase):
         data[blank] = 0.0
         sky[blank] = -5.0  # dark blank: filling with 1000 would be catastrophic
         rms = np.full((200, 200), 10.0, dtype=np.float32)
-        out = _repair_negative_dips(sky, data, rms, np.zeros((200, 200), bool), {})
+        out = _repair_negative_dips(sky, data, rms, np.zeros((200, 200), bool), 5.0, 0.05)
         self.assertTrue(bool((out[dip] > 900).all()))  # overshoot filled from neighbor sky
         self.assertTrue(bool((out[blank] == -5.0).all()))  # blanks never touched
 
-    def test_cap_and_disable(self):
-        from weightmask.background import _repair_negative_dips
-
+    def test_over_the_cap_the_map_is_untouched(self):
         cap_sky = np.full((50, 50), -10.0)
         cap_data = np.full((50, 50), 1000.0, dtype=np.float32)
         cap_rms = np.full((50, 50), 10.0, dtype=np.float32)
-        out = _repair_negative_dips(cap_sky, cap_data, cap_rms, np.zeros((50, 50), bool), {})
-        self.assertTrue(bool((out == -10.0).all()))  # over cap: untouched
-        tiny_sky = np.full((10, 10), -10.0)
-        tiny_data = np.full((10, 10), 1000.0, dtype=np.float32)
-        tiny_rms = np.full((10, 10), 10.0, dtype=np.float32)
-        out2 = _repair_negative_dips(
-            tiny_sky,
-            tiny_data,
-            tiny_rms,
-            np.zeros((10, 10), bool),
-            {"dip_repair_enable": False},
-        )
-        self.assertTrue(bool((out2 == -10.0).all()))  # disabled: untouched
+        out = _repair_negative_dips(cap_sky, cap_data, cap_rms, np.zeros((50, 50), bool), 5.0, 0.05)
+        self.assertTrue(bool((out == -10.0).all()))
 
 
 if __name__ == "__main__":

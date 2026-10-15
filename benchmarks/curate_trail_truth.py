@@ -87,11 +87,14 @@ import time
 from collections import Counter
 from concurrent.futures import ProcessPoolExecutor
 
+import fitsio
 import numpy as np
+import yaml
+from scipy import ndimage as ndi
 
-MODULE_DIR = os.path.dirname(os.path.abspath(__file__))
-if MODULE_DIR not in sys.path:
-    sys.path.insert(0, MODULE_DIR)
+from weightmask.background import estimate_background
+from weightmask.persistence import persistent_axis_mask as _persistent_axis_mask
+from weightmask.streaks import _detect_streaks_houghpeaks, detect_streaks
 
 #: MegaCam's 0.185"/pixel gives 5.194e-05 deg/pixel (the header CD value).  Used
 #: only to turn mosaic tolerances into pixels a reviewer can sanity-check.
@@ -100,7 +103,7 @@ DEG_PER_MOSAIC_PX = 5.194e-05
 DEFAULT_DATA_ROOT = os.path.join("benchmark_data", "megacam", "perf")
 DEFAULT_OUT = os.path.join("benchmarks", "trail_truth", "megacam_real_labels.json")
 DEFAULT_REVIEW_SHEET = os.path.join("benchmarks", "trail_truth", "megacam_real_labels.review.md")
-DEFAULT_CONFIG = "weightmask.yml"
+DEFAULT_CONFIG = "weightmask/weightmask.yml"
 SCHEMA = "weightmask.trail_truth.v1"
 
 
@@ -356,7 +359,6 @@ def _measure_candidate(mask, candidate_normal, candidate_offset, cx, cy, corrido
 
 def _components_from_mask(mask, min_px, max_components, min_elongation=1.0):
     """Measure every substantial, sufficiently elongated connected component."""
-    from scipy import ndimage as ndi
 
     labeled, count = ndi.label(mask)
     if count == 0:
@@ -443,11 +445,6 @@ def _dedupe_candidates(candidates, tol_px, tol_deg):
 
 def mine_hdu(job):
     """Mine one (exposure, HDU): returns a serialisable candidate record."""
-    import fitsio
-    import yaml
-
-    from weightmask.background import estimate_background
-    from weightmask.streaks import _detect_streaks_houghpeaks, detect_streaks
 
     path, hdu, config_path, corridor_px, quiet, proposers, component_params = job
     (
@@ -507,7 +504,7 @@ def mine_hdu(job):
                 }
                 candidates.append(measured)
         if "pipeline" in proposers:
-            pipeline_mask = detect_streaks(data_sub, rms, existing, streak_cfg)
+            pipeline_mask = detect_streaks(data_sub, rms, existing, streak_cfg).mask
             for measured in _components_from_mask(pipeline_mask, min_component_px, max_components):
                 measured["proposed_by"] = ["pipeline"]
                 measured["detector"] = {}
@@ -675,7 +672,6 @@ def persistent_axis_mask(frames, min_other=2, sigma=3.0):
     Thin wrapper so the curator and the pipeline share one rule. The frames
     passed here are the other epochs, not the exposure being labelled.
     """
-    from weightmask.streaks import persistent_axis_mask as _persistent_axis_mask
 
     return _persistent_axis_mask(frames, min_other=min_other, sigma=sigma)
 
@@ -855,7 +851,6 @@ def curate(grouped, args):
 # --------------------------------------------------------------------------- #
 def exposure_inventory(data_root, exposures):
     """Read every exposure's identity and HDU list without loading any pixels."""
-    import fitsio
 
     inventory = {}
     missing = []
@@ -1201,11 +1196,15 @@ def main(argv=None):
     review_fixture = {**fixture, "entries": entries}
     if args.entries == "labelled":
         fixture["summary"] = {
-            **summary, "n_entries": len(committed),
+            **summary,
+            "n_entries": len(committed),
             "by_label": {**summary["by_label"], "uncertain": 0},
             "by_proposer": dict(Counter("+".join(entry["proposed_by"]) or "unknown" for entry in committed)),
-            "by_exposure": {name: {**counts, "uncertain": 0} for name, counts in summary["by_exposure"].items()
-                            if counts["trail"] + counts["artefact"]},
+            "by_exposure": {
+                name: {**counts, "uncertain": 0}
+                for name, counts in summary["by_exposure"].items()
+                if counts["trail"] + counts["artefact"]
+            },
         }
 
     os.makedirs(os.path.dirname(os.path.abspath(args.out)), exist_ok=True)

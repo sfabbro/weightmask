@@ -1,18 +1,16 @@
 import os
 import sys
 
-import yaml
 from astropy.io import fits
 
 REPO_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, REPO_ROOT)  # noqa: E402
-from weightmask.config import clean_config_dict  # noqa: E402
+from weightmask.config import default_config  # noqa: E402
 from weightmask.process import process_image  # noqa: E402
 
 
 def evaluate_real_mef():
     fits_path = os.path.join(REPO_ROOT, "benchmark_data", "megacam", "megacam_streak_case.fits")
-    config_path = os.path.join(REPO_ROOT, "weightmask.yml")
 
     if not os.path.exists(fits_path):
         print(f"File not found: {fits_path}")
@@ -20,8 +18,7 @@ def evaluate_real_mef():
 
     print(f"Loading {fits_path} ...")
 
-    with open(config_path, "r") as f:
-        config = clean_config_dict(yaml.safe_load(f))
+    config = default_config()
 
     failed = False
     with fits.open(fits_path) as hdul:

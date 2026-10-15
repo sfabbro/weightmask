@@ -11,7 +11,10 @@ from scipy.ndimage import binary_dilation
 from benchmarks import cr_faint_curves, perf_megacam, streak_inject
 from tests import simulate_and_test as simulation
 from tests.benchmarks import download_data, run
+from weightmask.config import default_config_resource
 from weightmask.contract import INVERSE_VARIANCE_SEMANTICS, MASK_POLARITY
+from weightmask.objects import ObjectDetection
+from weightmask.streaks import StreakDetection
 
 
 def test_streak_flux_controls_injected_signal():
@@ -115,13 +118,15 @@ def test_synthetic_streak_truth_only_marks_injected_support():
 
 def test_synthetic_object_recall_excludes_prior_masks():
     args = SimpleNamespace(size=384, noise=5.0, stars=20, streak=50.0, mask_pct=0.0, regime_type="normal", seed=11)
-    metrics = simulation.run_masking_test("weightmask.yml", args, save_fits=False)
+    metrics = simulation.run_masking_test(str(default_config_resource()), args, save_fits=False)
     assert metrics["Objects"][1] >= 0.90
 
 
 def test_complex_component_labels_record_upstream_object_exclusion():
     args = SimpleNamespace(size=256, noise=1.0, stars=0, streak=80.0, mask_pct=0.0, regime_type="complex", seed=7)
-    _, products = simulation.run_masking_test("weightmask.yml", args, save_fits=False, return_products=True)
+    _, products = simulation.run_masking_test(
+        str(default_config_resource()), args, save_fits=False, return_products=True
+    )
     component = products["ground_truth"]["streak_components"] == 1
     exclusion = products["streak_exclusion_mask"]
     prediction = products["masks"]["streaks"]
@@ -155,8 +160,8 @@ def test_simulated_read_noise_excludes_poisson_noise(tmp_path, monkeypatch):
         patch.object(simulation, "detect_saturated_pixels", return_value=(65535, "test", mask)),
         patch.object(simulation, "grow_bleed_trails", return_value=mask),
         patch.object(simulation, "detect_cosmic_rays", return_value=mask) as cosmics,
-        patch.object(simulation, "detect_objects", return_value=mask),
-        patch.object(simulation, "detect_streaks", return_value=mask),
+        patch.object(simulation, "detect_objects", return_value=ObjectDetection(mask, mask)),
+        patch.object(simulation, "detect_streaks", return_value=StreakDetection(mask, {})),
         patch.object(simulation, "estimate_background", return_value=(science, rms)),
     ):
         simulation.run_masking_test(str(config), args, save_fits=False)

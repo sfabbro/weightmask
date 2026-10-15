@@ -14,6 +14,7 @@ restart to correct it - see review notes).
 """
 
 import numpy as np
+from scipy.ndimage import label
 
 
 def finite_robust_rms(rms):
@@ -34,10 +35,10 @@ def finite_robust_rms(rms):
     return center
 
 
-def poloka_satellite_mask(data, sky_map, sigma, existing_mask=None, sat_mask=None,
-                          nsigma=1.0, min_elong=2.0, min_axis_frac=0.02):
+def poloka_satellite_mask(
+    data, sky_map, sigma, existing_mask=None, sat_mask=None, nsigma=1.0, min_elong=2.0, min_axis_frac=0.02
+):
     """Return (bool mask, n_tracks, details). Mirrors ClusterList/Cut/Mask."""
-    from scipy.ndimage import label
 
     img = np.asarray(data, dtype=np.float64)
     if np.ndim(sky_map):

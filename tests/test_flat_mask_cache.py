@@ -16,6 +16,8 @@ from unittest import mock
 import numpy as np
 
 from weightmask import bad
+from weightmask.config import section_config
+from weightmask.process import _effective_tile_size
 
 
 def _flat(shape=(64, 96), seed=1):
@@ -43,9 +45,9 @@ class TestFlatBadMaskCache(unittest.TestCase):
             "flat_path": self.flat_path,
             "hdu_index": 3,
             "shape": (64, 96),
-            "tile_size": 1024,
         }
         options.update(overrides)
+        options["flat_cfg"] = section_config("flat_masking", options["flat_cfg"])
         return bad.flat_bad_mask_cache_file(**options)
 
     def test_cached_mask_equals_direct_computation(self):
@@ -58,7 +60,6 @@ class TestFlatBadMaskCache(unittest.TestCase):
         base = self._cache_file()
         self.assertEqual(base, self._cache_file())
         self.assertNotEqual(base, self._cache_file(hdu_index=4))
-        self.assertEqual(base, self._cache_file(tile_size=512))
         self.assertNotEqual(base, self._cache_file(shape=(64, 97)))
         self.assertNotEqual(base, self._cache_file(flat_cfg={**self.cfg, "local_low_thresh": 0.6}))
         self.assertIsNone(self._cache_file(flat_path=None))
@@ -162,8 +163,6 @@ class TestFlatBadMaskCache(unittest.TestCase):
 
 class TestEffectiveTileSize(unittest.TestCase):
     def test_requested_size_caps_the_tiles(self):
-        from weightmask.process import _effective_tile_size
-
         for size in (16, 128, 1024):
             self.assertEqual(_effective_tile_size(size, (4644, 2112)), size)
         self.assertEqual(_effective_tile_size(1024, (32, 32)), 16)

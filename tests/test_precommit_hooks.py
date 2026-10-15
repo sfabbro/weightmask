@@ -10,7 +10,10 @@ through ``benchmarks/run_with_pixi.sh`` so a push from a shell without pixi on
 its PATH yields an install hint instead of a bare exit 127.
 """
 
+import os
 import re
+import subprocess
+import tempfile
 import unittest
 from pathlib import Path
 
@@ -119,9 +122,6 @@ class TestPrePushHooks(unittest.TestCase):
 
     def test_the_pixi_wrapper_is_executable_and_handles_missing_home(self):
         self.assertTrue(WRAPPER.exists(), "the wrapper script must exist at its hook entry path")
-        import os
-        import subprocess
-        import tempfile
 
         self.assertTrue(os.access(WRAPPER, os.X_OK), "the wrapper must be executable to be usable from a hook")
         # Neither PATH nor HOME need to be visible for a clean error, not a
