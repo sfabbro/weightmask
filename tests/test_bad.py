@@ -323,7 +323,7 @@ class TestBadPixels(unittest.TestCase):
                             Namespace(max_workers=1),
                             hdul_dark=dark_hdul,
                         )
-                actual = process.call_args.kwargs["precomputed_bad_mask"]
+                actual = process.call_args.kwargs["extra_bad_mask"]
                 expected = np.zeros(image.shape, dtype=bool)
                 expected[5, 5] = hot
                 np.testing.assert_array_equal(actual, expected)

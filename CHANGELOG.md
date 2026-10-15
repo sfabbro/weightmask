@@ -1,6 +1,15 @@
 # Changelog
 
-## 0.2.1 (unreleased)
+## Unreleased
+
+### Fixed
+
+- Supplying `--dark_image` no longer drops the flat-field bad-pixel mask. The
+  dark's hot pixels (and the dead-CCD veto) used to replace the flat mask
+  instead of adding to it, so every flat defect lost its BAD flag and kept full
+  weight.
+
+## 0.2.1 - 2026-10-14
 
 Correctness, I/O safety, and release validation fixes. Masks, skies, weights,
 and confidence maps can change from 0.2.0.

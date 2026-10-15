@@ -41,7 +41,7 @@ def process_hdu(
     tile_size: int = 1024,
     flat_path: Optional[str] = None,
     hdu_badpix=None,
-    precomputed_bad_mask: Optional[np.ndarray] = None,
+    extra_bad_mask: Optional[np.ndarray] = None,
     detector_prior: Optional[np.ndarray] = None,
 ) -> Tuple[
     Optional[np.ndarray],
@@ -51,7 +51,11 @@ def process_hdu(
     Optional[np.ndarray],
     Optional[dict],
 ]:
-    """Processes a single Science HDU to generate all mask and map products."""
+    """Processes a single Science HDU to generate all mask and map products.
+
+    ``extra_bad_mask`` (dark hot pixels, dead-CCD veto) is added to the flat
+    and keep-map bad pixels; it never replaces the flat bad-pixel mask.
+    """
     hdu_name = getattr(hdu_sci, "name", f"HDU{hdu_index}") if hasattr(hdu_sci, "name") else f"HDU{hdu_index}"
     print(f"\n--- Processing HDU {hdu_index} ({hdu_name}) ---")
 
@@ -73,9 +77,7 @@ def process_hdu(
             return None, None, None, None, None, None
 
     bad_mask = None
-    if precomputed_bad_mask is not None:
-        bad_mask = precomputed_bad_mask
-    elif flat_data_full is not None:
+    if flat_data_full is not None:
         eff = _effective_tile_size(tile_size, sci_data_full.shape)
         bad_mask = compute_flat_bad_mask_cached(
             flat_data_full,
@@ -104,6 +106,9 @@ def process_hdu(
         except (OSError, fitsio.FITSFormatError, TypeError, ValueError) as e:
             print(f"Skipping HDU: Cannot read provided keep-map: {e}")
             return None, None, None, None, None, None
+
+    if extra_bad_mask is not None:
+        badpix_mask = extra_bad_mask if badpix_mask is None else badpix_mask | extra_bad_mask
 
     return process_image(
         sci_data_full,
@@ -1221,8 +1226,8 @@ def _process_all_hdus_to_paths(
                 except Exception as e:
                     print(f"    WARNING: Failed to read flat for HDU {i}: {e}")
         # Tactic D: medians stay sequential (cheap reads for the dead-CCD
-        # veto); the 15x15 mask medians move into the ThreadPoolExecutor
-        # workers via the precomputed_bad_mask miss path in _compute_one.
+        # veto); the 15x15 flat-mask medians run in the ThreadPoolExecutor
+        # workers (process_hdu).
         _veto_dead_ccd_hdus(flat_bad_masks, flat_meds, flat_cfg, flat_shapes=flat_shapes)
         print(f"  Flat medians ready for {len(flat_meds)} HDUs ({len(flat_bad_masks)} vetoed dead)")
     conf_scope = config.get("confidence_params", {}).get("normalize_scope", "per_hdu")
@@ -1255,7 +1260,7 @@ def _process_all_hdus_to_paths(
                 tile_size=tile_size,
                 flat_path=flat_path,
                 hdu_badpix=hdu_badpix_obj,
-                precomputed_bad_mask=pre2,
+                extra_bad_mask=pre2,
                 detector_prior=prior,
             )
             return (i, result, hdu_header_raw, hdu_name)
