@@ -134,7 +134,7 @@ flat convention are selected in `variance` (see [algorithms.md](algorithms.md)).
 Missing provenance is allowed; malformed or truncated provenance warns and
 reports an unknown producer.
 `CONTRACT_VERSION` (`"1.0"`) is the array-schema version; the package version
-is `weightmask.__version__` (`1.2.2`).
+is `weightmask.__version__` (`0.3.0`).
 
 `ArrayHeaderIO` is an optional read/write protocol at
 `weightmask.contract.ArrayHeaderIO`. The optional adapter is exposed at
