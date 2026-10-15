@@ -60,16 +60,16 @@ class TestCheckAndFixEdgeArtifacts(unittest.TestCase):
     def test_a_small_image_is_returned_untouched(self):
         # h or w <= 2 * edge_width (100) means there is no interior to compare.
         bkg_map = np.full((50, 50), 10.0, dtype=np.float32)
-        self.assertIs(_check_and_fix_edge_artifacts(bkg_map, (50, 50)), bkg_map)
+        self.assertIs(_check_and_fix_edge_artifacts(bkg_map, (50, 50), 50.0), bkg_map)
 
     def test_a_clean_image_is_not_smoothed(self):
         bkg_map = np.full((200, 200), 10.0, dtype=np.float32)
-        self.assertIs(_check_and_fix_edge_artifacts(bkg_map, (200, 200)), bkg_map)
+        self.assertIs(_check_and_fix_edge_artifacts(bkg_map, (200, 200), 50.0), bkg_map)
 
     def test_a_bright_edge_is_smoothed(self):
         bkg_map = np.full((200, 200), 10.0, dtype=np.float32)
         bkg_map[:, -50:] = 500.0  # a full-height artefact in the right edge band
-        fixed = _check_and_fix_edge_artifacts(bkg_map, (200, 200))
+        fixed = _check_and_fix_edge_artifacts(bkg_map, (200, 200), 50.0)
         self.assertIsNot(fixed, bkg_map, "the artefact should trigger smoothing")
         self.assertEqual(fixed.shape, bkg_map.shape)
         # The hard step at the band boundary is blurred across it.
@@ -80,7 +80,7 @@ class TestCheckAndFixEdgeArtifacts(unittest.TestCase):
     def test_a_threshold_above_the_edge_difference_leaves_the_map_alone(self):
         bkg_map = np.full((200, 200), 10.0, dtype=np.float32)
         bkg_map[:, -50:] = 500.0
-        fixed = _check_and_fix_edge_artifacts(bkg_map, (200, 200), config={"edge_artifact_thresh": 1.0e9})
+        fixed = _check_and_fix_edge_artifacts(bkg_map, (200, 200), 1.0e9)
         self.assertIs(fixed, bkg_map)
 
 
@@ -93,7 +93,7 @@ class TestEstimateSepTiered(unittest.TestCase):
     def test_it_tracks_a_smooth_gradient_better_than_a_constant(self):
         data = self._gradient()
         mask = np.zeros(data.shape, dtype=bool)
-        bkg_map, rms_map, box_used = _estimate_sep_tiered(data, mask, 64, 3, 512)
+        bkg_map, rms_map, box_used = _estimate_sep_tiered(data, mask, 64, 3, 512, 50.0)
         self.assertIsNotNone(bkg_map)
         self.assertEqual(box_used, 64, "the first box should succeed")
         self.assertEqual(bkg_map.shape, data.shape)
@@ -106,13 +106,13 @@ class TestEstimateSepTiered(unittest.TestCase):
     def test_a_non_contiguous_input_is_accepted(self):
         data = np.asfortranarray(self._gradient((256, 256)))
         self.assertFalse(data.flags["C_CONTIGUOUS"])
-        bkg_map, _rms_map, box_used = _estimate_sep_tiered(data, None, 64, 3, 512)
+        bkg_map, _rms_map, box_used = _estimate_sep_tiered(data, None, 64, 3, 512, 50.0)
         self.assertIsNotNone(bkg_map)
         self.assertEqual(box_used, 64)
 
     def test_a_none_mask_is_accepted(self):
         data = self._gradient((128, 128))
-        bkg_map, rms_map, box_used = _estimate_sep_tiered(data, None, 64, 3, 512)
+        bkg_map, rms_map, box_used = _estimate_sep_tiered(data, None, 64, 3, 512, 50.0)
         self.assertIsNotNone(bkg_map)
         self.assertIsNotNone(rms_map)
         self.assertEqual(box_used, 64)
@@ -122,7 +122,7 @@ class TestEstimateSepTiered(unittest.TestCase):
         mask = np.zeros(data.shape, dtype=bool)
         # The retry loop is `while current_box <= max_box_size`; a first box
         # already above the ceiling never executes.
-        self.assertEqual(_estimate_sep_tiered(data, mask, 256, 3, 128), (None, None, None))
+        self.assertEqual(_estimate_sep_tiered(data, mask, 256, 3, 128, 50.0), (None, None, None))
 
 
 class TestEstimateRobustMedian(unittest.TestCase):
@@ -130,7 +130,7 @@ class TestEstimateRobustMedian(unittest.TestCase):
         rng = np.random.default_rng(0)
         data = (100.0 + rng.normal(0.0, 2.0, (128, 128))).astype(np.float32)
         mask = np.zeros(data.shape, dtype=bool)
-        bkg_map, rms_map = _estimate_robust_median(data, mask, "robust_median_fallback", {})
+        bkg_map, rms_map = _estimate_robust_median(data, mask, "robust_median_fallback", 0)
         self.assertIsNotNone(bkg_map)
         self.assertEqual(bkg_map.shape, data.shape)
         self.assertAlmostEqual(float(np.median(bkg_map)), 100.0, delta=1.0)
@@ -142,7 +142,7 @@ class TestEstimateRobustMedian(unittest.TestCase):
         data = (100.0 + rng.normal(0.0, 1.0, (200, 200))).astype(np.float32)
         data[50:60, 50:60] = 5000.0
         mask = np.zeros(data.shape, dtype=bool)
-        bkg_map, _rms_map = _estimate_robust_median(data, mask, "robust_median_fallback", {})
+        bkg_map, _rms_map = _estimate_robust_median(data, mask, "robust_median_fallback", 0)
         level = float(np.median(bkg_map))
         self.assertAlmostEqual(level, 100.0, delta=1.0)
         self.assertGreater(abs(level - float(np.mean(data))), 5.0, "the mean is dragged by the bright block")
@@ -151,7 +151,7 @@ class TestEstimateRobustMedian(unittest.TestCase):
         rng = np.random.default_rng(2)
         data = (50.0 + rng.normal(0.0, 3.0, (128, 128))).astype(np.float32)
         mask = np.zeros(data.shape, dtype=bool)
-        _bkg_map, rms_map = _estimate_robust_median(data, mask, "robust_median_fallback", {})
+        _bkg_map, rms_map = _estimate_robust_median(data, mask, "robust_median_fallback", 0)
         self.assertTrue(np.all(np.isfinite(rms_map)))
         self.assertGreater(float(np.median(rms_map)), 0.0)
         self.assertLess(float(np.median(rms_map)), 12.0)
@@ -161,7 +161,7 @@ class TestEstimateRobustMedian(unittest.TestCase):
         data = (200.0 + rng.normal(0.0, 1.0, (128, 128))).astype(np.float32)
         data[60:68, 60:68] += 3000.0  # a compact bright blob
         mask = np.zeros(data.shape, dtype=bool)
-        bkg_map, rms_map = _estimate_robust_median(data, mask, "median_filter", {"median_kernel_size": 15})
+        bkg_map, rms_map = _estimate_robust_median(data, mask, "median_filter", 15)
         self.assertIsNotNone(bkg_map)
         self.assertEqual(bkg_map.shape, data.shape)
         # The median filter does not follow the blob.
@@ -171,7 +171,7 @@ class TestEstimateRobustMedian(unittest.TestCase):
     def test_a_fully_masked_median_filter_returns_no_background(self):
         data = np.full((64, 64), 10.0, dtype=np.float32)
         mask = np.ones(data.shape, dtype=bool)
-        self.assertEqual(_estimate_robust_median(data, mask, "median_filter", {"median_kernel_size": 15}), (None, None))
+        self.assertEqual(_estimate_robust_median(data, mask, "median_filter", 15), (None, None))
 
     def test_non_finite_pixels_do_not_enter_the_median_filter(self):
         rng = np.random.default_rng(4)
@@ -179,7 +179,7 @@ class TestEstimateRobustMedian(unittest.TestCase):
         data[0:10, 0:10] = np.nan
         data[10:20, 0:10] = np.inf
         mask = np.zeros(data.shape, dtype=bool)
-        bkg_map, _rms_map = _estimate_robust_median(data, mask, "median_filter", {"median_kernel_size": 15})
+        bkg_map, _rms_map = _estimate_robust_median(data, mask, "median_filter", 15)
         self.assertIsNotNone(bkg_map)
         self.assertTrue(np.all(np.isfinite(bkg_map)))
         self.assertAlmostEqual(float(np.median(bkg_map)), 75.0, delta=2.0)
@@ -189,12 +189,12 @@ class TestEstimateSmoothSurface(unittest.TestCase):
     def test_too_few_valid_pixels_returns_no_background(self):
         small = np.full((9, 9), 10.0, dtype=np.float32)
         mask = np.zeros(small.shape, dtype=bool)
-        self.assertEqual(_estimate_smooth_surface(small, mask, {}), (None, None))
+        self.assertEqual(_estimate_smooth_surface(small, mask), (None, None))
 
     def test_an_all_invalid_image_returns_no_background(self):
         data = np.full((64, 64), 10.0, dtype=np.float32)
         mask = np.ones(data.shape, dtype=bool)
-        self.assertEqual(_estimate_smooth_surface(data, mask, {}), (None, None))
+        self.assertEqual(_estimate_smooth_surface(data, mask), (None, None))
 
     def test_it_fits_a_linear_surface(self):
         rng = np.random.default_rng(5)
@@ -202,7 +202,7 @@ class TestEstimateSmoothSurface(unittest.TestCase):
         plane = 1000.0 + 3.0 * xx - 2.0 * yy
         data = (plane + rng.normal(0.0, 1.5, plane.shape)).astype(np.float32)
         mask = np.zeros(data.shape, dtype=bool)
-        bkg_map, rms_map = _estimate_smooth_surface(data, mask, {})
+        bkg_map, rms_map = _estimate_smooth_surface(data, mask)
         self.assertIsNotNone(bkg_map)
         self.assertEqual(bkg_map.shape, data.shape)
         # The quadratic design contains the plane exactly.
@@ -223,7 +223,7 @@ class TestEstimateSmoothSurface(unittest.TestCase):
         data[40:50, 40:50] = 1.0e6
         mask[40:50, 40:50] = True
         data[50:58, 0:8] = np.nan
-        bkg_map, _rms_map = _estimate_smooth_surface(data, mask, {})
+        bkg_map, _rms_map = _estimate_smooth_surface(data, mask)
         self.assertIsNotNone(bkg_map)
         self.assertTrue(np.all(np.isfinite(bkg_map)))
         self.assertLess(float(np.median(np.abs(bkg_map - plane))), 1.5)
@@ -235,7 +235,7 @@ class TestEstimateSmoothSurface(unittest.TestCase):
         data = (plane + rng.normal(0.0, 1.0, plane.shape)).astype(np.float32)
         data[:10, :10] = np.nan
         mask = np.zeros(data.shape, dtype=bool)
-        bkg_map, _rms_map = _estimate_smooth_surface(data, mask, {})
+        bkg_map, _rms_map = _estimate_smooth_surface(data, mask)
         self.assertIsNotNone(bkg_map)
         self.assertTrue(np.all(np.isfinite(bkg_map)))
         self.assertLess(float(np.median(np.abs(bkg_map - plane))), 1.5)

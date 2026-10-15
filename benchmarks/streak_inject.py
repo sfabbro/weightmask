@@ -14,7 +14,7 @@ The injection and scoring helpers are importable, which is what
 Usage:
     pixi run python benchmarks/streak_inject.py <exposure.fits.fz> [--hdu N]
         [--seeds 3] [--out results.tsv]
-        [--exposure-id NAME] [--mode auto_ground] [--set key=value ...]
+        [--exposure-id NAME] [--set key=value ...]
         [--quick] [--no-cache]
 
 Detector inputs are captured from the ``process_image`` streak stage, so the
@@ -31,7 +31,17 @@ import sys
 import time
 from pathlib import Path
 
+import fitsio
 import numpy as np
+from scipy.ndimage import binary_dilation, distance_transform_edt
+
+from weightmask.config import clean_config_dict, default_config
+from weightmask.process import header_gain_read_noise
+from weightmask.streaks import detect_streaks
+
+sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+
+from benchmarks.production_inputs import capture_detector_inputs
 
 SOURCE_DIR = Path(__file__).resolve().parents[1] / "weightmask"
 
@@ -298,7 +308,6 @@ def trail_recall(mask, body, dilation=5, line_half_width=2.0):
     of 0.96 px and an along-trail span of 121% of the truth -- i.e. found dead
     centre and slightly long, yet scored as two-thirds recovered.
     """
-    from scipy.ndimage import binary_dilation, distance_transform_edt
 
     n_px = int(np.count_nonzero(body))
     if n_px == 0 or not np.any(mask):
@@ -313,7 +322,6 @@ def trail_recall(mask, body, dilation=5, line_half_width=2.0):
 
 def score_mask(mask, baseline, truth, dilation=5):
     """Novel-pixel false positives: exact, and outside a tolerance ring of truth."""
-    from scipy.ndimage import binary_dilation
 
     novel = mask & ~baseline
     near = binary_dilation(truth, iterations=dilation)
@@ -335,7 +343,6 @@ def apply_overrides(config, pairs):
     production config validator then rejected -- a confusing way to learn that an
     override silently did nothing.
     """
-    from weightmask.config import clean_config_dict
 
     for item in pairs or []:
         if "=" not in item:
@@ -396,7 +403,6 @@ TSV_COLUMNS = [
     "fp5_px",
     "novel_px",
     "dt_s",
-    "mode",
     "note",
     "metric_revision",
 ]
@@ -426,13 +432,9 @@ def summarise(rows):
 
 
 def load_config(args):
-    import yaml
-
-    base_cfg = yaml.safe_load(open("weightmask.yml"))
+    base_cfg = default_config()
     streak_cfg = dict(base_cfg["streak_masking"])
     streak_cfg["enable"] = True
-    if args.mode:
-        streak_cfg["mode"] = args.mode
     apply_overrides(streak_cfg, args.set)
     return base_cfg, streak_cfg
 
@@ -452,7 +454,6 @@ def main(argv=None):
         "upstream bad-column and bleed stages mask chip-fixed structure, and without it the cheap "
         "prescreen can accept that structure as a 'trail'.",
     )
-    parser.add_argument("--mode", default=None)
     parser.add_argument("--set", action="append", default=[], metavar="KEY=VALUE")
     parser.add_argument("--quick", action="store_true", help="six-trail grid instead of the full sweep")
     parser.add_argument("--no-cache", action="store_true", help="recompute the injected-blank baseline")
@@ -462,11 +463,6 @@ def main(argv=None):
     args = parser.parse_args(argv)
     if args.seeds < 1:
         parser.error("--seeds must be positive")
-
-    import fitsio
-    from production_inputs import capture_detector_inputs, production_gain_read_noise
-
-    from weightmask.streaks import detect_streaks
 
     base_cfg, streak_cfg = load_config(args)
     exposure_id = args.exposure_id or os.path.basename(args.exposure).split(".")[0]
@@ -493,7 +489,7 @@ def main(argv=None):
         print("WARNING: no --flat given; upstream bad-column/bleed masking is much weaker than production.")
     print(f"existing_mask: {int(clean_existing.sum())} px ({note})")
 
-    gain, _read_noise = production_gain_read_noise(header, base_cfg)
+    gain, _read_noise = header_gain_read_noise(header, base_cfg["variance"])
     cache_key = baseline_key(clean_data_sub, clean_rms, clean_existing, base_cfg)
 
     cache_path = os.path.join(args.cache_dir, f"{exposure_id}_{args.hdu}_{cache_key}_prod.npy")
@@ -504,7 +500,7 @@ def main(argv=None):
         print(f"baseline cached ({int(clean_baseline.sum())} px)")
     else:
         t0 = time.time()
-        clean_baseline = detect_streaks(clean_data_sub, clean_rms, clean_existing, dict(streak_cfg))
+        clean_baseline = detect_streaks(clean_data_sub, clean_rms, clean_existing, dict(streak_cfg)).mask
         print(f"baseline fresh ({int(clean_baseline.sum())} px, {time.time() - t0:.1f}s)")
         if not args.no_cache:
             os.makedirs(args.cache_dir, exist_ok=True)
@@ -526,7 +522,7 @@ def main(argv=None):
         data_sub, rms, existing = capture_detector_inputs(raw_test, header, base_cfg, flat=flat)
 
         t0 = time.time()
-        mask = detect_streaks(data_sub, rms, existing, dict(streak_cfg))
+        mask = detect_streaks(data_sub, rms, existing, dict(streak_cfg)).mask
         dt = time.time() - t0
 
         scoreable = np.zeros(sci.shape, dtype=bool)
@@ -561,7 +557,6 @@ def main(argv=None):
                     "fp5_px": fp5_px,
                     "novel_px": novel_px,
                     "dt_s": round(dt, 1),
-                    "mode": streak_cfg.get("mode", "auto_ground"),
                     "note": note,
                     "metric_revision": "truth-pixel-recall-v3",
                 }

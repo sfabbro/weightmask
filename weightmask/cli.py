@@ -14,12 +14,11 @@ import numpy as np
 import yaml
 
 from . import __version__
-from .config import clean_config_dict
+from .config import clean_config_dict, resolve_config
 from .errors import StageFailure
 from .mef import process_all_hdus
-from .process import validate_config
-from .streaks import PersistenceProfileAccumulator
-from .utils import extract_hdu_spec, paths_alias
+from .persistence import PersistenceProfileAccumulator
+from .utils import extract_hdu_spec, image_hdus, paths_alias
 
 
 def validate_fits_file(file_path: str) -> bool:
@@ -69,7 +68,7 @@ def parse_arguments(argv=None) -> argparse.Namespace:
         "--config",
         type=str,
         default=None,
-        help="YAML config. If omitted, looks for a copied weightmask.yml in the current directory.",
+        help="YAML overrides of the bundled weightmask.yml. If omitted, the bundled defaults are used.",
     )
     inputs.add_argument(
         "--flat_image",
@@ -210,7 +209,7 @@ def validate_input_files(args: argparse.Namespace) -> bool:
         if not _check_aux_input(args.badpix_mask, "Bad pixel mask"):
             return False
 
-    for path in getattr(args, "persistence", None) or []:
+    for path in args.persistence or []:
         if not os.path.exists(path):
             print(f"ERROR: Persistence exposure not found: {path}")
             return False
@@ -326,60 +325,27 @@ def build_persistence_priors(science_path, hdus, other_paths, min_other=2):
     return priors
 
 
-def _find_default_config() -> Optional[str]:
-    if os.path.exists("weightmask.yml"):
-        print("Using default config file found at: weightmask.yml")
-        return "weightmask.yml"
-    return None
-
-
-def _read_and_clean_config(config_path: str) -> dict:
-    try:
-        with open(config_path, "r") as f:
-            config = yaml.safe_load(f)
-            if not isinstance(config, dict):
-                print(f"ERROR: Config file '{config_path}' must be a YAML dictionary.")
-                return None
-            return clean_config_dict(config)
-    except OSError as e:
-        print(f"ERROR: Failed to read config file '{config_path}': {e}")
-        return None
-    except yaml.YAMLError as e:
-        print(f"ERROR: Failed to parse config file '{config_path}': {e}")
-        return None
-
-
-def load_configuration(config_path: str) -> dict:
-    if config_path is None:
-        config_path = _find_default_config()
-        if config_path is None:
-            print("ERROR: Config file not specified and no default found.")
+def load_configuration(config_path: Optional[str]) -> Optional[dict]:
+    """The packaged defaults, overridden by ``config_path`` if given; None on error."""
+    overrides = {}
+    if config_path is not None:
+        try:
+            with open(config_path, "r") as f:
+                overrides = yaml.safe_load(f)
+        except OSError as e:
+            print(f"ERROR: Failed to read config file '{config_path}': {e}")
             return None
-
-    config = _read_and_clean_config(config_path)
-    if config is None:
+        except yaml.YAMLError as e:
+            print(f"ERROR: Failed to parse config file '{config_path}': {e}")
+            return None
+        if not isinstance(overrides, dict):
+            print(f"ERROR: Config file '{config_path}' must be a YAML dictionary.")
+            return None
+    try:
+        return resolve_config(clean_config_dict(overrides))
+    except ValueError as e:
+        print(f"ERROR: {e}")
         return None
-
-    if not isinstance(config, dict):
-        print(f"ERROR: Config file '{config_path}' must be a YAML dictionary.")
-        return None
-
-    if not validate_config(config):
-        print("ERROR: Configuration validation failed.")
-        return None
-
-    if "output_params" not in config:
-        config["output_params"] = {}
-    if "confidence_params" not in config:
-        config["confidence_params"] = {}
-    if "output_map_format" not in config["output_params"]:
-        config["output_params"]["output_map_format"] = "weight"
-    config["output_params"].setdefault("mask_bitpix", 16)
-    config["output_params"].setdefault("ivar_bitpix", 32)
-    config["output_params"].setdefault("compress", False)
-    config["output_params"].setdefault("sky_format", "full")
-
-    return config
 
 
 def _validate_output_paths(paths, inputs):
@@ -395,9 +361,9 @@ def _validate_output_paths(paths, inputs):
     return True
 
 
-def determine_output_paths(args: argparse.Namespace, input_path: str, config: dict | None = None) -> dict:
+def determine_output_paths(args: argparse.Namespace, input_path: str, config: dict) -> dict:
     out_map_path = args.output_map
-    compress = bool((config or {}).get("output_params", {}).get("compress", False))
+    compress = config["output_params"]["compress"]
     if out_map_path is None:
         input_basename = os.path.basename(str(input_path))
         if input_basename.endswith(".fits.fz"):
@@ -461,40 +427,6 @@ def open_fits_files(input_path: str, flat_path: Optional[str]):
         return None, None
 
 
-def get_hdus_to_process(hdul_input, input_hdu: int) -> list:
-    if input_hdu is not None:
-        if 0 <= input_hdu < len(hdul_input):
-            try:
-                info = hdul_input[input_hdu].get_info()
-                if info.get("hdutype") == 0 and info.get("ndims") == 2:
-                    return [input_hdu]
-                else:
-                    print(
-                        f"ERROR: Specified HDU {input_hdu} is not a 2D image "
-                        f"(hdutype={info.get('hdutype')}, ndims={info.get('ndims')})."
-                    )
-                    return []
-            except Exception as e:
-                print(f"ERROR: Cannot inspect specified HDU {input_hdu}: {e}")
-                return []
-        else:
-            print(f"ERROR: Specified HDU {input_hdu} not found.")
-            return []
-    else:
-        hdus = []
-        for idx, hdu in enumerate(hdul_input):
-            try:
-                info = hdu.get_info()
-                if info.get("hdutype") == 0 and info.get("ndims") == 2:
-                    hdus.append(idx)
-            except Exception as e:
-                print(f"  WARNING: skipping HDU {idx}: get_info() failed: {e}")
-                continue
-        if not hdus:
-            print("ERROR: No suitable Image HDUs found.")
-        return hdus
-
-
 def _cleanup_hdul(hdul_input, hdul_flat, hdul_badpix=None, hdul_dark=None):
     if hdul_input:
         hdul_input.close()
@@ -534,9 +466,8 @@ def run_pipeline(argv=None) -> int:
         input_hdu = args.hdu
 
     paths = determine_output_paths(args, input_path, config)
-    config_path = args.config or "weightmask.yml"
     if not _validate_output_paths(
-        paths, [input_path, flat_path, badpix_path, args.dark_image, config_path, *(args.persistence or [])]
+        paths, [input_path, flat_path, badpix_path, args.dark_image, args.config, *(args.persistence or [])]
     ):
         return 1
 
@@ -544,13 +475,13 @@ def run_pipeline(argv=None) -> int:
     if hdul_input is None:
         return 1
 
-    hdus_to_process = get_hdus_to_process(hdul_input, input_hdu)
+    hdus_to_process = image_hdus(hdul_input, input_hdu)
     if not hdus_to_process:
         _cleanup_hdul(hdul_input, hdul_flat)
         return 1
     print(f"Processing {len(hdus_to_process)} Image HDU(s): {hdus_to_process}")
 
-    dark_path, _ = extract_hdu_spec(args.dark_image) if getattr(args, "dark_image", None) else (None, None)
+    dark_path, _ = extract_hdu_spec(args.dark_image) if args.dark_image else (None, None)
     hdul_dark = None
     if dark_path:
         try:
@@ -570,7 +501,7 @@ def run_pipeline(argv=None) -> int:
             return 1
 
     detector_priors = None
-    persistence = getattr(args, "persistence", None) or []
+    persistence = args.persistence or []
 
     # Every exit from here must release the handles, including an exception out
     # of the run itself: _cleanup_hdul used to run only on the success path.
@@ -585,11 +516,10 @@ def run_pipeline(argv=None) -> int:
                 hdul_flat,
                 config,
                 paths,
-                args,
                 flat_path=flat_path,
                 hdul_badpix=hdul_badpix,
                 hdul_dark=hdul_dark,
-                max_workers=getattr(args, "max_workers", None),
+                max_workers=args.max_workers,
                 input_path=input_path,
                 badpix_path=badpix_path,
                 dark_path=dark_path,
@@ -600,11 +530,6 @@ def run_pipeline(argv=None) -> int:
             return 1
     finally:
         _cleanup_hdul(hdul_input, hdul_flat, hdul_badpix, hdul_dark)
-
-    import warnings
-
-    warnings.filterwarnings("default", category=UserWarning)
-    warnings.filterwarnings("default", category=RuntimeWarning)
 
     if process_success_count == 0:
         print("\nNo HDUs processed and published successfully. Existing outputs were preserved.")

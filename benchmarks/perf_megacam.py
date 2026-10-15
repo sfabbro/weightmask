@@ -21,31 +21,46 @@ Usage:
 from __future__ import annotations
 
 import argparse
+import copy
 import cProfile
 import io
 import json
 import os
 import platform
 import pstats
+import resource
 import shutil
+import statistics
 import sys
 import threading
 import time
-import statistics
 from pathlib import Path
 
+import fitsio
+import numpy as np
+import yaml
+from astroquery.cadc import Cadc
+
+import weightmask.process as proc_mod
+from weightmask import mef
+from weightmask.cli import determine_output_paths
+from weightmask.config import resolve_config
+from weightmask.mef import _resolve_max_workers
+from weightmask.utils import image_hdus, paths_alias
+
 ROOT = Path(__file__).resolve().parents[1]
-if str(ROOT) not in sys.path:
-    sys.path.insert(0, str(ROOT))
+sys.path.insert(0, str(ROOT))
 
 from benchmarks import perf_protocol
+from benchmarks.download_data import _quarantine_invalid_file, download_http, validate_case_file
+
 PERF_DATA_DIR = ROOT / "benchmark_data" / "megacam" / "perf"
 OUT_DIR = ROOT / "test_outputs" / "perf"
 EXPOSURES_JSON = OUT_DIR / "exposures.json"
 PERF_JSON = OUT_DIR / "megacam_perf.json"
 PERF_MD = OUT_DIR / "megacam_perf.md"
 CPROFILE_TXT = OUT_DIR / "cprofile_hdu.txt"
-CONFIG_PATH = ROOT / "weightmask.yml"
+CONFIG_PATH = ROOT / "weightmask" / "weightmask.yml"
 FLAT_FILE = PERF_DATA_DIR / "flat_08Bm01_r.fits.fz"
 
 BASE_WHERE = (
@@ -85,30 +100,21 @@ def _safe_id(publisher_id: str) -> str:
 
 
 def _quarantine_invalid(path: Path) -> None:
-    from tests.benchmarks.download_data import _quarantine_invalid_file
-
     _quarantine_invalid_file(path)
 
 
 def _download_http(url: str, out_path: Path) -> bool:
-    from tests.benchmarks.download_data import download_http
-
     out_path.parent.mkdir(parents=True, exist_ok=True)
     return download_http(url, out_path)
 
 
 def _validate_megacam(path: Path) -> tuple[bool, str | None]:
     """Reuse the manifest INSTRUME/DETECTOR check via validate_case_file."""
-    from tests.benchmarks.download_data import validate_case_file
 
     return validate_case_file({"expected_instrument": "MegaPrime", "expected_detector": "MegaCam"}, str(path))
 
 
 def _exptime_of_file(path: Path) -> float | None:
-    try:
-        import fitsio
-    except Exception:
-        return None
     try:
         with fitsio.FITS(str(path)) as hdul:
             # Prefer first 2-D science HDU, fall back to primary.
@@ -136,7 +142,6 @@ def _exptime_of_file(path: Path) -> float | None:
 
 def _query_candidates(top: int, with_time_filter: bool):
     """Run the manifest-proven CAOM2 query; returns (results_table, used_filter)."""
-    from astroquery.cadc import Cadc
 
     cadc = Cadc()
     if with_time_filter:
@@ -159,7 +164,6 @@ def _resolve_with_server_prefilter(top: int):
     plan's server-side prefilter intent while the client-side EXPTIME>=500
     header check remains the binding gate.
     """
-    from astroquery.cadc import Cadc
 
     cadc = Cadc()
     where = BASE_WHERE + " AND Plane.time_exposure > 500"
@@ -257,9 +261,7 @@ def resolve_exposures(force: bool = False) -> list[dict]:
                 if url is None:
                     # Single-row fallback: query this publisherID for its URL.
                     try:
-                        from astroquery.cadc import Cadc as _Cadc
-
-                        c2 = _Cadc()
+                        c2 = Cadc()
                         q1 = (
                             "SELECT TOP 1 Plane.publisherID FROM caom2.Plane AS Plane "
                             f"WHERE Plane.publisherID = '{pid}'"
@@ -353,8 +355,6 @@ def resolve_exposures(force: bool = False) -> list[dict]:
 
 def _install_timing_collector():
     """Wrap process_image (both bindings) to record per-HDU timings."""
-    import weightmask.mef as mef_mod
-    import weightmask.process as proc_mod
 
     records: list[dict] = []
     lock = threading.Lock()
@@ -378,13 +378,13 @@ def _install_timing_collector():
         return result
 
     proc_mod.process_image = wrapper
-    mef_mod.process_image = wrapper
-    return records, orig, proc_mod, mef_mod
+    mef.process_image = wrapper
+    return records, orig
 
 
-def _uninstall_timing_collector(orig, proc_mod, mef_mod):
+def _uninstall_timing_collector(orig):
     proc_mod.process_image = orig
-    mef_mod.process_image = orig
+    mef.process_image = orig
 
 
 def _set_dotted(container: dict, dotted: str, value) -> None:
@@ -402,7 +402,6 @@ def _set_dotted(container: dict, dotted: str, value) -> None:
 
 def _parse_config_sets(pairs: list[str] | None) -> dict:
     """Parse repeatable ``dotted.key=value`` (values YAML-parsed, deep via _set_dotted)."""
-    import yaml as _yaml
 
     overrides: dict = {}
     for pair in pairs or []:
@@ -413,21 +412,11 @@ def _parse_config_sets(pairs: list[str] | None) -> dict:
         if not dotted:
             raise SystemExit(f"--config-set needs dotted.key=value, got {pair!r}")
         try:
-            value = _yaml.safe_load(raw)
+            value = yaml.safe_load(raw)
         except Exception:
             value = raw
         _set_dotted(overrides, dotted, value)
     return overrides
-
-
-def _deep_merge(base: dict, over: dict) -> dict:
-    """Deep-merge ``over`` into ``base`` (dicts recurse; scalars/lists replace)."""
-    for key, val in over.items():
-        if isinstance(val, dict) and isinstance(base.get(key), dict):
-            _deep_merge(base[key], val)
-        else:
-            base[key] = val
-    return base
 
 
 def _process_one_exposure(
@@ -444,25 +433,15 @@ def _process_one_exposure(
     hdu_limit: int = 0,
     all_products: bool = False,
 ) -> dict:
-    import argparse as _ap
-
-    import fitsio
-    import yaml
-
-    from weightmask import cli, mef
-
     in_path = ROOT / rec["file"]
     safe = rec["safe_id"]
-    with open(CONFIG_PATH) as fh:
-        config = yaml.safe_load(fh)
-    if config_overrides:
-        config = _deep_merge(config, config_overrides)
+    config = resolve_config(config_overrides)
     hdul_input = fitsio.FITS(str(in_path), "r")
     try:
-        hdus = cli.get_hdus_to_process(hdul_input, None)
+        hdus = image_hdus(hdul_input, None)
     except Exception as e:
         hdul_input.close()
-        raise SystemExit(f"get_hdus_to_process failed for {safe}: {e}")
+        raise SystemExit(f"image_hdus failed for {safe}: {e}")
     if hdu_limit > 0:
         hdus = hdus[:hdu_limit]
     nhdus_expected = len(hdus)
@@ -487,17 +466,14 @@ def _process_one_exposure(
     output_dir = Path(output_dir or OUT_DIR)
     output_dir.mkdir(parents=True, exist_ok=True)
     write_all = bool(all_products)
-    args = _ap.Namespace(
+    args = argparse.Namespace(
         output_map=str(output_dir / f"{tag}.weight.fits"),
         output_mask=str(output_dir / f"{tag}.mask.fits") if (write_mask or write_all) else None,
         output_invvar=str(output_dir / f"{tag}.ivar.fits") if write_all else None,
         output_sky=str(output_dir / f"{tag}.sky.fits") if write_all else None,
         output_weight_raw=str(output_dir / f"{tag}.weight_raw.fits") if write_all else None,
         individual_masks=write_all,
-        max_workers=workers,
-        tile_size=1024,
     )
-    from weightmask.cli import determine_output_paths
 
     paths = determine_output_paths(args, str(in_path), config)
     if not write_all:
@@ -508,14 +484,9 @@ def _process_one_exposure(
         paths["individual_mask_paths"] = {}
 
     hdul_flat = fitsio.FITS(str(flat), "r") if flat else None
-    records, orig, proc_mod, mef_mod = _install_timing_collector()
-    try:
-        import resource as _resource
-
-        cpu_start = _resource.getrusage(_resource.RUSAGE_SELF)
-        cpu_start_s = float(cpu_start.ru_utime + cpu_start.ru_stime)
-    except Exception:
-        cpu_start_s = None
+    records, orig = _install_timing_collector()
+    cpu_start = resource.getrusage(resource.RUSAGE_SELF)
+    cpu_start_s = float(cpu_start.ru_utime + cpu_start.ru_stime)
     t0 = time.perf_counter()
     try:
         n_ok = mef.process_all_hdus(
@@ -524,24 +495,17 @@ def _process_one_exposure(
             hdul_flat,
             config,
             paths,
-            args,
             flat_path=str(flat) if flat else None,
             max_workers=workers,
             input_path=str(in_path),
         )
     finally:
         wall = time.perf_counter() - t0
-        try:
-            import resource as _resource
-
-            _ru = _resource.getrusage(_resource.RUSAGE_SELF)
-            # Linux ru_maxrss is KiB; macOS reports bytes.
-            _rss_kb = float(_ru.ru_maxrss) / 1024.0 if sys.platform == "darwin" else float(_ru.ru_maxrss)
-            _cpu_now = float(_ru.ru_utime + _ru.ru_stime)
-            _cpu_s = _cpu_now - cpu_start_s if cpu_start_s is not None else 0.0
-        except Exception:
-            _rss_kb, _cpu_s = 0.0, 0.0
-        _uninstall_timing_collector(orig, proc_mod, mef_mod)
+        _ru = resource.getrusage(resource.RUSAGE_SELF)
+        # Linux ru_maxrss is KiB; macOS reports bytes.
+        _rss_kb = float(_ru.ru_maxrss) / 1024.0 if sys.platform == "darwin" else float(_ru.ru_maxrss)
+        _cpu_s = float(_ru.ru_utime + _ru.ru_stime) - cpu_start_s
+        _uninstall_timing_collector(orig)
         try:
             hdul_input.close()
         except Exception:
@@ -587,8 +551,6 @@ def _process_one_exposure(
 
 
 def _aggregate_report(per_exp: list[dict], total_wall: float, *, extra_header: dict | None = None) -> dict:
-    import os as _os
-
     totals: dict[str, float] = {}
     n_hdus = 0
     mpix_total = 0.0
@@ -631,8 +593,8 @@ def _aggregate_report(per_exp: list[dict], total_wall: float, *, extra_header: d
     header = {
         "arch": platform.machine(),
         "platform": platform.platform(),
-        "cpu_count": _os.cpu_count(),
-        "config": "weightmask.yml",
+        "cpu_count": os.cpu_count(),
+        "config": "weightmask/weightmask.yml",
         "n_exposures": len(per_exp),
         "n_hdus": n_hdus,
     }
@@ -670,8 +632,6 @@ def _provenance(records: list[dict], config_overrides: dict, flat: str | None, t
 
 
 def _protocol_overrides(config_overrides: dict, cache_dir: Path) -> dict:
-    import copy
-
     overrides = copy.deepcopy(config_overrides)
     _set_dotted(overrides, "flat_masking.bad_mask_cache_dir", str(cache_dir))
     return overrides
@@ -900,26 +860,15 @@ def _run_cprofile_first_hdu(
     config_overrides: dict | None = None,
     hdu_limit: int = 0,
 ) -> str:
-    import fitsio
-    import yaml
-
-    from weightmask import cli
-    from weightmask.process import process_image as _orig
-
     in_path = ROOT / first_rec["file"]
-    with open(CONFIG_PATH) as fh:
-        config = yaml.safe_load(fh)
-    if config_overrides:
-        config = _deep_merge(config, config_overrides)
+    config = resolve_config(config_overrides)
     hdul = fitsio.FITS(str(in_path), "r")
     hdul_flat = fitsio.FITS(str(flat), "r") if flat else None
     try:
-        hdus = cli.get_hdus_to_process(hdul, None)
+        hdus = image_hdus(hdul, None)
         if hdu_limit > 0:
             hdus = hdus[:hdu_limit]
         mid = hdus[len(hdus) // 2]
-        import numpy as np
-
         sci = np.ascontiguousarray(hdul[mid].read())
         hdr = hdul[mid].read_header()
         flat_data = np.ascontiguousarray(hdul_flat[mid].read().astype(np.float32)) if hdul_flat is not None else None
@@ -929,7 +878,7 @@ def _run_cprofile_first_hdu(
             hdul_flat.close()
     pr = cProfile.Profile()
     pr.enable()
-    _orig(sci, hdr, flat_data, config, 1024)
+    proc_mod.process_image(sci, hdr, flat_data, config, 1024)
     pr.disable()
     buf = io.StringIO()
     ps = pstats.Stats(pr, stream=buf).sort_stats("cumulative")
@@ -979,7 +928,6 @@ def _numeric_tolerances(kind: str, dtype) -> tuple[float, float]:
     Floors cover the documented product quantisation; the ULP term covers the
     rounding incurred when a product is written at the compared dtype.
     """
-    import numpy as np
 
     policy = _PRODUCT_TOLERANCE_POLICY[kind]
     dtype = np.dtype(dtype)
@@ -1089,21 +1037,25 @@ def _header_metadata(header):
 def _product_kind(path: Path, header) -> str:
     filename = path.name.lower()
     artifact = str(_header_value(header.get("WMART")) or "").lower()
-    if artifact == "quality_mask" or ".mask." in filename or any(
-        token in filename
-        for token in (
-            ".bad.",
-            ".sat.",
-            ".cr.",
-            ".obj.",
-            ".streak.",
-            ".nodata.",
-            "_bad_",
-            "_sat_",
-            "_cr_",
-            "_obj_",
-            "_streak_",
-            "_nodata_",
+    if (
+        artifact == "quality_mask"
+        or ".mask." in filename
+        or any(
+            token in filename
+            for token in (
+                ".bad.",
+                ".sat.",
+                ".cr.",
+                ".obj.",
+                ".streak.",
+                ".nodata.",
+                "_bad_",
+                "_sat_",
+                "_cr_",
+                "_obj_",
+                "_streak_",
+                "_nodata_",
+            )
         )
     ):
         return "mask"
@@ -1186,9 +1138,6 @@ def _identity_map(records, side: str):
 
 
 def _compare_product_file(path: Path, base: Path, *, ignore_extname: bool) -> list[str]:
-    import fitsio
-    import numpy as np
-
     with fitsio.FITS(str(path)) as f_new, fitsio.FITS(str(base)) as f_base:
         new_records, new_primary_metadata = _read_product_records(f_new, ignore_extname=ignore_extname)
         base_records, base_primary_metadata = _read_product_records(f_base, ignore_extname=ignore_extname)
@@ -1390,8 +1339,6 @@ def main(argv=None) -> int:
     if compare_dir is not None and compare_dir.resolve() == OUT_DIR.resolve():
         raise SystemExit("--compare-baseline and --out-dir cannot be the same directory")
     if args.exposure_file:
-        from weightmask.utils import paths_alias
-
         if args.force_resolve:
             ap.error("--exposure-file and --force-resolve cannot be combined")
         records = []
@@ -1443,7 +1390,6 @@ def main(argv=None) -> int:
     if flat:
         if not Path(flat).exists():
             raise SystemExit(f"--flat file not found: {flat}")
-        from tests.benchmarks.download_data import validate_case_file
 
         valid, reason = validate_case_file({"expected_instrument": "MegaPrime", "expected_detector": "MegaCam"}, flat)
         if not valid:
@@ -1496,7 +1442,6 @@ def main(argv=None) -> int:
             print(f"WARNING: {e['safe_id']}: processed {e['nhdus_processed']}/{e['nhdus_expected']}")
 
     # (b) scaling sweep on first exposure only (untagged runs; tagged variants reuse it).
-    from weightmask.mef import _resolve_max_workers
 
     sweep: dict[str, float] = {}
     first = records[0]
@@ -1619,12 +1564,10 @@ def main(argv=None) -> int:
     report["timing_protocol"] = {
         "repeats": args.repeats,
         "seed": args.seed,
-        "correctness_equivalent": bool(protocol_reports) and all(
-            protocol["protocol"]["correctness_equivalent"] for protocol in protocol_reports.values()
-        ),
-        "distinct_arms": bool(protocol_reports) and any(
-            protocol["protocol"]["distinct_arms"] for protocol in protocol_reports.values()
-        ),
+        "correctness_equivalent": bool(protocol_reports)
+        and all(protocol["protocol"]["correctness_equivalent"] for protocol in protocol_reports.values()),
+        "distinct_arms": bool(protocol_reports)
+        and any(protocol["protocol"]["distinct_arms"] for protocol in protocol_reports.values()),
         "full_products": bool(args.all_products),
         "release_evidence_eligible": False,
         "reason": "at least five interleaved repetitions and product equivalence are required",

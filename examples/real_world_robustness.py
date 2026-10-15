@@ -5,7 +5,7 @@ import sys
 # path so `tests` is importable (same shim as examples/test_real_mef.py).
 REPO_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, REPO_ROOT)  # noqa: E402
-from tests.simulate_and_test import run_masking_test  # noqa: E402
+from benchmarks.simulate import run_masking_test  # noqa: E402
 
 
 def demonstrate_robustness():
@@ -25,7 +25,7 @@ def demonstrate_robustness():
         mask_pct = 0.0
         regime_type = "complex"
 
-    config_path = os.path.join(REPO_ROOT, "weightmask.yml")
+    config_path = os.path.join(REPO_ROOT, "weightmask", "weightmask.yml")
     print(f"Goal: Detect artifacts in a field with {Args.stars} stars and Poisson noise.")
 
     # Run masking test

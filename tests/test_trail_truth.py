@@ -22,8 +22,10 @@ import pytest
 from benchmarks.curate_trail_truth import (
     SCHEMA,
     _angle_between,
+    _clip_line_to_shape,
     _connected_groups,
     _normalise_normal,
+    ccd_to_mosaic,
     find_chip_replicas,
     geometry_from_header,
     line_to_mosaic,
@@ -31,7 +33,7 @@ from benchmarks.curate_trail_truth import (
     write_fixture,
 )
 from weightmask.contract import QualityBit
-from weightmask.mef import _streak_catalog
+from weightmask.replicas import streak_catalog
 
 FIXTURE = Path(__file__).resolve().parents[1] / "benchmarks" / "trail_truth" / "megacam_real_labels.json"
 MEGACAM_SHAPE = (4644, 2112)
@@ -171,7 +173,6 @@ def test_geometry_is_self_consistent(fixture):
         assert abs(float(normal @ direction)) < 1e-5, "normal must be perpendicular to direction"
         assert geometry["span_along_px"] > 0.0
         # The line must actually cross a MegaCam CCD, or the scored band is empty.
-        from benchmarks.curate_trail_truth import _clip_line_to_shape
 
         assert _clip_line_to_shape(geometry["point"], geometry["direction"], MEGACAM_SHAPE) is not None
 
@@ -256,7 +257,6 @@ def test_line_to_mosaic_normal_and_offset_are_consistent():
         assert mosaic is not None
         normal = np.array(mosaic["normal"])
         assert abs(np.linalg.norm(normal) - 1.0) < 1e-9
-        from benchmarks.curate_trail_truth import ccd_to_mosaic
 
         xy = ccd_to_mosaic([point], chip)[0]
         assert float(normal @ xy) == pytest.approx(mosaic["offset_deg"], abs=1e-9)
@@ -279,7 +279,7 @@ def test_pipeline_common_geometry_matches_curation_tangent_plane():
     mask = np.zeros((64, 64), np.uint32)
     mask[np.arange(48), np.arange(48) + 8] = int(QualityBit.STREAK)
 
-    component = _streak_catalog(0, mask, header)[0]
+    component = streak_catalog(0, mask, header)[0]
     reference = line_to_mosaic(
         component["local"]["point"], component["local"]["direction"], geometry_from_header(header)
     )

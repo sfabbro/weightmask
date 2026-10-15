@@ -7,8 +7,8 @@ from unittest.mock import patch
 import numpy as np
 from astropy.io import fits
 
-from tests.benchmarks.download_data import validate_case_file
-from tests.benchmarks.run import (
+from benchmarks.download_data import validate_case_file
+from benchmarks.suite import (
     _SYNTHETIC_CASE_GATES,
     _evaluate_synthetic_case,
     _load_case_label,
@@ -170,8 +170,8 @@ class TestBenchmarks(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmpdir:
             root = Path(tmpdir)
             with (
-                patch("tests.benchmarks.run.ROOT", root),
-                patch("tests.benchmarks.run.OUTPUT_ROOT", root / "outputs"),
+                patch("benchmarks.suite.ROOT", root),
+                patch("benchmarks.suite.OUTPUT_ROOT", root / "outputs"),
             ):
                 summary = run_suite("acs_compare", with_baselines=False)
                 self.assertEqual(len(summary["gate_failures"]), 2)
@@ -218,7 +218,7 @@ class TestBenchmarks(unittest.TestCase):
                 }
             }
             crop = {"y0": 1, "x0": 2, "height": 4, "width": 5}
-            with patch("tests.benchmarks.run.ROOT", root):
+            with patch("benchmarks.suite.ROOT", root):
                 loaded, evidence, status, reason = _load_case_label(case, label.shape, crop)
                 self.assertIsNone(status)
                 self.assertIsNone(reason)

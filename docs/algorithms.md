@@ -6,7 +6,7 @@ per-pixel weight. Use that weight for stacking or for single-exposure work
 Processing is per HDU, in this order: bad pixels, saturation cores, a
 preliminary sky (for bleed and CRs), bleed grow, cosmic rays, iterative sky and
 objects, inverse variance, streaks, then weight and confidence. Config keys
-live in the canonical [`weightmask.yml`](../weightmask.yml).
+live in the canonical [`weightmask.yml`](../weightmask/weightmask.yml).
 
 Quality bits use `set_means_flagged` polarity. `DETECTED` is informational by
 default and does not zero weight. `BAD`, `SAT`, `CR`, `STREAK`,

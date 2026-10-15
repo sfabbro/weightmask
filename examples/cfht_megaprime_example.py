@@ -57,17 +57,12 @@ def run_weightmask(input_file):
         print(f"ERROR: Input file {input_file} not found")
         return False
 
-    # Find weightmask config
-    config_path = Path(__file__).parent.parent / "weightmask.yml"
-
     # Run weightmask command
     cmd = [
         sys.executable,
         "-m",
         "weightmask.cli",
         input_file,
-        "--config",
-        str(config_path),
         "--output_mask",
         f"{input_file.replace('.fits.fz', '.mask.fits')}",
         "--output_invvar",

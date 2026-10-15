@@ -1,7 +1,7 @@
-# weight.py
 import numpy as np
 
 from . import __version__
+from .config import resolve_config
 from .contract import ProducerMetadata, build_weight_product
 
 
@@ -13,27 +13,20 @@ def generate_weight_and_confidence(inv_variance_map, final_mask_int, config):
     Args:
         inv_variance_map (ndarray): The calculated inverse variance map (unmasked).
         final_mask_int (ndarray): The final combined integer bitmask.
-        config (dict): Configuration dictionary, expected to contain sections like
-                       'output_params' (for masking behavior) and
-                       'confidence_params' (for normalization).
+        config (dict): Configuration overrides (merged over the packaged defaults);
+                       reads ``output_params`` and ``confidence_params``.
 
     Returns:
-        tuple: (weight_map, confidence_map, product)
-               product is a WeightMaskProduct, or None when inputs are None.
-               Returns (None, None, None) if input inv_variance_map is None.
+        tuple: (weight_map, confidence_map, product), product a WeightMaskProduct.
     """
-    if inv_variance_map is None:
-        return None, None, None
-
-    out_cfg = config.get("output_params", {})
-    conf_cfg = config.get("confidence_params", {})
-    normalize_percentile = conf_cfg.get("normalize_percentile", 99.0)
-    scale_to_100 = conf_cfg.get("scale_to_100", False)
+    config = resolve_config(config)
+    conf_cfg = config["confidence_params"]
+    normalize_percentile = conf_cfg["normalize_percentile"]
 
     # --- 1. Create Weight Map ---
     print("  Calculating weight map (masked inverse variance)...")
 
-    mask_detected = out_cfg.get("mask_detected_in_weight", False)
+    mask_detected = config["output_params"]["mask_detected_in_weight"]
     if mask_detected:
         print("    NOTE: Detected objects will be masked (zero weight).")
 
@@ -50,17 +43,10 @@ def generate_weight_and_confidence(inv_variance_map, final_mask_int, config):
 
     # --- 2. Create Confidence Map (Normalized Weight Map) ---
     print("  Calculating continuous confidence map (normalized weight map)...")
-    conf_dtype_str = conf_cfg.get("dtype", "float32")
-    conf_dtype = {
-        "float16": np.float16,
-        "float32": np.float32,
-        "float64": np.float64,
-    }.get(conf_dtype_str, np.float32)  # whitelist; default float32
-
     confidence_map = product.confidence
     if np.any(weight_map > 0):
         print(f"    Normalizing using {normalize_percentile:.1f}th percentile weight.")
-        if scale_to_100:
+        if conf_cfg["scale_to_100"]:
             confidence_map = confidence_map * 100.0
             print("    Scaled confidence map to 0-100 range.")
         else:
@@ -69,6 +55,6 @@ def generate_weight_and_confidence(inv_variance_map, final_mask_int, config):
         print("    WARNING: No positive weights found. Confidence map will be zeros.")
 
     # Ensure final map has the correct dtype
-    confidence_map = confidence_map.astype(conf_dtype, copy=False)
+    confidence_map = confidence_map.astype(conf_cfg["dtype"], copy=False)
 
     return weight_map, confidence_map, product

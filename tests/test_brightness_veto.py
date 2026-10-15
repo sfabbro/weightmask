@@ -22,17 +22,17 @@ vacuously.
 import contextlib
 import copy
 import io
-import sys
 import unittest
 from pathlib import Path
 from unittest.mock import patch
 
+import fitsio
 import numpy as np
-import yaml
+from scipy.ndimage import distance_transform_edt
 
-sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
-
-from weightmask.streaks import _drop_bright_components, detect_streaks  # noqa: E402
+from benchmarks.production_inputs import capture_detector_inputs, streak_config
+from weightmask.config import default_config, section_config
+from weightmask.streaks import _veto_components, detect_streaks
 
 REPO = Path(__file__).resolve().parents[1]
 MEGACAM = REPO / "benchmark_data" / "megacam"
@@ -53,7 +53,7 @@ REPEATED_STRUCTURE_CASES = ("perf/1013719p.fits.fz",)
 
 
 def _shipped():
-    return yaml.safe_load(open(REPO / "weightmask.yml"))["streak_masking"]
+    return default_config()["streak_masking"]
 
 
 def _production_inputs(relative, hdu):
@@ -63,11 +63,8 @@ def _production_inputs(relative, hdu):
     path = MEGACAM / relative
     if not path.exists():
         raise unittest.SkipTest(f"{path} not present")
-    import fitsio
 
-    from benchmarks.production_inputs import capture_detector_inputs, streak_config
-
-    config = yaml.safe_load(open(REPO / "weightmask.yml"))
+    config = default_config()
     with fitsio.FITS(str(path)) as handle:
         science = np.ascontiguousarray(handle[hdu].read().astype(np.float32))
         header = handle[hdu].read_header()
@@ -90,12 +87,10 @@ def _detect(data_sub, rms, existing, scfg, sparse_min_length=None, **mask_params
             "min_length": sparse_min_length,
         }
     with contextlib.redirect_stdout(io.StringIO()):
-        return detect_streaks(data_sub, rms, existing, config)
+        return detect_streaks(data_sub, rms, existing, config).mask
 
 
 def _corridor_metrics(mask, endpoints):
-    from scipy.ndimage import distance_transform_edt
-
     (y0, x0), (y1, x1) = endpoints
     dy = float(y1 - y0)
     dx = float(x1 - x0)
@@ -128,29 +123,7 @@ def _corridor_metrics(mask, endpoints):
     }
 
 
-class TestBrightnessVetoIsOptional(unittest.TestCase):
-    """null must disable the veto, and nothing else may."""
-
-    def test_none_disables_the_veto(self):
-        mask = np.zeros((40, 40), dtype=bool)
-        mask[20, 5:35] = True
-        data = np.full((40, 40), 1000.0)
-        rms = np.ones((40, 40))
-        dropped = _drop_bright_components(mask, data, rms, 20.0, 24)
-        self.assertEqual(int(dropped.sum()), 0, "a 1000-sigma component must be dropped at threshold 20")
-        kept = _drop_bright_components(mask, data, rms, None, 24)
-        self.assertEqual(int(kept.sum()), int(mask.sum()), "None must disable the veto, not merely relax it")
-
-    def test_the_threshold_is_honoured_between_the_extremes(self):
-        mask = np.zeros((40, 40), dtype=bool)
-        mask[20, 5:35] = True
-        data = np.full((40, 40), 50.0)
-        rms = np.ones((40, 40))
-        self.assertEqual(int(_drop_bright_components(mask, data, rms, 20.0, 24).sum()), 0)
-        self.assertEqual(
-            int(_drop_bright_components(mask, data, rms, 100.0, 24).sum()), int(mask.sum()), "50 < 100 must be kept"
-        )
-
+class TestShippedBrightnessVeto(unittest.TestCase):
     def test_shipped_config_declares_it_and_the_key_is_readable(self):
         self.assertIn("max_component_sigma", _shipped()["mask_params"])
         self.assertIsNotNone(_shipped()["mask_params"]["max_component_sigma"])
@@ -195,13 +168,8 @@ class TestRealLinearFeaturesSurviveEveryVetoSetting(unittest.TestCase):
         disabled = _detect(data_sub, rms, existing, scfg, max_component_sigma=None)
         self.assertFalse(shipped[HOT_COLUMN_ROI].any(), "shipped brightness veto")
         self.assertTrue(disabled[HOT_COLUMN_ROI].any(), "None must disable the brightness veto")
-        params = scfg["mask_params"]
-        restored = _drop_bright_components(
-            disabled,
-            data_sub,
-            rms,
-            params["max_component_sigma"],
-            params["min_mask_pixels"],
+        restored, _dropped = _veto_components(
+            disabled, data_sub, rms, None, section_config("streak_masking", scfg), None
         )
         self.assertFalse(restored[HOT_COLUMN_ROI].any(), "the shipped veto must remove the disabled component")
 

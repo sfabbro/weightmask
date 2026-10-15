@@ -5,9 +5,12 @@ import re
 import warnings
 
 import numpy as np
+from scipy.ndimage import median_filter
+
+from .config import section_config
 
 
-def _get_global_median(flat_data):
+def global_median(flat_data):
     """Calculate a robust global median of valid pixels."""
     flat = np.asarray(flat_data).reshape(-1)
     chunk_size = 100000
@@ -31,44 +34,24 @@ def _get_global_median(flat_data):
 
 def _detect_bad_pixels_local(flat_data, config, global_med):
     """Detect bad pixels via local median deviation."""
-    pixel_mask_bool = np.zeros(flat_data.shape, dtype=bool)
     print("  Detecting bad pixels via local median deviation...")
-    try:
-        from scipy.ndimage import median_filter
-
-        filter_size = config.get("local_filter_size", 15)
-        local_low_thresh = config.get("local_low_thresh", 0.5)
-        local_high_thresh = config.get("local_high_thresh", 2.0)
-
-        with warnings.catch_warnings():
-            warnings.simplefilter("ignore", category=RuntimeWarning)
-
-            # Create a heavily smoothed version of the flat to serve as the "true" illumination model.
-            # Replace NaNs/Infs with median so they don't corrupt the filter
-            clean_flat = flat_data.copy()
-
-            clean_flat[~np.isfinite(clean_flat)] = global_med
-
-            smoothed_flat = median_filter(clean_flat, size=filter_size)
-
-            # Avoid division by zero
-            smoothed_flat[smoothed_flat <= 0] = 1e-6
-
-            # Calculate the ratio between the raw flat and the local smoothed model
-            ratio = flat_data / smoothed_flat
-
-        # Flag pixels where the ratio is outside the acceptable bounds
-        pixel_mask_bool = (
-            (ratio <= local_low_thresh) | (ratio >= local_high_thresh) | (flat_data <= 0) | (~np.isfinite(flat_data))
-        )
-        print(
-            f"    Found {np.count_nonzero(pixel_mask_bool)} bad pixels (Ratio < {local_low_thresh:.2f} or > {local_high_thresh:.2f})."
-        )
-
-    except (ValueError, KeyError, TypeError) as e:
-        print(f"  WARNING: Local pixel thresholding failed: {e}. Skipping.")
-        pixel_mask_bool.fill(False)
-
+    local_low_thresh = config["local_low_thresh"]
+    local_high_thresh = config["local_high_thresh"]
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore", category=RuntimeWarning)
+        # Smoothed flat as the illumination model; non-finite pixels take the
+        # global median so they do not corrupt the filter.
+        clean_flat = flat_data.copy()
+        clean_flat[~np.isfinite(clean_flat)] = global_med
+        smoothed_flat = median_filter(clean_flat, size=config["local_filter_size"])
+        smoothed_flat[smoothed_flat <= 0] = 1e-6
+        ratio = flat_data / smoothed_flat
+    pixel_mask_bool = (
+        (ratio <= local_low_thresh) | (ratio >= local_high_thresh) | (flat_data <= 0) | (~np.isfinite(flat_data))
+    )
+    print(
+        f"    Found {np.count_nonzero(pixel_mask_bool)} bad pixels (Ratio < {local_low_thresh:.2f} or > {local_high_thresh:.2f})."
+    )
     return pixel_mask_bool
 
 
@@ -76,117 +59,70 @@ def _detect_bad_columns_derivative(flat_data, config, global_med):
     """Return indices of bad columns found via horizontal derivatives."""
     bad_columns = np.empty(0, dtype=int)
 
-    if not config.get("col_enable", True):
+    if not config["col_enable"]:
         print("  Bad column detection disabled in config.")
         return bad_columns
 
     print("  Detecting bad columns via horizontal derivatives...")
-    try:
-        # A completely dead column will have zero variance and low median,
-        # but a partially bad column will just cause a sharp jump.
-        # We take the derivative across columns (axis 1) of the column medians.
+    # A completely dead column will have zero variance and low median,
+    # but a partially bad column will just cause a sharp jump.
+    # We take the derivative across columns (axis 1) of the column medians.
 
-        with warnings.catch_warnings():
-            warnings.simplefilter("ignore", category=RuntimeWarning)
-            column_medians = np.array([np.nanmedian(flat_data[:, column]) for column in range(flat_data.shape[1])])
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore", category=RuntimeWarning)
+        column_medians = np.array([np.nanmedian(flat_data[:, column]) for column in range(flat_data.shape[1])])
 
-        # Mask entirely NaN/Inf columns immediately
-        invalid_cols = ~np.isfinite(column_medians)
-        num_invalid = np.count_nonzero(invalid_cols)
-        bad_columns = np.flatnonzero(invalid_cols)
+    # Mask entirely NaN/Inf columns immediately
+    invalid_cols = ~np.isfinite(column_medians)
+    num_invalid = np.count_nonzero(invalid_cols)
+    bad_columns = np.flatnonzero(invalid_cols)
 
-        if num_invalid < len(column_medians):
-            # Calculate horizontal derivative (difference between adjacent columns)
-            valid_medians = column_medians.copy()
-            valid_medians[invalid_cols] = np.nanmedian(valid_medians)  # Patch for diff
+    if num_invalid < len(column_medians):
+        # Calculate horizontal derivative (difference between adjacent columns)
+        valid_medians = column_medians.copy()
+        valid_medians[invalid_cols] = np.nanmedian(valid_medians)  # Patch for diff
 
-            col_diffs = np.abs(np.diff(valid_medians))
+        col_diffs = np.abs(np.diff(valid_medians))
 
-            # Robust statistics of the differences
-            med_diff = np.nanmedian(col_diffs)
-            mad_diff = np.nanmedian(np.abs(col_diffs - med_diff)) * 1.4826
-            if mad_diff == 0:
-                mad_diff = np.nanstd(col_diffs)
+        # Robust statistics of the differences
+        med_diff = np.nanmedian(col_diffs)
+        mad_diff = np.nanmedian(np.abs(col_diffs - med_diff)) * 1.4826
+        if mad_diff == 0:
+            mad_diff = np.nanstd(col_diffs)
 
-            sigma_thresh = config.get("col_deriv_sigma", 10.0)
-            thresh = med_diff + sigma_thresh * mad_diff
+        sigma_thresh = config["col_deriv_sigma"]
+        thresh = med_diff + sigma_thresh * mad_diff
 
-            # Columns where the jump from the neighbor is huge
-            jump_edges = np.where(col_diffs > thresh)[0]
-            radius = max(2, int(config.get("local_filter_size", 15)) // 2)
-            local_baseline = np.empty_like(valid_medians)
-            for column in range(len(valid_medians)):
-                start = max(0, column - radius)
-                stop = min(len(valid_medians), column + radius + 1)
-                neighbors = np.concatenate((valid_medians[start:column], valid_medians[column + 1 : stop]))
-                local_baseline[column] = np.nanmedian(neighbors) if neighbors.size else valid_medians[column]
-            deviations = np.abs(valid_medians - local_baseline)
-            jump_cols_idx = []
-            for edge in jump_edges:
-                left, right = edge, edge + 1
-                jump_cols_idx.append(left if deviations[left] > deviations[right] else right)
+        # Columns where the jump from the neighbor is huge
+        jump_edges = np.where(col_diffs > thresh)[0]
+        radius = max(2, config["local_filter_size"] // 2)
+        local_baseline = np.empty_like(valid_medians)
+        for column in range(len(valid_medians)):
+            start = max(0, column - radius)
+            stop = min(len(valid_medians), column + radius + 1)
+            neighbors = np.concatenate((valid_medians[start:column], valid_medians[column + 1 : stop]))
+            local_baseline[column] = np.nanmedian(neighbors) if neighbors.size else valid_medians[column]
+        deviations = np.abs(valid_medians - local_baseline)
+        jump_cols_idx = []
+        for edge in jump_edges:
+            left, right = edge, edge + 1
+            jump_cols_idx.append(left if deviations[left] > deviations[right] else right)
 
-            # Also catch columns that are completely dead (very close to 0)
-            dead_thresh = config.get("col_dead_thresh", 0.1) * global_med
-            dead_cols_idx = np.where(valid_medians < dead_thresh)[0]
+        # Also catch columns that are completely dead (very close to 0)
+        dead_thresh = config["col_dead_thresh"] * global_med
+        dead_cols_idx = np.where(valid_medians < dead_thresh)[0]
 
-            bad_cols_combined = np.unique(np.concatenate([jump_cols_idx, dead_cols_idx])).astype(int)
-            bad_columns = np.union1d(bad_columns, bad_cols_combined)
+        bad_cols_combined = np.unique(np.concatenate([jump_cols_idx, dead_cols_idx])).astype(int)
+        bad_columns = np.union1d(bad_columns, bad_cols_combined)
 
-            if len(bad_cols_combined) > 0:
-                print(
-                    f"    Found {len(bad_cols_combined)} bad columns (Deriv > {thresh:.3g} or Med < {dead_thresh:.3g})"
-                )
-                if num_invalid > 0:
-                    print(f"    Plus {num_invalid} columns masked due to being mostly NaNs/Infs.")
-            else:
-                print("    No bad columns detected.")
-
-    except Exception as e:
-        print(f"  WARNING: Bad column detection failed: {e}. Skipping.")
+        if len(bad_cols_combined) > 0:
+            print(f"    Found {len(bad_cols_combined)} bad columns (Deriv > {thresh:.3g} or Med < {dead_thresh:.3g})")
+            if num_invalid > 0:
+                print(f"    Plus {num_invalid} columns masked due to being mostly NaNs/Infs.")
+        else:
+            print("    No bad columns detected.")
 
     return bad_columns
-
-
-def detect_bad_pixels(flat_data, config, using_unit_flat=False):
-    """
-    Detect bad pixels and columns in the flat field using local structural analysis.
-
-    Instead of global thresholds which fail on vignetted fields, this applies
-    a median filter to create a structural model of the flat, and flags pixels
-    that deviate significantly from that model. Bad columns are found using
-    horizontal derivatives to find sharp discontinuities.
-
-    Args:
-        flat_data (ndarray): Flat field data array.
-        config (dict): Configuration dictionary for flat masking.
-        using_unit_flat (bool): Whether a unit flat (all 1.0) is being used.
-
-    Returns:
-        ndarray: Boolean mask of bad pixels and columns (True = bad).
-    """
-    if not np.isfinite(flat_data).any():
-        warnings.warn("Flat data contains no finite values. Masking the entire flat.", RuntimeWarning)
-        return np.ones(flat_data.shape, dtype=bool)
-
-    if using_unit_flat:
-        print("  Skipping bad pixel/column detection (using unit flat).")
-        return np.zeros(flat_data.shape, dtype=bool)
-
-    global_med = _get_global_median(flat_data)
-
-    # --- 1. Local Structural Pixel Thresholding ---
-    pixel_mask_bool = _detect_bad_pixels_local(flat_data, config, global_med)
-
-    # --- 2. Derivative-Based Column Detection ---
-    bad_columns = _detect_bad_columns_derivative(flat_data, config, global_med)
-
-    # --- 3. Combine Masks ---
-    pixel_mask_bool[:, bad_columns] = True
-    total_bad = np.count_nonzero(pixel_mask_bool)
-    print(f"  Total BAD pixels/columns identified in flat: {total_bad}")
-
-    return pixel_mask_bool
 
 
 def compute_flat_bad_mask(flat_data, config, tile_size=1024):
@@ -198,13 +134,10 @@ def compute_flat_bad_mask(flat_data, config, tile_size=1024):
     ``compute_flat_bad_mask_cached`` reuses it across every exposure that shares
     a flat instead of recomputing the expensive median filter each time.
     """
+    config = section_config("flat_masking", config)
     bad_mask = np.zeros(flat_data.shape, dtype=bool)
-    global_med = _get_global_median(flat_data)
-    filter_size = config.get("local_filter_size", 15)
-    try:
-        halo = max(0, int(filter_size) // 2)
-    except (TypeError, ValueError):
-        halo = 0
+    global_med = global_median(flat_data)
+    halo = config["local_filter_size"] // 2
     for y in range(0, flat_data.shape[0], tile_size):
         for x in range(0, flat_data.shape[1], tile_size):
             y_stop = min(y + tile_size, flat_data.shape[0])
@@ -223,11 +156,7 @@ def compute_flat_bad_mask(flat_data, config, tile_size=1024):
 
 def detect_dark_hot_pixels(dark_data, config):
     """Upper-tail hot pixels in a mostly healthy, bias-subtracted dark HDU."""
-    if set(config) - {"hot_sigma"}:
-        raise ValueError("dark_masking accepts only hot_sigma")
-    hot_sigma = float(config.get("hot_sigma", 8.0))
-    if isinstance(config.get("hot_sigma"), bool) or not np.isfinite(hot_sigma) or hot_sigma <= 0:
-        raise ValueError("dark_masking.hot_sigma must be finite and positive")
+    hot_sigma = section_config("dark_masking", config)["hot_sigma"]
     valid = np.isfinite(dark_data)
     if not np.any(valid):
         return ~valid
@@ -252,33 +181,24 @@ def _flat_bad_settings(flat_cfg) -> str:
     Every key is included (bar the cache controls) so that a retuned or newly
     added setting can never read a mask computed under the old settings.
     """
-    if not isinstance(flat_cfg, dict):
-        return "{}"
     payload = {k: v for k, v in flat_cfg.items() if k not in _FLAT_BAD_CACHE_CONTROL_KEYS}
-    try:
-        return json.dumps(payload, sort_keys=True, default=str)
-    except (TypeError, ValueError):  # pragma: no cover - exotic config values
-        return str(sorted((str(k), str(v)) for k, v in payload.items()))
+    return json.dumps(payload, sort_keys=True)
 
 
-def flat_bad_mask_cache_file(flat_cfg, flat_path, hdu_index, shape, tile_size):
+def flat_bad_mask_cache_file(flat_cfg, flat_path, hdu_index, shape):
     """Cache file for one flat HDU, or None when caching does not apply.
 
     The identity covers the flat's absolute path, byte size and nanosecond
-    mtime, the HDU index, its shape and the flat_masking settings, so a replaced
-    flat or retuned masking cannot read a stale mask. ``tile_size`` remains an
-    accepted argument for compatibility but does not affect the tile-invariant
-    mask identity.
+    mtime, the HDU index, its shape and the resolved flat_masking settings, so a
+    replaced flat or retuned masking cannot read a stale mask.
     """
-    if not isinstance(flat_cfg, dict) or not flat_cfg.get("bad_mask_cache", True):
-        return None
-    if not flat_path:
+    if not flat_cfg["bad_mask_cache"] or not flat_path:
         return None
     try:
         stat = os.stat(str(flat_path))
     except OSError:
         return None
-    cache_dir = flat_cfg.get("bad_mask_cache_dir")
+    cache_dir = flat_cfg["bad_mask_cache_dir"]
     if not cache_dir:
         cache_dir = os.path.join(os.path.dirname(os.path.abspath(str(flat_path))), ".weightmask_cache")
     identity = "|".join(
@@ -306,7 +226,8 @@ def compute_flat_bad_mask_cached(flat_data, flat_cfg, tile_size=1024, *, flat_pa
     cache or I/O error falls back to the plain computation, so products never
     depend on the cache being present or writable.
     """
-    cache_file = flat_bad_mask_cache_file(flat_cfg, flat_path, hdu_index, getattr(flat_data, "shape", ()), tile_size)
+    flat_cfg = section_config("flat_masking", flat_cfg)
+    cache_file = flat_bad_mask_cache_file(flat_cfg, flat_path, hdu_index, flat_data.shape)
     if cache_file is None:
         return compute_flat_bad_mask(flat_data, flat_cfg, tile_size)
     if os.path.exists(cache_file):
@@ -342,7 +263,7 @@ def compute_flat_bad_mask_cached(flat_data, flat_cfg, tile_size=1024, *, flat_pa
     return bad_mask
 
 
-def _parse_section(section):
+def parse_section(section):
     """Parse a FITS '[x1:x2,y1:y2]' section string to 0-based exclusive (r0, r1, c0, c1); None on failure."""
     if not isinstance(section, str):
         return None
@@ -365,23 +286,19 @@ def detect_non_illuminated(shape, header):
     no behavior change. Malformed or missing sections never raise.
     """
     h, w = shape
-    try:
-        get = header.get if hasattr(header, "get") else (lambda k, d=None: header[k] if k in header else d)
-        illum = _parse_section(get("DATASEC", None))
-        if illum is None:
-            return np.zeros(shape, dtype=bool)
-        r0, r1, c0, c1 = illum
-        r0, r1 = max(r0, 0), min(r1, h)
-        c0, c1 = max(c0, 0), min(c1, w)
-        if r1 <= r0 or c1 <= c0:
-            return np.zeros(shape, dtype=bool)
-        ccd = _parse_section(get("CCDSIZE", None))
-        if ccd is not None:
-            cr0, cr1, cc0, cc1 = ccd
-            if r0 >= cr1 or r1 <= cr0 or c0 >= cc1 or c1 <= cc0:
-                return np.zeros(shape, dtype=bool)
-        mask = np.ones(shape, dtype=bool)
-        mask[r0:r1, c0:c1] = False
-    except Exception:
+    illum = parse_section(header.get("DATASEC")) if header is not None else None
+    if illum is None:
         return np.zeros(shape, dtype=bool)
+    r0, r1, c0, c1 = illum
+    r0, r1 = max(r0, 0), min(r1, h)
+    c0, c1 = max(c0, 0), min(c1, w)
+    if r1 <= r0 or c1 <= c0:
+        return np.zeros(shape, dtype=bool)
+    ccd = parse_section(header.get("CCDSIZE"))
+    if ccd is not None:
+        cr0, cr1, cc0, cc1 = ccd
+        if r0 >= cr1 or r1 <= cr0 or c0 >= cc1 or c1 <= cc0:
+            return np.zeros(shape, dtype=bool)
+    mask = np.ones(shape, dtype=bool)
+    mask[r0:r1, c0:c1] = False
     return mask

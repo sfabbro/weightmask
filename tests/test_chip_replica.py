@@ -5,21 +5,16 @@ import io
 import os
 import tempfile
 import unittest
-from argparse import Namespace
 from unittest.mock import patch
 
 import fitsio
 import numpy as np
-import yaml
 
+from weightmask.config import default_config
 from weightmask.contract import QualityBit
-from weightmask.mef import (
-    _replica_component_indices,
-    _streak_catalog,
-    line_geometry,
-    process_all_hdus,
-    replica_indices,
-)
+from weightmask.mef import process_all_hdus
+from weightmask.replicas import _replica_component_indices, line_geometry, replica_indices, streak_catalog
+from weightmask.streaks import StreakDetection
 
 
 def _column(shape, x):
@@ -75,7 +70,7 @@ class TestChipReplicaGeometry(unittest.TestCase):
         unique = np.zeros((64, 64), bool)
         unique[np.arange(30), np.arange(30) + 30] = True
 
-        catalog = _streak_catalog(3, _quality_mask(repeated, unique), _tan_header())
+        catalog = streak_catalog(3, _quality_mask(repeated, unique), _tan_header())
 
         self.assertEqual(len(catalog), 2)
         self.assertEqual(sorted(component["ys"].size for component in catalog), [30, 64])
@@ -85,8 +80,8 @@ class TestChipReplicaGeometry(unittest.TestCase):
         unique = np.zeros((64, 64), bool)
         unique[np.arange(30), np.arange(30) + 30] = True
         catalogs = [
-            *_streak_catalog(0, _quality_mask(repeated, unique), _tan_header(crpix1=1.0)),
-            *_streak_catalog(1, _quality_mask(repeated), _tan_header(crpix1=101.0)),
+            *streak_catalog(0, _quality_mask(repeated, unique), _tan_header(crpix1=1.0)),
+            *streak_catalog(1, _quality_mask(repeated), _tan_header(crpix1=101.0)),
         ]
 
         cleared = _replica_component_indices(catalogs)
@@ -100,8 +95,8 @@ class TestChipReplicaGeometry(unittest.TestCase):
     def test_wcs_consistent_cross_chip_trail_survives_equal_local_coordinates(self):
         trail = _column((64, 64), 12)
         catalogs = [
-            *_streak_catalog(0, _quality_mask(trail), _tan_header(crpix2=1.0)),
-            *_streak_catalog(1, _quality_mask(trail), _tan_header(crpix2=101.0)),
+            *streak_catalog(0, _quality_mask(trail), _tan_header(crpix2=1.0)),
+            *streak_catalog(1, _quality_mask(trail), _tan_header(crpix2=101.0)),
         ]
 
         self.assertEqual(_replica_component_indices(catalogs), set())
@@ -109,8 +104,8 @@ class TestChipReplicaGeometry(unittest.TestCase):
     def test_detector_local_replicas_clear_when_common_wcs_lines_are_incompatible(self):
         replica = _column((64, 64), 12)
         catalogs = [
-            *_streak_catalog(0, _quality_mask(replica), _tan_header(crpix1=1.0)),
-            *_streak_catalog(1, _quality_mask(replica), _tan_header(crpix1=101.0)),
+            *streak_catalog(0, _quality_mask(replica), _tan_header(crpix1=1.0)),
+            *streak_catalog(1, _quality_mask(replica), _tan_header(crpix1=101.0)),
         ]
 
         self.assertEqual(_replica_component_indices(catalogs), {0, 1})
@@ -119,16 +114,16 @@ class TestChipReplicaGeometry(unittest.TestCase):
         replica = _column((64, 64), 12)
         catalogs = []
         for index in range(3):
-            catalogs.extend(_streak_catalog(index, _quality_mask(replica), _tan_header(crpix1=1.0 + 100.0 * index)))
+            catalogs.extend(streak_catalog(index, _quality_mask(replica), _tan_header(crpix1=1.0 + 100.0 * index)))
 
         self.assertEqual(_replica_component_indices(catalogs), set())
 
     def test_conflicting_sky_and_detector_peer_evidence_preserves_group(self):
         replica = _column((64, 64), 12)
         catalogs = [
-            *_streak_catalog(0, _quality_mask(replica), _tan_header(crpix1=1.0)),
-            *_streak_catalog(1, _quality_mask(replica), _tan_header(crpix1=101.0)),
-            *_streak_catalog(2, _quality_mask(replica), _tan_header(crpix1=1.0)),
+            *streak_catalog(0, _quality_mask(replica), _tan_header(crpix1=1.0)),
+            *streak_catalog(1, _quality_mask(replica), _tan_header(crpix1=101.0)),
+            *streak_catalog(2, _quality_mask(replica), _tan_header(crpix1=1.0)),
         ]
 
         self.assertEqual(_replica_component_indices(catalogs), set())
@@ -136,8 +131,8 @@ class TestChipReplicaGeometry(unittest.TestCase):
     def test_missing_wcs_preserves_ambiguous_replicas(self):
         replica = _column((64, 64), 12)
         catalogs = [
-            *_streak_catalog(0, _quality_mask(replica), _tan_header()),
-            *_streak_catalog(1, _quality_mask(replica), {}),
+            *streak_catalog(0, _quality_mask(replica), _tan_header()),
+            *streak_catalog(1, _quality_mask(replica), {}),
         ]
 
         self.assertEqual(_replica_component_indices(catalogs), set())
@@ -147,8 +142,8 @@ class TestChipReplicaGeometry(unittest.TestCase):
         left = {**_tan_header(crpix1=1.0), "CTYPE1": "PIXEL", "CTYPE2": "PIXEL"}
         right = {**_tan_header(crpix1=101.0), "CTYPE1": "PIXEL", "CTYPE2": "PIXEL"}
         catalogs = [
-            *_streak_catalog(0, _quality_mask(replica), left),
-            *_streak_catalog(1, _quality_mask(replica), right),
+            *streak_catalog(0, _quality_mask(replica), left),
+            *streak_catalog(1, _quality_mask(replica), right),
         ]
 
         self.assertEqual(_replica_component_indices(catalogs), set())
@@ -157,8 +152,8 @@ class TestChipReplicaGeometry(unittest.TestCase):
         replica = _column((64, 64), 12)
         invalid = {**_tan_header(crpix1=101.0), "CD2_2": 0.0}
         catalogs = [
-            *_streak_catalog(0, _quality_mask(replica), _tan_header(crpix1=1.0)),
-            *_streak_catalog(1, _quality_mask(replica), invalid),
+            *streak_catalog(0, _quality_mask(replica), _tan_header(crpix1=1.0)),
+            *streak_catalog(1, _quality_mask(replica), invalid),
         ]
 
         self.assertIsNone(catalogs[1]["common"])
@@ -170,8 +165,8 @@ class TestChipReplicaGeometry(unittest.TestCase):
         for key in ("CD1_1", "CD1_2", "CD2_1", "CD2_2"):
             incomplete.pop(key)
         catalogs = [
-            *_streak_catalog(0, _quality_mask(replica), _tan_header(crpix1=1.0)),
-            *_streak_catalog(1, _quality_mask(replica), incomplete),
+            *streak_catalog(0, _quality_mask(replica), _tan_header(crpix1=1.0)),
+            *streak_catalog(1, _quality_mask(replica), incomplete),
         ]
 
         self.assertIsNone(catalogs[1]["common"])
@@ -183,7 +178,7 @@ class TestChipReplicaOnDisk(unittest.TestCase):
         shape = (48, 48)
 
         def column_streak(data_sub, _rms, _existing, _cfg):
-            return _column(data_sub.shape, data_sub.shape[1] // 2)
+            return StreakDetection(_column(data_sub.shape, data_sub.shape[1] // 2), {})
 
         with tempfile.TemporaryDirectory() as tmp:
             science = os.path.join(tmp, "sci.fits")
@@ -204,12 +199,13 @@ class TestChipReplicaOnDisk(unittest.TestCase):
                 "out_weight_raw_path": None,
                 "individual_mask_paths": {},
             }
-            args = Namespace(tile_size=32, individual_masks=False, max_workers=1)
-            cfg = yaml.safe_load(open("weightmask.yml"))
+            cfg = default_config()
             cfg["streak_masking"]["enable"] = True
             with patch("weightmask.process.detect_streaks", side_effect=column_streak):
                 with fitsio.FITS(science) as hdul, fitsio.FITS(flat) as hdul_flat:
-                    n = process_all_hdus([0, 1], hdul, hdul_flat, cfg, paths, args, flat_path=flat, input_path=science)
+                    n = process_all_hdus(
+                        [0, 1], hdul, hdul_flat, cfg, paths, flat_path=flat, input_path=science, max_workers=1
+                    )
             self.assertEqual(n, 2)
             with fitsio.FITS(paths["out_mask_path"]) as handle:
                 masks = [handle[0].read(), handle[1].read()]
@@ -229,14 +225,14 @@ class TestChipReplicaOnDisk(unittest.TestCase):
         """No inverse-variance product means no ivar writer, hence no positions.
 
         Looking up `ivar_writer.positions` unconditionally raised AttributeError,
-        which escaped `_clear_chip_replicas` (its handler catches only OSError)
+        which escaped `clear_chip_replicas` (its handler catches only OSError)
         after the mask had already been rewritten -- so the run aborted with the
         mask saying "good" and the weight map still zeroed at the same pixels.
         """
         shape = (48, 48)
 
         def column_streak(data_sub, _rms, _existing, _cfg):
-            return _column(data_sub.shape, data_sub.shape[1] // 2)
+            return StreakDetection(_column(data_sub.shape, data_sub.shape[1] // 2), {})
 
         with tempfile.TemporaryDirectory() as tmp:
             science = os.path.join(tmp, "sci.fits")
@@ -261,15 +257,14 @@ class TestChipReplicaOnDisk(unittest.TestCase):
                 "out_weight_raw_path": None,
                 "individual_mask_paths": {},
             }
-            args = Namespace(tile_size=32, individual_masks=False, max_workers=1)
-            cfg = yaml.safe_load(open("weightmask.yml"))
+            cfg = default_config()
             cfg["streak_masking"]["enable"] = True
             buf = io.StringIO()
             with contextlib.redirect_stdout(buf):
                 with patch("weightmask.process.detect_streaks", side_effect=column_streak):
                     with fitsio.FITS(science) as hdul, fitsio.FITS(flat) as hdul_flat:
                         n = process_all_hdus(
-                            [1, 2], hdul, hdul_flat, cfg, paths, args, flat_path=flat, input_path=science
+                            [1, 2], hdul, hdul_flat, cfg, paths, flat_path=flat, input_path=science, max_workers=1
                         )
             self.assertEqual(n, 2)
             # The mask was rewritten before the restore, so the inability to
@@ -287,7 +282,7 @@ class TestChipReplicaOnDisk(unittest.TestCase):
         shape = (48, 48)
 
         def column_streak(data_sub, _rms, _existing, _cfg):
-            return _column(data_sub.shape, data_sub.shape[1] // 2)
+            return StreakDetection(_column(data_sub.shape, data_sub.shape[1] // 2), {})
 
         with tempfile.TemporaryDirectory() as tmp:
             science = os.path.join(tmp, "sci.fits")
@@ -310,8 +305,7 @@ class TestChipReplicaOnDisk(unittest.TestCase):
                 "out_weight_raw_path": os.path.join(tmp, "o.raw.fits"),
                 "individual_mask_paths": {},
             }
-            args = Namespace(tile_size=32, individual_masks=False, max_workers=1)
-            cfg = yaml.safe_load(open("weightmask.yml"))
+            cfg = default_config()
             cfg["streak_masking"]["enable"] = True
             with patch("weightmask.process.detect_streaks", side_effect=column_streak):
                 with fitsio.FITS(science) as hdul, fitsio.FITS(flat) as hdul_flat:
@@ -321,9 +315,9 @@ class TestChipReplicaOnDisk(unittest.TestCase):
                         hdul_flat,
                         cfg,
                         paths,
-                        args,
                         flat_path=flat,
                         input_path=science,
+                        max_workers=1,
                     )
             self.assertEqual(n, 3)
             with fitsio.FITS(paths["out_weight_raw_path"]) as handle:

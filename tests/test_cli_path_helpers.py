@@ -18,10 +18,9 @@ import numpy as np
 
 from weightmask.cli import (
     _check_aux_input,
-    _find_default_config,
     _image_shape,
-    _read_and_clean_config,
     _validate_output_paths,
+    load_configuration,
 )
 from weightmask.process import _first_present_keyword, _header_lookup
 
@@ -82,44 +81,15 @@ class TestImageShape(unittest.TestCase):
         self.assertIsNone(_image_shape(None))
 
 
-class TestFindDefaultConfig(unittest.TestCase):
-    def test_none_when_no_default_is_present(self):
-        previous = os.getcwd()
-        with tempfile.TemporaryDirectory() as tmp:
-            os.chdir(tmp)
-            try:
-                self.assertIsNone(_find_default_config())
-            finally:
-                os.chdir(previous)
-
-    def test_the_working_directory_copy_is_preferred(self):
-        previous = os.getcwd()
-        with tempfile.TemporaryDirectory() as tmp:
-            os.chdir(tmp)
-            try:
-                Path("weightmask.yml").write_text("output_params: {}\n")
-                self.assertEqual(_find_default_config(), "weightmask.yml")
-            finally:
-                os.chdir(previous)
-
-
-class TestReadAndCleanConfig(unittest.TestCase):
+class TestLoadConfiguration(unittest.TestCase):
     def test_a_plain_document_is_parsed_and_cleaned(self):
         with tempfile.TemporaryDirectory() as tmp:
             path = Path(tmp) / "weightmask.yml"
-            path.write_text(
-                "# a comment\n"
-                "output_params:\n"
-                "  mask_bitpix: 32\n"
-                "  compress: false\n"
-                "streak_masking:\n"
-                "  mode: auto_ground\n"
-            )
-            config = _read_and_clean_config(str(path))
-        self.assertEqual(
-            config,
-            {"output_params": {"mask_bitpix": 32, "compress": False}, "streak_masking": {"mode": "auto_ground"}},
-        )
+            path.write_text("# a comment\noutput_params:\n  mask_bitpix: 32\n  compress: 'false'\n")
+            config = load_configuration(str(path))
+        self.assertEqual(config["output_params"]["mask_bitpix"], 32)
+        self.assertIs(config["output_params"]["compress"], False)
+        self.assertEqual(config["output_params"]["sky_format"], "full")
 
     def test_a_non_dictionary_document_is_refused(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -127,17 +97,17 @@ class TestReadAndCleanConfig(unittest.TestCase):
             for text in ("- 1\n- 2\n", "just a string\n"):
                 with self.subTest(document=text.splitlines()[0]):
                     path.write_text(text)
-                    self.assertIsNone(_read_and_clean_config(str(path)))
+                    self.assertIsNone(load_configuration(str(path)))
 
     def test_a_missing_file_is_refused(self):
         with tempfile.TemporaryDirectory() as tmp:
-            self.assertIsNone(_read_and_clean_config(str(Path(tmp) / "absent.yml")))
+            self.assertIsNone(load_configuration(str(Path(tmp) / "absent.yml")))
 
     def test_a_malformed_document_is_refused(self):
         with tempfile.TemporaryDirectory() as tmp:
             path = Path(tmp) / "weightmask.yml"
             path.write_text("output_params: [1, 2\n")
-            self.assertIsNone(_read_and_clean_config(str(path)))
+            self.assertIsNone(load_configuration(str(path)))
 
 
 class TestValidateOutputPaths(unittest.TestCase):

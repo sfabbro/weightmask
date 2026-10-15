@@ -9,9 +9,14 @@ import sys
 import fitsio
 
 from . import __version__
-from .background import _validated_sky_mesh, parse_sky_mesh_header, reconstruct_sky_from_header
-from .mef import _ensure_hdu_extname, _header_with_contract_metadata, _ProductPublication, _strip_compression_keywords
-from .utils import extract_hdu_spec, paths_alias
+from .background import parse_sky_mesh_header, reconstruct_sky_from_header, validated_sky_mesh
+from .products import (
+    ProductPublication,
+    ensure_hdu_extname,
+    header_with_contract_metadata,
+    strip_compression_keywords,
+)
+from .utils import extract_hdu_spec, image_hdus, paths_alias
 
 __all__ = ["reconstruct_sky_fits", "main"]
 
@@ -59,30 +64,6 @@ def parse_args(argv=None) -> argparse.Namespace:
     return parser.parse_args(argv)
 
 
-def _image_hdus(hdul, hdu: int | None) -> list[int]:
-    if hdu is not None:
-        if not (0 <= hdu < len(hdul)):
-            print(f"ERROR: Specified HDU {hdu} not found.")
-            return []
-        info = hdul[hdu].get_info()
-        if info.get("hdutype") != 0 or info.get("ndims") != 2:
-            print(f"ERROR: HDU {hdu} is not a 2D image.")
-            return []
-        return [hdu]
-    out = []
-    for idx, hdu_i in enumerate(hdul):
-        try:
-            info = hdu_i.get_info()
-            if info.get("hdutype") == 0 and info.get("ndims") == 2:
-                out.append(idx)
-        except Exception as e:
-            print(f"  WARNING: HDU {idx} get_info() failed: {e}. Skipping.")
-            continue
-    if not out:
-        print("ERROR: No suitable Image HDUs found.")
-    return out
-
-
 def reconstruct_sky_fits(input_path: str, output_path: str, hdu: int | None = None) -> int:
     """Rebuild full-res sky FITS from a SKYMESH mesh product. Returns exit code."""
     if paths_alias(input_path, output_path):
@@ -100,7 +81,7 @@ def reconstruct_sky_fits(input_path: str, output_path: str, hdu: int | None = No
         return 1
 
     try:
-        candidates = _image_hdus(hdul, hdu)
+        candidates = image_hdus(hdul, hdu)
         if not candidates:
             return 1
         jobs = []
@@ -119,7 +100,7 @@ def reconstruct_sky_fits(input_path: str, output_path: str, hdu: int | None = No
             try:
                 shape, box = parse_sky_mesh_header(hdr)
                 mesh = hdul[i].read()
-                _validated_sky_mesh(mesh, shape, box)
+                validated_sky_mesh(mesh, shape, box)
             except ValueError as e:
                 print(f"ERROR: HDU {i}: {e}")
                 return 1
@@ -129,7 +110,7 @@ def reconstruct_sky_fits(input_path: str, output_path: str, hdu: int | None = No
                 name = f"SKY_{i}"
             out_hdr = {
                 k: v
-                for k, v in _strip_compression_keywords(hdr).items()
+                for k, v in strip_compression_keywords(hdr).items()
                 if str(k).upper() not in {"SKYMESH", "MESHBW", "MESHBH", "SKYH", "SKYW"}
             }
             jobs.append((mesh, hdr, out_hdr, name))
@@ -139,11 +120,11 @@ def reconstruct_sky_fits(input_path: str, output_path: str, hdu: int | None = No
             return 1
 
         os.makedirs(os.path.dirname(os.path.abspath(output_path)), exist_ok=True)
-        publication = _ProductPublication({"out_sky_path": output_path})
+        publication = ProductPublication({"out_sky_path": output_path})
         temporary_path = publication.temporary_path
 
         def publication_header(header, name):
-            output = _header_with_contract_metadata(header, "sky", semantics="background_adu")
+            output = header_with_contract_metadata(header, "sky", semantics="background_adu")
             output["EXTNAME"] = name
             output["WMGENID"] = publication.generation_id
             return output
@@ -153,7 +134,7 @@ def reconstruct_sky_fits(input_path: str, output_path: str, hdu: int | None = No
             full = reconstruct_sky_from_header(mesh, hdr)
             fitsio.write(temporary_path, full, header=publication_header(out_hdr, name), clobber=True)
             with fitsio.FITS(temporary_path, "rw") as output:
-                _ensure_hdu_extname(output, 0, name)
+                ensure_hdu_extname(output, 0, name)
             print(f"  Rebuilt {name}: {full.shape[0]}x{full.shape[1]}")
         else:
             fitsio.write(temporary_path, None, header={"WMGENID": publication.generation_id}, clobber=True)
@@ -161,7 +142,7 @@ def reconstruct_sky_fits(input_path: str, output_path: str, hdu: int | None = No
                 for mesh, hdr, out_hdr, name in jobs:
                     full = reconstruct_sky_from_header(mesh, hdr)
                     fout.write(full, header=publication_header(out_hdr, name), extname=name)
-                    _ensure_hdu_extname(fout, len(fout) - 1, name)
+                    ensure_hdu_extname(fout, len(fout) - 1, name)
                     print(f"  Rebuilt {name}: {full.shape[0]}x{full.shape[1]}")
                     del full
         publication.validate(range(len(jobs)))

@@ -5,7 +5,14 @@ import unittest
 import numpy as np
 from scipy.ndimage import binary_dilation, label
 
-from weightmask.streaks import _drop_bright_components, _drop_premasked_components, detect_streaks
+from weightmask.config import default_config, section_config
+from weightmask.streaks import _veto_components, detect_streaks
+
+
+def _veto(mask, data=None, rms=None, existing=None, **mask_params):
+    config = section_config("streak_masking", {"mask_params": mask_params})
+    data = np.zeros(mask.shape, dtype=np.float32) if data is None else data
+    return _veto_components(mask, data, rms, existing, config, None)[0]
 
 
 class TestStreaks(unittest.TestCase):
@@ -17,7 +24,6 @@ class TestStreaks(unittest.TestCase):
     def _config(self, **overrides):
         config = {
             "enable": True,
-            "mode": "auto_ground",
             "houghpeak_params": {"enable": True, "bin": 2, "thresh_sig": 2.5, "min_votes": 40, "max_candidates": 6},
             "contour_params": {"enable": False},
             "mask_params": {
@@ -58,7 +64,7 @@ class TestStreaks(unittest.TestCase):
 
     def _detect_quietly(self, data_sub, existing_mask, config):
         with contextlib.redirect_stdout(io.StringIO()):
-            return detect_streaks(data_sub, self.rms, existing_mask, config)
+            return detect_streaks(data_sub, self.rms, existing_mask, config).mask
 
     def test_detect_single_continuous_streak(self):
         data_sub = np.zeros(self.shape, dtype=np.float32)
@@ -66,7 +72,7 @@ class TestStreaks(unittest.TestCase):
             y = 80 + int(0.35 * (x - 20))
             data_sub[max(0, y - 1) : min(self.shape[0], y + 2), max(0, x - 1) : min(self.shape[1], x + 2)] = 80.0
 
-        mask = detect_streaks(data_sub, self.rms, self.empty_mask, self._config())
+        mask = detect_streaks(data_sub, self.rms, self.empty_mask, self._config()).mask
 
         self.assertTrue(np.sum(mask) > 0)
         self.assertTrue(mask[120, 135] or mask[121, 135])
@@ -79,7 +85,7 @@ class TestStreaks(unittest.TestCase):
             data_sub[max(0, y1 - 1) : min(self.shape[0], y1 + 2), x] = 60.0
             data_sub[max(0, y2 - 1) : min(self.shape[0], y2 + 2), x] = 60.0
 
-        mask = detect_streaks(data_sub, self.rms, self.empty_mask, self._config())
+        mask = detect_streaks(data_sub, self.rms, self.empty_mask, self._config()).mask
 
         self.assertTrue(np.sum(mask) > 0)
         self.assertTrue(mask[80, 200])
@@ -142,7 +148,7 @@ class TestStreaks(unittest.TestCase):
             },
         )
 
-        mask = detect_streaks(data_sub, self.rms, self.empty_mask, config)
+        mask = detect_streaks(data_sub, self.rms, self.empty_mask, config).mask
 
         self.assertTrue(np.sum(mask) > 0)
         self.assertTrue(mask[120, 100] or mask[121, 100] or mask[119, 100])
@@ -167,14 +173,14 @@ class TestPremaskedVeto(unittest.TestCase):
         # 40x10 band, 50% of it already masked.
         mask = self._band(shape, 20, 30, 10, 50)
         existing = self._band(shape, 20, 25, 10, 50)
-        out = _drop_premasked_components(mask, existing, 0.25, min_pixels=10)
+        out = _veto(mask, existing=existing, max_premasked_fraction=0.25, min_mask_pixels=10)
         self.assertEqual(int(out.sum()), 0)
 
     def test_component_mostly_outside_the_upstream_mask_is_kept(self):
         shape = (64, 64)
         mask = self._band(shape, 20, 30, 10, 50)
         existing = self._band(shape, 20, 21, 10, 15)  # ~5% overlap
-        out = _drop_premasked_components(mask, existing, 0.25, min_pixels=10)
+        out = _veto(mask, existing=existing, max_premasked_fraction=0.25, min_mask_pixels=10)
         np.testing.assert_array_equal(out, mask)
 
     def test_a_bleed_and_a_trail_in_one_mask_keeps_the_trail(self):
@@ -184,7 +190,7 @@ class TestPremaskedVeto(unittest.TestCase):
         trail = self._band(shape, 40, 44, 5, 60)  # 4 x 55 = 220 px
         mask = bleed | trail
         existing = self._band(shape, 5, 9, 5, 60)  # 4 x 55 = 220 px, 57% of the bleed
-        out = _drop_premasked_components(mask, existing, 0.25, min_pixels=10)
+        out = _veto(mask, existing=existing, max_premasked_fraction=0.25, min_mask_pixels=10)
         np.testing.assert_array_equal(out, trail, "the bleed must go, the trail must survive")
         self.assertEqual(int(out.sum()), 220)
 
@@ -192,8 +198,8 @@ class TestPremaskedVeto(unittest.TestCase):
         shape = (64, 64)
         mask = self._band(shape, 20, 24, 10, 60)  # 4 x 50 = 200 px
         existing = self._band(shape, 20, 24, 10, 35)  # 4 x 25 = 100 px = exactly 0.5
-        kept = _drop_premasked_components(mask, existing, 0.50, min_pixels=10)
-        dropped = _drop_premasked_components(mask, existing, 0.49, min_pixels=10)
+        kept = _veto(mask, existing=existing, max_premasked_fraction=0.50, min_mask_pixels=10)
+        dropped = _veto(mask, existing=existing, max_premasked_fraction=0.49, min_mask_pixels=10)
         self.assertEqual(int(kept.sum()), 200, "at the threshold the component is kept")
         self.assertEqual(int(dropped.sum()), 0, "above the threshold it is dropped")
 
@@ -201,13 +207,15 @@ class TestPremaskedVeto(unittest.TestCase):
         shape = (64, 64)
         mask = self._band(shape, 20, 30, 10, 50)
         existing = self._band(shape, 20, 25, 10, 50)
-        for disabled in (None, 1.0, 2.0):
-            np.testing.assert_array_equal(_drop_premasked_components(mask, existing, disabled, 10), mask)
+        for disabled in (None, 1.0):
+            np.testing.assert_array_equal(
+                _veto(mask, existing=existing, max_premasked_fraction=disabled, min_mask_pixels=10), mask
+            )
 
     def test_no_upstream_mask_is_a_no_op(self):
         shape = (64, 64)
         mask = self._band(shape, 20, 30, 10, 50)
-        np.testing.assert_array_equal(_drop_premasked_components(mask, None, 0.25, 10), mask)
+        np.testing.assert_array_equal(_veto(mask, existing=None, max_premasked_fraction=0.25, min_mask_pixels=10), mask)
 
     def test_small_components_are_left_to_the_profile_gate(self):
         """Too small to judge on overlap; ``_gate_mask_by_profile`` owns those."""
@@ -215,16 +223,11 @@ class TestPremaskedVeto(unittest.TestCase):
         mask = np.zeros(shape, dtype=bool)
         mask[30, 30] = True  # 1 px, 100% "overlapped"
         existing = mask.copy()
-        out = _drop_premasked_components(mask, existing, 0.25, min_pixels=24)
+        out = _veto(mask, existing=existing, max_premasked_fraction=0.25, min_mask_pixels=24)
         self.assertEqual(int(out.sum()), 1)
 
     def test_shipped_threshold_sits_between_the_two_measured_classes(self):
-        from pathlib import Path
-
-        import yaml
-
-        repo = Path(__file__).resolve().parents[1]
-        frac = yaml.safe_load(open(repo / "weightmask.yml"))["streak_masking"]["mask_params"]["max_premasked_fraction"]
+        frac = default_config()["streak_masking"]["mask_params"]["max_premasked_fraction"]
         self.assertGreater(frac, 0.02, "must not touch unconfirmed linear features (measured 0.02)")
         self.assertLess(frac, 0.45, "must catch bleed (measured 0.45)")
 
@@ -253,7 +256,7 @@ class TestBrightnessVeto(unittest.TestCase):
         data, rms = self._scene()
         data[30:34, 5:60] = 2.0  # p90 = 2 sigma
         mask = self._band(shape, 30, 34, 5, 60)
-        out = _drop_bright_components(mask, data, rms, 20.0, min_pixels=10)
+        out = _veto(mask, data, rms, max_component_sigma=20.0, min_mask_pixels=10)
         self.assertEqual(int(out.sum()), int(mask.sum()))
 
     def test_a_brightness_like_bleed_is_dropped(self):
@@ -261,7 +264,7 @@ class TestBrightnessVeto(unittest.TestCase):
         data, rms = self._scene()
         data[30:34, 5:60] = 60.0  # p90 = 60 sigma
         mask = self._band(shape, 30, 34, 5, 60)
-        out = _drop_bright_components(mask, data, rms, 20.0, min_pixels=10)
+        out = _veto(mask, data, rms, max_component_sigma=20.0, min_mask_pixels=10)
         self.assertEqual(int(out.sum()), 0)
 
     def test_a_near_saturated_column_group_is_dropped(self):
@@ -269,7 +272,7 @@ class TestBrightnessVeto(unittest.TestCase):
         data, rms = self._scene()
         data[10:60, 20:24] = 2000.0  # ~2000 sigma
         mask = self._band(shape, 10, 60, 20, 24)
-        out = _drop_bright_components(mask, data, rms, 20.0, min_pixels=10)
+        out = _veto(mask, data, rms, max_component_sigma=20.0, min_mask_pixels=10)
         self.assertEqual(int(out.sum()), 0)
 
     def test_threshold_boundary_is_inclusive(self):
@@ -277,8 +280,10 @@ class TestBrightnessVeto(unittest.TestCase):
         data, rms = self._scene()
         data[30:34, 5:60] = 20.0
         mask = self._band(shape, 30, 34, 5, 60)
-        self.assertEqual(int(_drop_bright_components(mask, data, rms, 20.0, 10).sum()), int(mask.sum()))
-        self.assertEqual(int(_drop_bright_components(mask, data, rms, 19.0, 10).sum()), 0)
+        self.assertEqual(
+            int(_veto(mask, data, rms, max_component_sigma=20.0, min_mask_pixels=10).sum()), int(mask.sum())
+        )
+        self.assertEqual(int(_veto(mask, data, rms, max_component_sigma=19.0, min_mask_pixels=10).sum()), 0)
 
     def test_disabled_threshold_is_a_no_op(self):
         shape = (64, 64)
@@ -286,21 +291,18 @@ class TestBrightnessVeto(unittest.TestCase):
         data[10:60, 20:24] = 2000.0
         mask = self._band(shape, 10, 60, 20, 24)
         for disabled in (None, 1e9):
-            np.testing.assert_array_equal(_drop_bright_components(mask, data, rms, disabled, 10), mask)
+            np.testing.assert_array_equal(
+                _veto(mask, data, rms, max_component_sigma=disabled, min_mask_pixels=10), mask
+            )
 
     def test_missing_rms_map_is_a_no_op(self):
         shape = (64, 64)
         data, _ = self._scene()
         mask = self._band(shape, 10, 60, 20, 24)
-        np.testing.assert_array_equal(_drop_bright_components(mask, data, None, 20.0, 10), mask)
+        np.testing.assert_array_equal(_veto(mask, data, None, max_component_sigma=20.0, min_mask_pixels=10), mask)
 
     def test_shipped_threshold_separates_the_two_measured_classes(self):
-        from pathlib import Path
-
-        import yaml
-
-        repo = Path(__file__).resolve().parents[1]
-        sigma = yaml.safe_load(open(repo / "weightmask.yml"))["streak_masking"]["mask_params"]["max_component_sigma"]
+        sigma = default_config()["streak_masking"]["mask_params"]["max_component_sigma"]
         self.assertGreater(sigma, 3.2, "must not touch unconfirmed linear features (measured 3.0/3.2 sigma p90)")
         self.assertLess(sigma, 155.0, "must catch bright star arm (155 sigma) and bleed (1138/1345 sigma)")
 

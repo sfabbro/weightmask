@@ -9,18 +9,17 @@ is not part of ``pixi run test``.
 from __future__ import annotations
 
 import argparse
+import json
 import math
 import os
 import subprocess
 import sys
-import json
-
-try:
-    from .release_evidence import git_commit, sha256, utc_now, write_manifest
-except ImportError:
-    from release_evidence import git_commit, sha256, utc_now, write_manifest
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+sys.path.insert(0, ROOT)
+
+from benchmarks.release_evidence import git_commit, sha256, utc_now, write_manifest
+
 DEFAULT_DATA = os.path.join("benchmark_data", "megacam", "perf")
 DEFAULT_OUT = os.path.join("test_outputs", "harness", "science-gate.md")
 DEFAULT_MANIFEST = os.path.join("test_outputs", "harness", "science-gate.json")
@@ -135,7 +134,7 @@ def _write(path, lines):
 
 
 def _evidence(version, command, status, data_ids):
-    config = os.path.join(ROOT, "weightmask.yml")
+    config = os.path.join(ROOT, "weightmask", "weightmask.yml")
     input_manifest = os.path.join(ROOT, INPUT_MANIFEST)
     return {
         "schema": "weightmask.release-evidence.v1",

@@ -4,27 +4,26 @@ import unittest
 from unittest.mock import patch
 
 import numpy as np
-import yaml
 
+from weightmask.background import estimate_background
+from weightmask.config import default_config
 from weightmask.contract import QualityBit
 from weightmask.process import process_image
 
 
 class TestElongatedSkyHandoff(unittest.TestCase):
     def test_bar_is_in_full_object_mask_and_remains_detected_when_unaccepted(self):
-        from weightmask.background import estimate_background
-
         shape = (120, 120)
         rng = np.random.default_rng(1)
         data = rng.normal(0.0, 1.0, shape).astype(np.float32)
         data[58:62, 20:100] = 40.0
         seen = []
 
-        def record(sci, mask, config):
+        def record(sci, mask, config, diagnostics=None):
             seen.append(np.array(mask, copy=True))
-            return estimate_background(sci, mask, config)
+            return estimate_background(sci, mask, config, diagnostics)
 
-        cfg = yaml.safe_load(open("weightmask.yml"))
+        cfg = default_config()
         cfg["streak_masking"]["enable"] = False
         cfg["sep_objects"]["extract_thresh"] = 2.0
         cfg["sep_objects"]["min_area"] = 5

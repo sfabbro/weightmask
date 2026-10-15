@@ -18,11 +18,15 @@ import: each baseline must find a real line and must not manufacture one out of
 a single hot pixel or pure noise.
 """
 
+import ast
+import inspect
+import textwrap
 import unittest
 
 import numpy as np
 
-from tests.benchmarks.run import _mask_stats, _radon_baseline, _simple_hough_baseline
+from benchmarks import suite as bench
+from benchmarks.suite import _mask_stats, _radon_baseline, _simple_hough_baseline
 
 SHAPE = (300, 300)
 RMS = np.full(SHAPE, 5.0, dtype=np.float32)
@@ -58,11 +62,6 @@ class TestComparatorsAreRealDetectors(unittest.TestCase):
 
     def test_comparators_import_no_weightmask_detector(self):
         """The point of a comparator: different code, not the same code twice."""
-        import ast
-        import inspect
-        import textwrap
-
-        from tests.benchmarks import run as bench
 
         for baseline in (_simple_hough_baseline, _radon_baseline):
             # Walk the AST, not the text: these docstrings *name* the stages they

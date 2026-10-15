@@ -26,6 +26,7 @@ Usage:
     pixi run streak-recall-floor -- --disable contours  # what contours uniquely finds
     pixi run streak-recall-floor -- --disable ransac    # what RANSAC uniquely finds (dashed trails)
 """
+
 from __future__ import annotations
 
 import argparse
@@ -41,24 +42,17 @@ from pathlib import Path
 
 import fitsio
 import numpy as np
-import yaml
+
+import weightmask.streaks as ST
+from weightmask.config import default_config, resolve_config
+from weightmask.process import header_gain_read_noise
 
 MODULE_DIR = os.path.dirname(os.path.abspath(__file__))
-if MODULE_DIR not in sys.path:
-    sys.path.insert(0, MODULE_DIR)
 REPO = os.path.dirname(MODULE_DIR)
-for path in (REPO, MODULE_DIR):
-    if path not in sys.path:
-        sys.path.insert(0, path)
+sys.path.insert(0, REPO)
 
-from production_inputs import (  # noqa: E402
-    capture_detector_inputs,
-    production_gain_read_noise,
-    streak_config,
-)
-from streak_inject import inject_grid, inject_source_poisson, scoreable_truth, trail_recall  # noqa: E402
-
-import weightmask.streaks as ST  # noqa: E402
+from benchmarks.production_inputs import capture_detector_inputs, streak_config
+from benchmarks.streak_inject import inject_grid, inject_source_poisson, scoreable_truth, trail_recall
 
 LONG = os.path.join(REPO, "benchmark_data", "megacam", "long", "996195p.fits.fz")
 PERF = os.path.join(REPO, "benchmark_data", "megacam", "perf")
@@ -178,7 +172,7 @@ def run_one(job):
             with fitsio.FITS(FLAT) as handle:
                 if hdu < len(handle) and handle[hdu].read().shape == science.shape:
                     flat = np.ascontiguousarray(handle[hdu].read().astype(np.float32))
-        cfg = yaml.safe_load(open(os.path.join(REPO, "weightmask.yml")))
+        cfg = default_config()
         scfg = streak_config(cfg)
         # Marginal-value measurement: switch a named stage off and re-run the same
         # grid, so a stage's cost can be weighed against what it uniquely finds.
@@ -195,12 +189,12 @@ def run_one(job):
                 raise ValueError(f"unknown stage {stage!r}; stages are {STAGES}")
         with contextlib.redirect_stdout(io.StringIO()):
             data_sub, rms, existing = capture_detector_inputs(science, header, cfg, flat=flat)
-        gain, _read_noise = production_gain_read_noise(header, cfg)
+        gain, _read_noise = header_gain_read_noise(header, resolve_config(cfg)["variance"])
         for length in lengths:
             for sigma in sigmas:
                 for dashed in dashed_kinds:
                     for seed in seeds:
-                        clean_baseline = ST.detect_streaks(data_sub, rms, existing, dict(scfg))
+                        clean_baseline = ST.detect_streaks(data_sub, rms, existing, dict(scfg)).mask
                         flux, _truth, trails, rejected = inject_grid(
                             data_sub.shape,
                             [(length, sigma, dashed)],
@@ -218,12 +212,10 @@ def run_one(job):
                             invalid_mask=~np.isfinite(science),
                         )
                         with contextlib.redirect_stdout(io.StringIO()):
-                            test, test_rms, test_existing = capture_detector_inputs(
-                                raw, header, cfg, flat=flat
-                            )
+                            test, test_rms, test_existing = capture_detector_inputs(raw, header, cfg, flat=flat)
                         started = time.perf_counter()
                         with contextlib.redirect_stdout(io.StringIO()):
-                            mask = ST.detect_streaks(test, test_rms, test_existing, dict(scfg))
+                            mask = ST.detect_streaks(test, test_rms, test_existing, dict(scfg)).mask
                         elapsed = time.perf_counter() - started
                         score_truth, rejected_truth = scoreable_truth(
                             trails[0]["truth"], test, test_existing, clean_baseline

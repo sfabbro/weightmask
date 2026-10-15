@@ -16,7 +16,7 @@ from weightmask.background import (
     _mesh_node_coords,
     _positive_int,
     _sky_mesh_shape,
-    _validated_sky_mesh,
+    validated_sky_mesh,
 )
 
 
@@ -93,7 +93,7 @@ class TestSkyMeshShape(unittest.TestCase):
 class TestValidatedSkyMesh(unittest.TestCase):
     def test_accepts_a_finite_mesh_of_the_expected_shape(self):
         mesh = np.array([[5.0]], dtype=np.float32)
-        data, shape, box = _validated_sky_mesh(mesh, (4, 4), 4)
+        data, shape, box = validated_sky_mesh(mesh, (4, 4), 4)
         self.assertEqual(shape, (4, 4))
         self.assertEqual(box, 4)
         self.assertEqual(data.dtype, np.float64)
@@ -102,37 +102,37 @@ class TestValidatedSkyMesh(unittest.TestCase):
     def test_returns_input_unchanged_content(self):
         mesh = np.arange(6, dtype=np.float64).reshape(2, 3)
         # shape (8, 9) with box 4 -> nodes (2, 3)
-        data, _shape, _box = _validated_sky_mesh(mesh, (8, 9), 4)
+        data, _shape, _box = validated_sky_mesh(mesh, (8, 9), 4)
         np.testing.assert_allclose(data, mesh)
 
     def test_rejects_a_mesh_that_is_not_two_dimensional(self):
         for mesh in (np.zeros(4), np.zeros((1, 1, 1))):
             with self.subTest(rank=np.ndim(mesh)):
                 with self.assertRaises(ValueError) as raised:
-                    _validated_sky_mesh(mesh, (4, 4), 4)
+                    validated_sky_mesh(mesh, (4, 4), 4)
                 self.assertIn("two-dimensional", str(raised.exception))
 
     def test_rejects_non_numeric_mesh_data(self):
         with self.assertRaises(ValueError) as raised:
-            _validated_sky_mesh(np.array([["x"]]), (4, 4), 4)
+            validated_sky_mesh(np.array([["x"]]), (4, 4), 4)
         self.assertIn("numeric", str(raised.exception))
 
     def test_rejects_non_finite_mesh_values(self):
         for bad in (np.nan, np.inf, -np.inf):
             with self.subTest(bad=bad):
                 with self.assertRaises(ValueError) as raised:
-                    _validated_sky_mesh(np.array([[bad]]), (4, 4), 4)
+                    validated_sky_mesh(np.array([[bad]]), (4, 4), 4)
                 self.assertIn("finite", str(raised.exception))
 
     def test_rejects_a_shape_mismatch(self):
         with self.assertRaises(ValueError) as raised:
-            _validated_sky_mesh(np.ones((2, 2)), (4, 4), 4)
+            validated_sky_mesh(np.ones((2, 2)), (4, 4), 4)
         self.assertIn("does not match expected shape", str(raised.exception))
 
     def test_validates_the_image_shape_before_the_mesh(self):
         # A bad image shape must fail even when the mesh itself is fine.
         with self.assertRaises(ValueError):
-            _validated_sky_mesh(np.ones((1, 1)), (4,), 4)
+            validated_sky_mesh(np.ones((1, 1)), (4,), 4)
 
 
 class TestMeshNodeCoords(unittest.TestCase):
@@ -167,37 +167,29 @@ class TestMeshNodeCoords(unittest.TestCase):
 class TestAutoBoxSize(unittest.TestCase):
     def test_scales_with_the_smaller_detector_dimension(self):
         # 2048/8 = 256 -> the auto ceiling; 64/8 = 8 -> the 32 px floor.
-        self.assertEqual(_auto_box_size((2048, 4096), 0.0, {}), 256)
-        self.assertEqual(_auto_box_size((64, 64), 0.0, {}), 32)
-        self.assertEqual(_auto_box_size((512, 512), 0.0, {}), 64)
+        self.assertEqual(_auto_box_size((2048, 4096), 0.0, 4096), 256)
+        self.assertEqual(_auto_box_size((64, 64), 0.0, 4096), 32)
+        self.assertEqual(_auto_box_size((512, 512), 0.0, 4096), 64)
 
     def test_uses_the_smaller_dimension(self):
-        self.assertEqual(_auto_box_size((4096, 256), 0.0, {}), _auto_box_size((256, 4096), 0.0, {}))
+        self.assertEqual(_auto_box_size((4096, 256), 0.0, 4096), _auto_box_size((256, 4096), 0.0, 4096))
 
     def test_crowded_fields_double_the_box_up_to_a_ceiling(self):
-        uncrowded = _auto_box_size((512, 512), 0.5, {})
-        crowded = _auto_box_size((512, 512), 0.51, {})
+        uncrowded = _auto_box_size((512, 512), 0.5, 4096)
+        crowded = _auto_box_size((512, 512), 0.51, 4096)
         self.assertEqual(crowded, 2 * uncrowded)
         # A large detector doubles from 256 to the 512 ceiling, not to 512+.
-        self.assertEqual(_auto_box_size((8192, 8192), 0.9, {}), 512)
+        self.assertEqual(_auto_box_size((8192, 8192), 0.9, 4096), 512)
 
     def test_config_box_is_a_ceiling_not_a_target(self):
         # Config cannot raise the box above what the image scale allows ...
-        self.assertEqual(_auto_box_size((2048, 2048), 0.0, {"box_size": 4096}), 256)
+        self.assertEqual(_auto_box_size((2048, 2048), 0.0, 4096), 256)
         # ... but it can lower it.
-        self.assertEqual(_auto_box_size((2048, 2048), 0.0, {"box_size": 50}), 50)
+        self.assertEqual(_auto_box_size((2048, 2048), 0.0, 50), 50)
 
     def test_never_returns_below_sixteen(self):
-        self.assertEqual(_auto_box_size((2048, 2048), 0.0, {"box_size": 4}), 16)
-        self.assertEqual(_auto_box_size((8, 8), 0.0, {"box_size": 1}), 16)
-
-    def test_unconvertible_config_falls_back_to_the_auto_box(self):
-        for value in ("junk", None, object()):
-            with self.subTest(value=value):
-                self.assertEqual(_auto_box_size((512, 512), 0.0, {"box_size": value}), 64)
-
-    def test_a_config_float_is_truncated_toward_zero(self):
-        self.assertEqual(_auto_box_size((2048, 2048), 0.0, {"box_size": 50.9}), 50)
+        self.assertEqual(_auto_box_size((2048, 2048), 0.0, 4), 16)
+        self.assertEqual(_auto_box_size((8, 8), 0.0, 1), 16)
 
 
 if __name__ == "__main__":

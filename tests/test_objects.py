@@ -48,7 +48,7 @@ class TestObjects(unittest.TestCase):
             "spike_enable": False,
         }
 
-        obj_mask = detect_objects(self.data_sub, self.bkg_rms_map, self.existing_mask, config)
+        obj_mask = detect_objects(self.data_sub, self.bkg_rms_map, self.existing_mask, config).added
 
         # Check that objects were detected
         self.assertTrue(np.sum(obj_mask) > 0)
@@ -61,16 +61,14 @@ class TestObjects(unittest.TestCase):
         data = np.zeros((64, 64), dtype=np.float32)
         data[30:35, 30:35] = 40.0
         config = {"spike_enable": False, "dynamic_halo_scaling": False}
-        mask = detect_objects(data, np.ones_like(data), None, config)
+        mask = detect_objects(data, np.ones_like(data), None, config).added
         self.assertTrue(mask[32, 32], "a seed swallowed by its ellipse is still an object")
 
-    def test_empty_config_receives_elongated_sky_handoff(self):
+    def test_empty_config_hands_off_an_elongated_source(self):
         data = np.zeros((120, 120), dtype=np.float32)
         data[58:62, 20:100] = 40.0
-        config = {}
-        detect_objects(data, np.ones_like(data), None, config)
-        self.assertIn("_elongated_for_sky", config)
-        self.assertTrue(config["_elongated_for_sky"][60, 60])
+        handoff = detect_objects(data, np.ones_like(data), None, {}).handoff
+        self.assertTrue(handoff[60, 60])
 
     def test_detect_objects_with_spikes(self):
         """Test detection with diffraction spike masking."""
@@ -87,7 +85,7 @@ class TestObjects(unittest.TestCase):
             "spike_width": 3,
         }
 
-        obj_mask = detect_objects(self.data_sub, self.bkg_rms_map, self.existing_mask, config)
+        obj_mask = detect_objects(self.data_sub, self.bkg_rms_map, self.existing_mask, config).added
 
         self.assertTrue(np.sum(obj_mask) > 0)
         self.assertTrue(obj_mask[50, 50])
@@ -114,7 +112,7 @@ class TestObjects(unittest.TestCase):
             "spike_enable": False,
         }
 
-        obj_mask = detect_objects(self.data_sub, self.bkg_rms_map, self.existing_mask, config)
+        obj_mask = detect_objects(self.data_sub, self.bkg_rms_map, self.existing_mask, config).added
 
         self.assertTrue(np.sum(obj_mask) > 0)
         self.assertTrue(obj_mask[25, 25])
@@ -134,7 +132,7 @@ class TestObjects(unittest.TestCase):
             "spike_enable": False,
         }
 
-        obj_mask = detect_objects(self.data_sub, self.bkg_rms_map, self.existing_mask, config)
+        obj_mask = detect_objects(self.data_sub, self.bkg_rms_map, self.existing_mask, config).added
 
         self.assertTrue(obj_mask[50, 50])
         self.assertFalse(obj_mask[50, 70])
@@ -158,7 +156,7 @@ class TestObjects(unittest.TestCase):
         }
 
         # This should trigger the "Clutter penalty" print statement
-        obj_mask = detect_objects(cluttered_data, bkg_rms, None, config)
+        obj_mask = detect_objects(cluttered_data, bkg_rms, None, config).added
 
         # As long as it doesn't crash and returns a boolean array, we are good
         self.assertIsInstance(obj_mask, np.ndarray)
@@ -173,7 +171,7 @@ class TestObjects(unittest.TestCase):
             "min_area": 5,
         }
 
-        obj_mask = detect_objects(self.data_sub, self.bkg_rms_map, self.existing_mask, config)
+        obj_mask = detect_objects(self.data_sub, self.bkg_rms_map, self.existing_mask, config).added
 
         self.assertIsInstance(obj_mask, np.ndarray)
         self.assertEqual(obj_mask.dtype, bool)
@@ -190,7 +188,7 @@ class TestObjects(unittest.TestCase):
         config = {"extract_thresh": 100.0, "min_area": 5}
         buf = io.StringIO()
         with contextlib.redirect_stdout(buf):
-            obj_mask = detect_objects(self.data_sub, self.bkg_rms_map, self.existing_mask, config)
+            obj_mask = detect_objects(self.data_sub, self.bkg_rms_map, self.existing_mask, config).added
         log = buf.getvalue()
 
         self.assertEqual(np.sum(obj_mask), 0)
@@ -210,7 +208,7 @@ class TestObjects(unittest.TestCase):
         existing_mask = np.zeros(self.shape, dtype=bool)
         existing_mask[50, 50] = True
 
-        obj_mask = detect_objects(self.data_sub, self.bkg_rms_map, existing_mask, config)
+        obj_mask = detect_objects(self.data_sub, self.bkg_rms_map, existing_mask, config).added
 
         # The star is detected, but the center pixel shouldn't be in the *new* mask
         self.assertFalse(obj_mask[50, 50])
@@ -234,7 +232,7 @@ class TestObjects(unittest.TestCase):
                 "handoff_elongated_to_streak": True,
                 "spike_enable": False,
             },
-        )
+        ).added
 
         self.assertFalse(np.any(mask))
 
@@ -247,15 +245,8 @@ class TestObjects(unittest.TestCase):
 
         self.assertEqual(raised.exception.stage, "objects.seed")
 
-    def test_missing_sep_backend_is_not_an_empty_detection(self):
-        with patch("weightmask.objects.sep", None):
-            with self.assertRaisesRegex(StageFailure, "objects.backend") as raised:
-                detect_objects(self.data_sub, self.bkg_rms_map, self.existing_mask, {})
-
-        self.assertEqual(raised.exception.stage, "objects.backend")
-
     def test_sep_main_failure_is_not_an_empty_detection(self):
-        no_objects = np.empty(0, dtype=[("x", "f8")])
+        no_objects = np.empty(0, dtype=[(f, "f8") for f in ("x", "y", "a", "b", "theta", "flux")])
 
         with patch("weightmask.objects._run_sep_extract", side_effect=[no_objects, OSError("main failure")]):
             with self.assertRaisesRegex(StageFailure, "objects.main") as raised:
@@ -286,7 +277,7 @@ class TestObjects(unittest.TestCase):
         bkg_rms_map = np.ones((100, 100), dtype=np.float32)
         data_sub[45:55, 45:55] = 100.0
 
-        mask = detect_objects(data_sub, bkg_rms_map, None, {"extract_thresh": 3.0})
+        mask = detect_objects(data_sub, bkg_rms_map, None, {"extract_thresh": 3.0}).added
 
         self.assertEqual(mask.shape, data_sub.shape)
         self.assertTrue(np.any(mask))

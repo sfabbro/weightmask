@@ -42,6 +42,14 @@ import os
 import sys
 from pathlib import Path
 
+import fitsio
+import matplotlib
+import matplotlib.pyplot as plt
+import numpy as np
+from astropy.visualization import ZScaleInterval
+from matplotlib.patches import Patch
+from scipy import ndimage
+
 from weightmask.contract import QUALITY_BITS
 
 # Painted in this order, first class wins a pixel: a pixel can carry several
@@ -67,7 +75,6 @@ def paint_classes(mask, *, detected=False, bits=None):
     source catalogue rather than a defect, and painting it would cover the
     classes a reviewer is looking for.
     """
-    import numpy as np
 
     bits = bits or QUALITY_BITS
     height, width = mask.shape
@@ -82,7 +89,6 @@ def paint_classes(mask, *, detected=False, bits=None):
 
 def class_counts(mask, *, bits=None):
     """How many pixels of each class are inside a cutout, painted bits included."""
-    import numpy as np
 
     bits = bits or QUALITY_BITS
     return {name: int(np.count_nonzero(mask & bit)) for name, bit in bits.items()}
@@ -97,8 +103,6 @@ def trail_candidates(mask, *, min_pixels=25, bits=None):
     long side: cheap, monotone in how long the segment is, and it does not need
     a principal-axis fit to be useful for ranking.
     """
-    import numpy as np
-    from scipy import ndimage
 
     bits = bits or QUALITY_BITS
     streak = (mask & int(bits["STREAK"])) != 0
@@ -178,7 +182,6 @@ def signal_prominence(data, mask, *, bits=None):
     pixels against the window's brightest clean pixels (its 99.9th percentile),
     plus how much of the masked line clears that bar at all.
     """
-    import numpy as np
 
     bits = bits or QUALITY_BITS
     finite = np.isfinite(data)
@@ -213,8 +216,6 @@ def window(centre, size, shape):
 
 def zscale_limits(data, *, contrast=0.25):
     """The zscale interval of a cutout, or (0, 1) when there is nothing finite."""
-    import numpy as np
-    from astropy.visualization import ZScaleInterval
 
     finite = data[np.isfinite(data)]
     if finite.size == 0:
@@ -227,7 +228,6 @@ def zscale_limits(data, *, contrast=0.25):
 
 def grey_panel(cutout, *, low, high):
     """0..1 greyscale of a real-data cutout, clipped to the zscale interval."""
-    import numpy as np
 
     scaled = (np.asarray(cutout, dtype=float) - low) / (high - low)
     scaled[~np.isfinite(scaled)] = 0.0
@@ -253,7 +253,6 @@ def exposure_hdu_for(extname, hdus, ccdname, position):
 
 def mask_hdu_indices(path):
     """(mask HDU index, EXTNAME) for every image HDU that holds a mask."""
-    import fitsio
 
     entries = []
     with fitsio.FITS(str(path)) as handle:
@@ -280,13 +279,8 @@ def render(
     margin=1.0,
 ):
     """Write one exposure's cutout sheet, and return the index entry describing it."""
-    import fitsio
-    import matplotlib
 
     matplotlib.use("Agg")
-    import matplotlib.pyplot as plt
-    import numpy as np
-    from matplotlib.patches import Patch
 
     entries = mask_hdu_indices(mask_path)
     if not entries:
@@ -483,7 +477,6 @@ def main(argv=None):
 
     # Named in the log so a pod whose environment lacks it says so immediately
     # rather than at the first exposure.
-    import matplotlib
 
     print(f"[cutouts] matplotlib {matplotlib.__version__}", flush=True)
 

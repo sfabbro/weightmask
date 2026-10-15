@@ -1,9 +1,13 @@
 import argparse
 import os
+import traceback
 
 import fitsio
 import numpy as np
+import sep
 import yaml
+from scipy.ndimage import binary_dilation
+from skimage.draw import disk, line
 
 from weightmask.background import estimate_background
 from weightmask.cosmics import detect_cosmic_rays
@@ -40,8 +44,6 @@ def _generate_background(size, x, y, regime_type):
 
 
 def _add_stars(data, gt, size, x, y, num_stars, regime_type, rng):
-    from skimage.draw import disk
-
     center_x, center_y = size / 2, size / 2
     for _ in range(num_stars):
         cx, cy = rng.integers(20, size - 20, size=2)
@@ -82,8 +84,6 @@ def _add_stars(data, gt, size, x, y, num_stars, regime_type, rng):
 
 
 def _add_saturated_stars(data, gt, size, x, y, regime_type):
-    from skimage.draw import disk
-
     cx_sat, cy_sat = int(size * 0.3), int(size * 0.7)
     flux_sat = 500000
     sigma_sat = 4.0 if regime_type == "normal" else 4.5
@@ -127,8 +127,6 @@ def _add_cosmic_rays(data, gt, size, rng):
 
 
 def _add_streaks(data, gt, size, streak_flux, regime_type):
-    from skimage.draw import line
-
     def mark(i, j, radius, component, centerline=False):
         gt["streak"][max(0, i - radius) : min(size, i + radius + 1), max(0, j - radius) : min(size, j + radius + 1)] = (
             True
@@ -257,19 +255,16 @@ def evaluate_mask(pred_mask, gt_mask, name, pre_mask=None):
         # Objects have dynamic halos based on flux in the weightmask.
         # A tiny ground truth disk (r=2) will classify all the correct halo masking as False Positives.
         # We aggressively dilate the ground truth mask for evaluation to cover expected halos.
-        from scipy.ndimage import binary_dilation
 
         g_mask_eval = binary_dilation(g_mask, iterations=6)  # Allow up to 6px radius of 'true' halo
     elif name == "Saturation":
         # Saturation bleed trails are grown and dilated horizontally by 2px for safety.
         # Dilate ground truth horizontally by 2px for evaluation.
-        from scipy.ndimage import binary_dilation
 
         g_mask_eval = binary_dilation(g_mask, structure=np.ones((1, 5), dtype=bool))
     elif name == "Streaks":
         # Streaks are dilated by 2px for safety.
         # Dilate ground truth by 2px for evaluation.
-        from scipy.ndimage import binary_dilation
 
         g_mask_eval = binary_dilation(g_mask, iterations=2)
     else:
@@ -352,8 +347,6 @@ def run_masking_test(config_path, args, save_fits=True, return_products=False):
     )
     existing_mask = np.zeros_like(sci_data, dtype=bool)
 
-    import sep
-
     sep.set_extract_pixstack(500000)  # Increase limit for heavily masked fields
 
     output_dir = "test_outputs"
@@ -418,7 +411,7 @@ def run_masking_test(config_path, args, save_fits=True, return_products=False):
     object_prior_mask = existing_mask.copy()
     # Use initial_mask here to avoid losing objects that were wrongly flagged as CRs/Saturation
     # to get cleaner metrics on object detection itself.
-    obj_mask = detect_objects(data_sub, bkg_rms, initial_mask, config.get("sep_objects", {}))
+    obj_mask = detect_objects(data_sub, bkg_rms, initial_mask, config.get("sep_objects", {})).added
     metrics["Objects"] = evaluate_mask(obj_mask, gt["stars"], "Objects", pre_mask=object_prior_mask)
     if save_fits:
         fitsio.write(
@@ -431,7 +424,7 @@ def run_masking_test(config_path, args, save_fits=True, return_products=False):
     # 4. Test Streaks (Run after objects for clean background)
     sky_map, _ = estimate_background(sci_data, existing_mask, config.get("sep_background", {}))
     data_sub = sci_data - sky_map
-    streak_mask = detect_streaks(data_sub, bkg_rms, existing_mask, config.get("streak_masking", {}))
+    streak_mask = detect_streaks(data_sub, bkg_rms, existing_mask, config.get("streak_masking", {})).mask
     metrics["Streaks"] = evaluate_mask(streak_mask, gt["streak"], "Streaks", pre_mask=initial_mask)
     if save_fits:
         fitsio.write(
@@ -577,12 +570,10 @@ def run_auto_sweep(report_file=None, seed=0):
         args.seed = seed + index
 
         try:
-            metrics = run_masking_test("weightmask.yml", args, save_fits=False)
+            metrics = run_masking_test("weightmask/weightmask.yml", args, save_fits=False)
             results[r["name"]] = metrics
         except Exception as e:
             print(f"  Regime {r['name']} failed: {e}")
-            import traceback
-
             traceback.print_exc()
 
     print("\n" + "=" * 50)
@@ -656,4 +647,4 @@ if __name__ == "__main__":
     if args.auto_sweep:
         raise SystemExit(run_auto_sweep(report_file=args.report, seed=args.seed))
     else:
-        run_masking_test("weightmask.yml", args, save_fits=True)
+        run_masking_test("weightmask/weightmask.yml", args, save_fits=True)

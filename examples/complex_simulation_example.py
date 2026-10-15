@@ -7,7 +7,7 @@ import numpy as np
 # the path so `tests` is importable (same shim as examples/test_real_mef.py).
 REPO_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, REPO_ROOT)  # noqa: E402
-from tests.simulate_and_test import create_simulated_data, run_masking_test  # noqa: E402
+from benchmarks.simulate import create_simulated_data, run_masking_test  # noqa: E402
 
 
 def run_complex_demonstration():
@@ -38,11 +38,8 @@ def run_complex_demonstration():
     print(f"  Data range: {np.min(data):.1f} to {np.max(data):.1f}")
     print(f"  Mean Bkg RMS map: {np.mean(bkg_rms_true):.1f}")
 
-    # 2. Prepare config file from repo root
-    config_path = os.path.join(REPO_ROOT, "weightmask.yml")
-    if not os.path.exists(config_path):
-        print("Error: weightmask.yml not found in root.")
-        return 1
+    # 2. Packaged config
+    config_path = os.path.join(REPO_ROOT, "weightmask", "weightmask.yml")
 
     # 3. Run staged detectors via the internal benchmark helper to get metrics
     class Args:

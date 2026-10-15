@@ -11,6 +11,7 @@ through ``calculate_inverse_variance``.
 import unittest
 
 import numpy as np
+from astropy.io import fits
 
 from weightmask.variance import amplifier_gain_map
 
@@ -182,8 +183,6 @@ class TestFallbackAndOutput(unittest.TestCase):
         self.assertEqual(gain.dtype, np.float32)
 
     def test_an_astropy_header_is_read_the_same_way(self):
-        from astropy.io import fits
-
         header = fits.Header([("GAINA", 1.0), ("GAINB", 2.0), ("DETSECA", "[1:4,1:4]"), ("DETSECB", "[5:8,1:4]")])
         gain = amplifier_gain_map(header, (4, 8), fallback=1.0)
         self.assertTrue(np.all(gain[:, :4] == 1.0))

@@ -4,7 +4,10 @@ import numpy as np
 import sep
 from astropy.stats import mad_std
 from scipy import linalg
+from scipy.interpolate import CubicSpline
 from scipy.ndimage import distance_transform_edt, gaussian_filter, median_filter
+
+from .config import section_config
 
 __all__ = [
     "sky_to_mesh",
@@ -31,7 +34,7 @@ def _estimate_global_sep(sci_data, mask):
         return None, None
 
 
-def _check_and_fix_edge_artifacts(bkg_map, sci_data_shape, config=None):
+def _check_and_fix_edge_artifacts(bkg_map, sci_data_shape, edge_thresh):
     """Check for edge artifacts and apply smoothing if necessary."""
     edge_width = 50
     h, w = sci_data_shape
@@ -44,7 +47,6 @@ def _check_and_fix_edge_artifacts(bkg_map, sci_data_shape, config=None):
         bkg_map[:, -edge_width:],
     ]
     center_median = np.nanmedian(bkg_map[edge_width:-edge_width, edge_width:-edge_width])
-    edge_thresh = float(config.get("edge_artifact_thresh", 50.0)) if config else 50.0
     for edge_region in edge_regions:
         edge_median = np.nanmedian(edge_region)
         if np.isfinite(edge_median) and np.isfinite(center_median) and abs(edge_median - center_median) > edge_thresh:
@@ -54,7 +56,7 @@ def _check_and_fix_edge_artifacts(bkg_map, sci_data_shape, config=None):
     return bkg_map
 
 
-def _estimate_sep_tiered(sci_data, mask, box_size, filter_size, max_box_size, config=None):
+def _estimate_sep_tiered(sci_data, mask, box_size, filter_size, max_box_size, edge_thresh):
     """Estimate background using SEP with tiered retries.
 
     Returns ``(bkg_map, bkg_rms_map, box_used)``; ``box_used`` is None on failure.
@@ -81,7 +83,7 @@ def _estimate_sep_tiered(sci_data, mask, box_size, filter_size, max_box_size, co
             bkg_rms_map = bkg.rms()
             print(f"    SEP background global RMS: {bkg.globalrms:.3f} (box={current_box})")
 
-            bkg_map = _check_and_fix_edge_artifacts(bkg_map, sci_data.shape, config=config)
+            bkg_map = _check_and_fix_edge_artifacts(bkg_map, sci_data.shape, edge_thresh)
             return bkg_map, bkg_rms_map, int(current_box)
 
         except Exception as e:
@@ -97,15 +99,13 @@ def _estimate_sep_tiered(sci_data, mask, box_size, filter_size, max_box_size, co
     return None, None, None
 
 
-def _estimate_robust_median(sci_data, mask, method, config):
+def _estimate_robust_median(sci_data, mask, method, kernel_size):
     """Estimate background using median filter or robust median fallback."""
     try:
         if method == "robust_median_fallback":
             print("    Using robust global median fallback.")
             kernel_size = 0
         else:
-            default_size = max(15, int(min(sci_data.shape) / 20) // 2 * 2 + 1)
-            kernel_size = config.get("median_kernel_size", default_size)
             print(f"    Using median filter with kernel size: {kernel_size}")
 
         if kernel_size > 0:
@@ -136,7 +136,7 @@ def _estimate_robust_median(sci_data, mask, method, config):
         return None, None
 
 
-def _estimate_smooth_surface(sci_data, mask, config):
+def _estimate_smooth_surface(sci_data, mask):
     """Estimate a smooth low-order background surface for gradient-dominated fields."""
     valid = np.isfinite(sci_data) & (~mask)
     if np.count_nonzero(valid) < 100:
@@ -190,16 +190,12 @@ def _estimate_smooth_surface(sci_data, mask, config):
     return bkg_map, bkg_rms_map
 
 
-def _auto_box_size(sci_data_shape, mask_fraction, config):
+def _auto_box_size(sci_data_shape, mask_fraction, cfg_box):
     """Choose a background box size from image scale and crowding."""
     min_dim = min(sci_data_shape)
     auto = max(32, min(256, int(round(min_dim / 8.0))))
     if mask_fraction > 0.5:
         auto = min(512, auto * 2)
-    try:
-        cfg_box = int(config.get("box_size", auto))
-    except (TypeError, ValueError):
-        cfg_box = auto
     # Config box is a ceiling: small detectors scale down to 64/32 automatically.
     return max(16, min(auto, cfg_box))
 
@@ -226,7 +222,7 @@ def _sky_mesh_shape(shape, box):
     return (h, w), ((h - 1) // box + 1, (w - 1) // box + 1), box
 
 
-def _validated_sky_mesh(mesh, shape, box):
+def validated_sky_mesh(mesh, shape, box):
     shape, expected_shape, box = _sky_mesh_shape(shape, box)
     try:
         data = np.asarray(mesh)
@@ -282,9 +278,7 @@ def reconstruct_sky_mesh(mesh, shape, box):
     """Rebuild full-res sky from mesh (SEP node phase + natural cubic)."""
     # scipy CubicSpline rather than SEP's C bicubic; agree to sub-ADU on MegaPrime.
     # Swap back to a SEP port if bit-identical back() is ever required.
-    from scipy.interpolate import CubicSpline
-
-    m, (h, w), box = _validated_sky_mesh(mesh, shape, box)
+    m, (h, w), box = validated_sky_mesh(mesh, shape, box)
     ny, nx = m.shape
     if ny == 1 and nx == 1:
         return np.full((h, w), float(m[0, 0]), dtype=np.float32)
@@ -334,7 +328,7 @@ def reconstruct_sky_from_header(mesh, header):
     return reconstruct_sky_mesh(mesh, shape, box)
 
 
-def _repair_negative_dips(bkg_map, sci_data, bkg_rms_map, mask, config, diagnostics=None):
+def _repair_negative_dips(bkg_map, sci_data, bkg_rms_map, mask, sigma, max_frac, diagnostics=None):
     """Nearest-valid fill for unphysical negative-sky interpolation overshoots.
 
     SEP's mesh interpolation can undershoot below zero next to masked bright
@@ -344,26 +338,9 @@ def _repair_negative_dips(bkg_map, sci_data, bkg_rms_map, mask, config, diagnost
     the map (data far above it) and consistent with the fill (data near
     neighbor sky). Faint regions, blanks, and rms-unknown pixels never qualify.
     """
-    try:
-        enable = bool(config.get("dip_repair_enable", True))
-    except Exception:
-        enable = True
-    if not enable or bkg_map is None:
-        return bkg_map
-    try:
-        sigma = float(config.get("dip_repair_sigma", 5.0))
-        max_frac = float(config.get("dip_repair_max_fraction", 0.05))
-    except (TypeError, ValueError):
-        sigma, max_frac = 5.0, 0.05
-    try:
-        data = np.asarray(sci_data, dtype=np.float64)
-        guide = np.isfinite(np.asarray(bkg_map, dtype=np.float64))
-    except Exception:
-        return bkg_map
-    try:
-        candidate = guide & (np.asarray(bkg_map) < 0) & np.isfinite(data) & (~np.asarray(mask, dtype=bool))
-    except Exception:
-        return bkg_map
+    data = np.asarray(sci_data, dtype=np.float64)
+    guide = np.isfinite(np.asarray(bkg_map, dtype=np.float64))
+    candidate = guide & (np.asarray(bkg_map) < 0) & np.isfinite(data) & (~np.asarray(mask, dtype=bool))
     n_cand = int(np.count_nonzero(candidate))
     if n_cand == 0:
         return bkg_map
@@ -371,29 +348,23 @@ def _repair_negative_dips(bkg_map, sci_data, bkg_rms_map, mask, config, diagnost
     if not np.isfinite(frac) or frac > max_frac:
         print(f"    WARNING: negative sky over {frac:.1%} of image exceeds repair cap; leaving map as-is.")
         return bkg_map
-    try:
-        from scipy.ndimage import distance_transform_edt
-
-        rms = np.asarray(bkg_rms_map, dtype=np.float64)
-        finite_rms = np.isfinite(rms) & (rms > 0)
-        thresh = np.where(finite_rms, sigma * rms, np.nan)
-        skymap = np.asarray(bkg_map, dtype=np.float64)
-        skymed = np.median(skymap[np.isfinite(skymap)]) if np.any(np.isfinite(skymap)) else np.nan
-        invalid = candidate | ~guide
-        _, idx = distance_transform_edt(invalid, return_indices=True)
-        fill_nn = skymap[tuple(idx)]
-        bad_map = (data - skymap) > thresh
-        # Tier 1: neighbor fill where the data agree with it.
-        accept = candidate & np.isfinite(thresh) & np.isfinite(fill_nn) & bad_map & (np.abs(data - fill_nn) <= thresh)
-        # Tier 2: deep interiors whose border fill is still depressed fall back
-        # to the global median when the data agree with that instead.
-        if np.isfinite(skymed):
-            accept2 = candidate & ~accept & np.isfinite(thresh) & bad_map & (np.abs(data - skymed) <= thresh)
-        else:
-            accept2 = np.zeros_like(candidate, dtype=bool)
-    except Exception as e:
-        print(f"    WARNING: dip repair failed ({e}); leaving map as-is.")
-        return bkg_map
+    rms = np.asarray(bkg_rms_map, dtype=np.float64)
+    finite_rms = np.isfinite(rms) & (rms > 0)
+    thresh = np.where(finite_rms, sigma * rms, np.nan)
+    skymap = np.asarray(bkg_map, dtype=np.float64)
+    skymed = np.median(skymap[np.isfinite(skymap)]) if np.any(np.isfinite(skymap)) else np.nan
+    invalid = candidate | ~guide
+    _, idx = distance_transform_edt(invalid, return_indices=True)
+    fill_nn = skymap[tuple(idx)]
+    bad_map = (data - skymap) > thresh
+    # Tier 1: neighbor fill where the data agree with it.
+    accept = candidate & np.isfinite(thresh) & np.isfinite(fill_nn) & bad_map & (np.abs(data - fill_nn) <= thresh)
+    # Tier 2: deep interiors whose border fill is still depressed fall back
+    # to the global median when the data agree with that instead.
+    if np.isfinite(skymed):
+        accept2 = candidate & ~accept & np.isfinite(thresh) & bad_map & (np.abs(data - skymed) <= thresh)
+    else:
+        accept2 = np.zeros_like(candidate, dtype=bool)
     n_bad = int(np.count_nonzero(accept)) + int(np.count_nonzero(accept2))
     if n_bad == 0:
         return bkg_map
@@ -406,80 +377,59 @@ def _repair_negative_dips(bkg_map, sci_data, bkg_rms_map, mask, config, diagnost
     return out.astype(np.asarray(bkg_map).dtype, copy=False)
 
 
-def estimate_background(sci_data, mask, config):
-    """
-    Estimate background and background RMS using a configured method.
+def estimate_background(sci_data, mask, config, diagnostics=None):
+    """Background and background-RMS maps, or ``(None, None)`` on failure.
 
-    Args:
-        sci_data (ndarray): Science image data array
-        mask (ndarray): Boolean mask of pixels to exclude from background estimation
-        config (dict): Configuration dictionary for background estimation
-
-    Returns:
-        tuple: (background_map, background_rms_map) or (None, None) on failure.
+    ``config`` is the ``sep_background`` section. ``diagnostics``, if given, is
+    filled with ``effective_method``, ``fallback``, ``dip_repaired`` and the SEP
+    ``box_size`` that built the map (absent when no SEP mesh was used).
     """
-    method = config.get("method", "sep").lower()
-    diagnostics = config.get("_diagnostics")
+    cfg = section_config("sep_background", config)
+    method = cfg["method"]
     print(f"  Estimating background using method: '{method}'")
+    if diagnostics is None:
+        diagnostics = {}
+    diagnostics.pop("box_size", None)
 
     bkg_map, bkg_rms_map = None, None
-    # Mesh encoding needs the SEP box that actually built the map (incl. retries).
-    # Non-SEP / global fallbacks have no mesh-compatible box -> leave unset/None.
-    if diagnostics is not None:
-        diagnostics.pop("box_size", None)
-
     if method == "sep":
         mask_fraction = np.mean(mask)
-        mask_threshold = float(config.get("mask_threshold", 0.8))
-        if mask_fraction > mask_threshold:
+        if mask_fraction > cfg["mask_threshold"]:
             print(f"    WARNING: High mask coverage ({mask_fraction:.1%}). Proactively falling back to global mode.")
             bkg_map, bkg_rms_map = _estimate_global_sep(sci_data, mask)
-            if diagnostics is not None:
-                diagnostics["fallback"] = "global_sep"
+            diagnostics["fallback"] = "global_sep"
             if bkg_map is None:
                 print("    Global SEP fallback failed; switching to robust median fallback.")
                 method = "robust_median_fallback"
         else:
-            box_size = (
-                _auto_box_size(sci_data.shape, mask_fraction, config)
-                if config.get("auto_box_scaling", True)
-                else config.get("box_size", 128)
-            )
-            try:
-                box_size = max(1, int(box_size))
-            except (TypeError, ValueError):
-                box_size = 128
-            filter_size = config.get("filter_size", 3)
-            max_box_size = config.get("max_box_size", max(box_size, 1024))
+            box_size = cfg["box_size"]
+            if cfg["auto_box_scaling"]:
+                box_size = _auto_box_size(sci_data.shape, mask_fraction, box_size)
             bkg_map, bkg_rms_map, used_box = _estimate_sep_tiered(
-                sci_data, mask, box_size, filter_size, max_box_size, config=config
+                sci_data, mask, box_size, cfg["filter_size"], cfg["max_box_size"], cfg["edge_artifact_thresh"]
             )
-            if diagnostics is not None and used_box is not None:
+            if used_box is not None:
                 diagnostics["box_size"] = used_box
             if bkg_map is None:
                 print("    SEP tiered retries failed; switching to robust median fallback.")
                 method = "robust_median_fallback"
 
     if method in ("robust_median_fallback", "median_filter"):
-        bkg_map, bkg_rms_map = _estimate_robust_median(sci_data, mask, method, config)
-        if diagnostics is not None:
-            diagnostics.pop("box_size", None)
-        if bkg_map is None and config.get("smooth_surface_fallback", True):
-            bkg_map, bkg_rms_map = _estimate_smooth_surface(sci_data, mask, config)
+        bkg_map, bkg_rms_map = _estimate_robust_median(sci_data, mask, method, cfg["median_kernel_size"])
+        diagnostics.pop("box_size", None)
+        if bkg_map is None and cfg["smooth_surface_fallback"]:
+            bkg_map, bkg_rms_map = _estimate_smooth_surface(sci_data, mask)
             method = "smooth_surface"
-    elif method != "sep":
-        warnings.warn(f"Unknown background estimation method: '{method}'", RuntimeWarning)
-        return None, None
 
     if bkg_rms_map is not None:
         invalid = ~np.isfinite(bkg_rms_map) | (bkg_rms_map <= 0)
         if np.any(invalid):
             bkg_rms_map = np.where(~invalid, bkg_rms_map, np.inf)
 
-    if bkg_map is not None and bkg_rms_map is not None:
-        bkg_map = _repair_negative_dips(bkg_map, sci_data, bkg_rms_map, mask, config, diagnostics)
+    if bkg_map is not None and bkg_rms_map is not None and cfg["dip_repair_enable"]:
+        bkg_map = _repair_negative_dips(
+            bkg_map, sci_data, bkg_rms_map, mask, cfg["dip_repair_sigma"], cfg["dip_repair_max_fraction"], diagnostics
+        )
 
-    if diagnostics is not None:
-        diagnostics["effective_method"] = method
-
+    diagnostics["effective_method"] = method
     return bkg_map, bkg_rms_map

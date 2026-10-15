@@ -38,12 +38,18 @@ from concurrent.futures import ProcessPoolExecutor
 import fitsio
 import numpy as np
 import yaml
+from scipy import ndimage as ndi
 
-MODULE_DIR = os.path.dirname(os.path.abspath(__file__))
-if MODULE_DIR not in sys.path:
-    sys.path.insert(0, MODULE_DIR)
+from weightmask.config import resolve_config
+from weightmask.persistence import persistent_axis_mask
+from weightmask.streaks import _detect_streaks_houghpeaks, detect_streaks
+from weightmask.utils import paths_alias
 
-from production_inputs import capture_detector_inputs, streak_config  # noqa: E402
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+
+from benchmarks.curate_trail_truth import _clip_line_to_shape
+from benchmarks.poloka_tracks import finite_robust_rms, poloka_satellite_mask
+from benchmarks.production_inputs import capture_detector_inputs, streak_config
 
 DEFAULT_FIXTURE = os.path.join("benchmarks", "trail_truth", "megacam_real_labels.json")
 DEFAULT_REPORT = os.path.join("benchmarks", "trail_truth", "megacam_real_labels.score.json")
@@ -52,7 +58,6 @@ DETECTORS = ("streaks", "houghpeaks", "poloka", "none")
 
 def labelled_band(entry, shape, corridor_px):
     """Rasterise an entry's labelled line into the pixels it actually covers."""
-    from curate_trail_truth import _clip_line_to_shape
 
     point = entry["geometry"]["point"]
     direction = entry["geometry"]["direction"]
@@ -68,29 +73,20 @@ def labelled_band(entry, shape, corridor_px):
     ys = np.clip(np.round(y0 + (y1 - y0) * t).astype(np.intp), 0, h - 1)
     band = np.zeros(shape, dtype=bool)
     band[ys, xs] = True
-    try:
-        from scipy import ndimage as ndi
-
-        band = ndi.binary_dilation(band, iterations=max(1, int(round(corridor_px))))
-    except Exception:  # pragma: no cover - scipy is a hard dependency elsewhere
-        pass
-    return band
+    return ndi.binary_dilation(band, iterations=max(1, int(round(corridor_px))))
 
 
 def run_detector(detector, science, data_sub, rms, existing, header, streak_cfg):
     """Return a boolean mask from the named detector."""
     if detector == "none":
         return np.zeros(science.shape, dtype=bool)
-    from weightmask.streaks import _detect_streaks_houghpeaks, detect_streaks
 
     if detector == "streaks":
-        return detect_streaks(data_sub, rms, existing, streak_cfg)
+        return detect_streaks(data_sub, rms, existing, streak_cfg).mask
     if detector == "houghpeaks":
         mask, _, _ = _detect_streaks_houghpeaks(data_sub, rms, existing, streak_cfg)
         return mask
     if detector == "poloka":
-        from poloka_tracks import finite_robust_rms, poloka_satellite_mask
-
         finite_science = science[np.isfinite(science)]
         if finite_science.size == 0:
             raise ValueError("no finite science values for Poloka comparison")
@@ -107,7 +103,6 @@ def run_detector(detector, science, data_sub, rms, existing, header, streak_cfg)
 
 def score_hdu(job):
     """Run every detector on one (exposure, HDU) and score the entries there."""
-    import fitsio
 
     path, hdu, entries, config_path, detectors, corridor_px, quiet = job[:7]
     apply_persistence = bool(job[7]) if len(job) > 7 else False
@@ -117,7 +112,7 @@ def score_hdu(job):
             science = np.ascontiguousarray(handle[hdu].read().astype(np.float32))
             header = handle[hdu].read_header()
         with contextlib.redirect_stdout(io.StringIO()) if quiet else contextlib.nullcontext():
-            config = yaml.safe_load(open(config_path))
+            config = resolve_config(yaml.safe_load(open(config_path)))
             streak_cfg = streak_config(config)
             prior = _persistence_prior(path, header, science.shape) if apply_persistence else None
             data_sub, rms, existing = capture_detector_inputs(science, header, config, detector_prior=prior)
@@ -175,8 +170,6 @@ def _calibration_frame(header):
 
 def _persistence_prior(path, header, shape):
     """Columns and rows bright on two distinct other science files of this CCD."""
-    from weightmask.streaks import persistent_axis_mask
-    from weightmask.utils import paths_alias
 
     name = _ccd_name(header)
     if not name:
@@ -272,7 +265,7 @@ def summarise(fixture, per_hdu, detectors, min_coverage, skip_px):
 def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__.split("\n")[0])
     parser.add_argument("--fixture", default=DEFAULT_FIXTURE)
-    parser.add_argument("--config", default="weightmask.yml")
+    parser.add_argument("--config", default="weightmask/weightmask.yml")
     parser.add_argument("--detector", action="append", choices=list(DETECTORS), help="repeatable; default 'streaks'")
     parser.add_argument("--data-root", help="override the fixture's data_root")
     parser.add_argument("--corridor-px", type=float, default=2.0, help="half-width of the labelled band")

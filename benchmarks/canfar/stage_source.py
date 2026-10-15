@@ -78,7 +78,7 @@ for dirpath, _dirs, files in os.walk(DEST):
     for name in files:
         names.append(os.path.relpath(os.path.join(dirpath, name), DEST))
 print("file_count", len(names))
-for probe in ("weightmask/streaks.py", "weightmask.yml", "benchmarks/science_gate.py",
+for probe in ("weightmask/streaks.py", "weightmask/weightmask.yml", "benchmarks/science_gate.py",
               "pyproject.toml", "tests/test_science_gate.py"):
     print("present" if probe in names else "MISSING", probe)
 print("total_bytes", sum(os.path.getsize(os.path.join(DEST, n)) for n in names))

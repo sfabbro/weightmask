@@ -36,7 +36,6 @@ class TestCandidateFromRhoTheta(unittest.TestCase):
 
     def test_theta_zero_is_a_vertical_line_through_the_centre(self):
         candidate = _candidate_from_rho_theta(0.0, 0.0, (10, 20))
-        self.assertEqual(candidate["angle_deg"], 0.0)
         # theta = 0 has normal (1, 0), so both endpoints share the centre column.
         xs = sorted({round(x, 6) for x, _y in candidate["clipped_endpoints"]})
         self.assertEqual(xs, [9.5])
@@ -44,7 +43,6 @@ class TestCandidateFromRhoTheta(unittest.TestCase):
 
     def test_theta_ninety_is_a_horizontal_line_through_the_centre(self):
         candidate = _candidate_from_rho_theta(0.0, 90.0, (10, 20))
-        self.assertAlmostEqual(candidate["angle_deg"], 90.0)
         ys = sorted({round(y, 6) for _x, y in candidate["clipped_endpoints"]})
         self.assertEqual(ys, [4.5])
         self._assert_hesse_identity(candidate, 0.0, 90.0, (10, 20))
@@ -66,27 +64,12 @@ class TestCandidateFromRhoTheta(unittest.TestCase):
                     self.assertIsNotNone(candidate)
                     self._assert_hesse_identity(candidate, rho, theta_deg, (80, 120))
 
-    def test_angle_is_normalized_into_half_open_degrees(self):
-        cases = {0.0: 0.0, 90.0: 90.0, 179.0: 179.0, 180.0: 0.0, 181.0: 1.0, -30.0: 150.0, 270.0: 90.0}
-        for given, expected in cases.items():
-            with self.subTest(theta=given):
-                candidate = _candidate_from_rho_theta(0.0, given, (60, 60))
-                self.assertAlmostEqual(candidate["angle_deg"], expected)
-
-    def test_span_is_the_endpoint_distance_and_matches_raw_span(self):
+    def test_span_is_the_endpoint_distance(self):
         candidate = _candidate_from_rho_theta(0.0, 0.0, (100, 100))
         (x0, y0), (x1, y1) = candidate["clipped_endpoints"]
         self.assertAlmostEqual(candidate["span"], float(np.hypot(x1 - x0, y1 - y0)))
-        self.assertEqual(candidate["raw_span"], candidate["span"])
         # A vertical line through the centre of a 100x100 image spans 99 px.
         self.assertAlmostEqual(candidate["span"], 99.0)
-
-    def test_segments_endpoints_and_clipped_endpoints_agree(self):
-        candidate = _candidate_from_rho_theta(2.0, 45.0, (80, 80))
-        ((sx0, sy0), (sx1, sy1)) = candidate["segments"][0]
-        (x0, y0), (x1, y1) = candidate["endpoints"]
-        self.assertEqual((sx0, sy0, sx1, sy1), (x0, y0, x1, y1))
-        self.assertEqual(candidate["endpoints"], candidate["clipped_endpoints"])
 
     def test_a_centered_vertical_line_touches_top_and_bottom_only(self):
         candidate = _candidate_from_rho_theta(0.0, 0.0, (100, 100))
@@ -97,12 +80,6 @@ class TestCandidateFromRhoTheta(unittest.TestCase):
         # cross any column of the image.
         self.assertIsNone(_candidate_from_rho_theta(100.0, 0.0, (10, 20)))
         self.assertIsNone(_candidate_from_rho_theta(-100.0, 0.0, (10, 20)))
-
-    def test_endpoints_are_reported_as_plain_floats(self):
-        candidate = _candidate_from_rho_theta(1.5, 33.0, (40, 50))
-        for point in candidate["segments"][0]:
-            for coordinate in point:
-                self.assertIsInstance(coordinate, float)
 
 
 class TestRefineHoughPeak(unittest.TestCase):
@@ -189,9 +166,7 @@ class TestScoreCandidate(unittest.TestCase):
     def _candidate(self, **overrides):
         candidate = {
             "span": 100.0,
-            "segments": [((0.0, 0.0), (100.0, 0.0))],
             "edge_touches": 0,
-            "corridor_overlap": 0.0,
         }
         candidate.update(overrides)
         return candidate
@@ -207,7 +182,7 @@ class TestScoreCandidate(unittest.TestCase):
 
     def test_the_documented_weighting_is_pinned(self):
         score = _score_candidate(self._candidate(), self._mask(30), self._info(), None)
-        # 0.45 * min(1, (30/100)/6) + 0.35 * min(1, 1/6) + 0.25 * min(1, 0.6/0.6)
+        # 0.45 * min(1, (30/100)/6) + 0.35 * (1/6, one segment) + 0.25 * min(1, 0.6/0.6)
         expected = 0.45 * 0.05 + 0.35 * (1.0 / 6.0) + 0.25 * 1.0
         self.assertAlmostEqual(score, expected, places=9)
         self.assertAlmostEqual(score, 0.3308333333333333, places=9)
@@ -225,11 +200,6 @@ class TestScoreCandidate(unittest.TestCase):
         wide = _score_candidate(self._candidate(), self._mask(300), self._info(support_width=20), None)
         self.assertAlmostEqual(narrow - wide, 0.45 * (20.0 - 8.0) / 12.0, places=9)
 
-    def test_corridor_overlap_is_penalised(self):
-        clean = _score_candidate(self._candidate(), self._mask(300), self._info(), None)
-        dirty = _score_candidate(self._candidate(corridor_overlap=0.5), self._mask(300), self._info(), None)
-        self.assertAlmostEqual(clean - dirty, 0.80 * 0.5, places=9)
-
     def test_existing_mask_overlap_is_penalised(self):
         refined = self._mask(300)
         clean = _score_candidate(self._candidate(), refined, self._info(), None)
@@ -238,12 +208,8 @@ class TestScoreCandidate(unittest.TestCase):
         empty_existing = _score_candidate(self._candidate(), refined, self._info(), np.zeros_like(refined))
         self.assertAlmostEqual(clean, empty_existing, places=9)
 
-    def test_more_segments_and_edge_touches_raise_the_score(self):
+    def test_edge_touches_raise_the_score(self):
         base = _score_candidate(self._candidate(), self._mask(300), self._info(), None)
-        segmented = _score_candidate(
-            self._candidate(segments=[((0.0, 0.0), (100.0, 0.0))] * 3), self._mask(300), self._info(), None
-        )
-        self.assertGreater(segmented, base)
         edged = _score_candidate(self._candidate(edge_touches=2), self._mask(300), self._info(), None)
         self.assertGreater(edged, base)
         self.assertAlmostEqual(edged - base, 0.20, places=9)

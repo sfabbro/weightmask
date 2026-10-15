@@ -19,9 +19,13 @@ from __future__ import annotations
 import argparse
 import hashlib
 import json
-import os
 import sys
 from pathlib import Path
+
+import fitsio
+import numpy as np
+
+from weightmask.contract import QUALITY_BITS
 
 RESULTS_ROOT = "/arc/projects/mlao/cfhtcast/weightmask-perf/results"
 SUMMARY_NAME = "streak_summary.tsv"
@@ -93,8 +97,6 @@ def read_stats_table(path: Path) -> tuple[dict[int, dict[str, int]], list[str]]:
 
 def recompute(mask_path: Path, bits: dict[str, int]) -> list[dict[str, int]]:
     """Recompute every bit count from the mask pixels, HDU by HDU."""
-    import fitsio
-    import numpy as np
 
     rows: list[dict[str, int]] = []
     with fitsio.FITS(str(mask_path)) as handle:
@@ -174,8 +176,6 @@ def main(argv=None) -> int:
     parser.add_argument("--out", default="")
     parser.add_argument("--only", default="", help="comma-separated observation ids")
     options = parser.parse_args(argv)
-
-    from weightmask.contract import QUALITY_BITS
 
     root = Path(options.root)
     wanted = {item.strip() for item in options.only.split(",") if item.strip()}

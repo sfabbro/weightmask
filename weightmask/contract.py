@@ -364,7 +364,7 @@ def _priority_keys(identity, pixel_indices):
     return keys ^ (keys >> np.uint64(31))
 
 
-class _BoundedPrioritySampler:
+class BoundedPrioritySampler:
     def __init__(self, max_samples: int = MAX_CONFIDENCE_SAMPLES):
         if isinstance(max_samples, (bool, np.bool_)) or max_samples <= 0:
             raise ValueError("max_samples must be positive")
@@ -422,7 +422,7 @@ class _BoundedPrioritySampler:
 def _bounded_percentile(values: np.ndarray, percentile: float) -> float:
     """Calculate a deterministic percentile without survey-scale global work."""
     _validate_confidence_percentile(percentile)
-    sampler = _BoundedPrioritySampler()
+    sampler = BoundedPrioritySampler()
     sampler.update("weight", values)
     sample = sampler.sample()
     if not sample.size:

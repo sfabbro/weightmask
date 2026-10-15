@@ -12,12 +12,8 @@ This package includes modules for detecting various effects in astronomical imag
 """
 
 from ._version import __version__
-
-# Legacy public dictionary kept stable; the contract adds INVALID_VARIANCE.
 from .contract import QUALITY_BITS
-
-MASK_BITS = QUALITY_BITS
 
 MASK_DTYPE = "uint32"  # Data type for the bitmask
 
-__all__ = ["MASK_BITS", "MASK_DTYPE", "QUALITY_BITS", "__version__"]
+__all__ = ["MASK_DTYPE", "QUALITY_BITS", "__version__"]

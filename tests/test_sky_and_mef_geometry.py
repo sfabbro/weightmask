@@ -1,8 +1,8 @@
 """Direct unit tests for sky-HDU selection and the MEF geometry/dtype helpers.
 
-`_image_hdus` decides which HDUs of a SKYMESH product are rebuilt, and
+`image_hdus` decides which HDUs of a SKYMESH product are rebuilt, and
 `_angle_sep_deg`, `_line_to_common_geometry`, `_wire_dtype` and
-`_ensure_hdu_extname` are load-bearing for chip-replica matching and for the
+`ensure_hdu_extname` are load-bearing for chip-replica matching and for the
 dtype of every written map. They were previously exercised only through the
 full pipeline, so a change in their arithmetic showed up as a diffuse product
 difference rather than a local failure.
@@ -15,13 +15,9 @@ import unittest
 import fitsio
 import numpy as np
 
-from weightmask.mef import (
-    _angle_sep_deg,
-    _ensure_hdu_extname,
-    _line_to_common_geometry,
-    _wire_dtype,
-)
-from weightmask.reconstruct_sky import _image_hdus
+from weightmask.products import _wire_dtype, ensure_hdu_extname
+from weightmask.replicas import _angle_sep_deg, _line_to_common_geometry
+from weightmask.utils import image_hdus
 
 
 def _wcs(cd=((1.0, 0.0), (0.0, 1.0)), crpix=(0.0, 0.0), scale=0.0002, crval=(10.0, 20.0)):
@@ -133,20 +129,6 @@ class TestWireDtype(unittest.TestCase):
         self.assertEqual(_wire_dtype(-32, is_mask=False), np.float32)
         self.assertEqual(_wire_dtype(-64, is_mask=False), np.float64)
 
-    def test_unmapped_bitpix_falls_back_to_the_documented_default(self):
-        self.assertEqual(_wire_dtype(12, is_mask=True), np.uint16)
-        self.assertEqual(_wire_dtype(-16, is_mask=False), np.float32)
-        self.assertEqual(_wire_dtype(16, is_mask=False), np.float32)
-        self.assertEqual(_wire_dtype(None, is_mask=True), np.uint16)
-        self.assertEqual(_wire_dtype(None, is_mask=False), np.float32)
-        self.assertEqual(_wire_dtype("not a bitpix", is_mask=True), np.uint16)
-        self.assertEqual(_wire_dtype("not a bitpix", is_mask=False), np.float32)
-
-    def test_numeric_text_and_float_bitpix_are_coerced(self):
-        self.assertEqual(_wire_dtype("32", is_mask=True), np.uint32)
-        self.assertEqual(_wire_dtype(16.0, is_mask=True), np.uint16)
-        self.assertEqual(_wire_dtype(64.0, is_mask=False), np.float64)
-
 
 class TestEnsureHduExtname(unittest.TestCase):
     def test_a_missing_extname_is_written(self):
@@ -155,7 +137,7 @@ class TestEnsureHduExtname(unittest.TestCase):
             fitsio.write(path, np.zeros((3, 3), dtype=np.float32), clobber=True)
             with fitsio.FITS(path, "rw") as hdul:
                 self.assertNotIn("EXTNAME", hdul[0].read_header())
-                _ensure_hdu_extname(hdul, 0, "PRIMARY_MAP")
+                ensure_hdu_extname(hdul, 0, "PRIMARY_MAP")
             with fitsio.FITS(path, "r") as hdul:
                 self.assertEqual(hdul[0].read_header()["EXTNAME"], "PRIMARY_MAP")
 
@@ -165,7 +147,7 @@ class TestEnsureHduExtname(unittest.TestCase):
             fitsio.write(path, np.zeros((2, 2), dtype=np.float32), clobber=True)
             fitsio.write(path, np.ones((2, 2), dtype=np.float32), extname="MAP_A")
             with fitsio.FITS(path, "rw") as hdul:
-                _ensure_hdu_extname(hdul, 1, "MAP_A")
+                ensure_hdu_extname(hdul, 1, "MAP_A")
             with fitsio.FITS(path, "r") as hdul:
                 self.assertEqual(hdul[1].read_header()["EXTNAME"], "MAP_A")
 
@@ -175,7 +157,7 @@ class TestEnsureHduExtname(unittest.TestCase):
             fitsio.write(path, np.zeros((2, 2), dtype=np.float32), clobber=True)
             fitsio.write(path, np.ones((2, 2), dtype=np.float32), extname="MAP_A")
             with fitsio.FITS(path, "rw") as hdul:
-                _ensure_hdu_extname(hdul, 1, "MAP_B")
+                ensure_hdu_extname(hdul, 1, "MAP_B")
             with fitsio.FITS(path, "r") as hdul:
                 self.assertEqual(hdul[1].read_header()["EXTNAME"], "MAP_B")
 
@@ -185,7 +167,7 @@ class TestEnsureHduExtname(unittest.TestCase):
             fitsio.write(path, np.zeros((2, 2), dtype=np.float32), clobber=True)
             fitsio.write(path, np.ones((2, 2), dtype=np.float32), extname="map_a")
             with fitsio.FITS(path, "rw") as hdul:
-                _ensure_hdu_extname(hdul, 1, "MAP_A")
+                ensure_hdu_extname(hdul, 1, "MAP_A")
             with fitsio.FITS(path, "r") as hdul:
                 self.assertEqual(hdul[1].read_header()["EXTNAME"], "MAP_A")
 
@@ -201,7 +183,7 @@ class TestImageHdus(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             path = self._product(tmp)
             with fitsio.FITS(path, "r") as hdul:
-                self.assertEqual(_image_hdus(hdul, None), [0])
+                self.assertEqual(image_hdus(hdul, None), [0])
 
     def test_every_image_extension_is_selected(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -210,19 +192,19 @@ class TestImageHdus(unittest.TestCase):
             fitsio.write(path, np.ones((4, 4), dtype=np.float32), extname="MAP_A")
             fitsio.write(path, np.full((4, 4), 2.0, dtype=np.float32), extname="MAP_B")
             with fitsio.FITS(path, "r") as hdul:
-                self.assertEqual(_image_hdus(hdul, None), [0, 1, 2])
+                self.assertEqual(image_hdus(hdul, None), [0, 1, 2])
 
     def test_an_explicit_image_index_is_returned(self):
         with tempfile.TemporaryDirectory() as tmp:
             path = self._product(tmp)
             with fitsio.FITS(path, "r") as hdul:
-                self.assertEqual(_image_hdus(hdul, 0), [0])
+                self.assertEqual(image_hdus(hdul, 0), [0])
 
     def test_an_explicit_table_index_is_refused(self):
         with tempfile.TemporaryDirectory() as tmp:
             path = self._product(tmp)
             with fitsio.FITS(path, "r") as hdul:
-                self.assertEqual(_image_hdus(hdul, 1), [])
+                self.assertEqual(image_hdus(hdul, 1), [])
 
     def test_an_explicit_one_dimensional_image_is_refused(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -230,14 +212,14 @@ class TestImageHdus(unittest.TestCase):
             fitsio.write(path, np.zeros((4, 4), dtype=np.float32), clobber=True)
             fitsio.write(path, np.arange(5, dtype=np.float32), extname="SPEC")
             with fitsio.FITS(path, "r") as hdul:
-                self.assertEqual(_image_hdus(hdul, 1), [])
+                self.assertEqual(image_hdus(hdul, 1), [])
 
     def test_an_out_of_range_index_is_refused(self):
         with tempfile.TemporaryDirectory() as tmp:
             path = self._product(tmp)
             with fitsio.FITS(path, "r") as hdul:
-                self.assertEqual(_image_hdus(hdul, 9), [])
-                self.assertEqual(_image_hdus(hdul, -1), [])
+                self.assertEqual(image_hdus(hdul, 9), [])
+                self.assertEqual(image_hdus(hdul, -1), [])
 
 
 if __name__ == "__main__":

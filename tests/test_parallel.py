@@ -13,18 +13,19 @@ import io
 import os
 import tempfile
 import unittest
-from argparse import Namespace
 from unittest.mock import patch
 
 import fitsio
 import numpy as np
-import yaml
 
+import weightmask.mef as mef
+from weightmask.config import default_config
+from weightmask.contract import CONFIDENCE_SEMANTICS_SCALED
 from weightmask.mef import _resolve_max_workers, process_all_hdus
 
 
 def _load_cfg():
-    cfg = yaml.safe_load(open("weightmask.yml"))
+    cfg = default_config()
     cfg["streak_masking"]["enable"] = False
     cfg["output_params"]["output_map_format"] = "weight"
     return cfg
@@ -59,7 +60,6 @@ def _run(in_path, flat_path, out_dir, tag, max_workers):
         "out_weight_raw_path": None,
         "individual_mask_paths": {},
     }
-    args = Namespace(tile_size=1024, individual_masks=False, max_workers=max_workers)
     cfg = _load_cfg()
     with fitsio.FITS(in_path) as hi, fitsio.FITS(flat_path) as hf:
         idx = list(range(len(hi)))[1:]  # skip empty primary
@@ -70,7 +70,6 @@ def _run(in_path, flat_path, out_dir, tag, max_workers):
             hf,
             cfg,
             paths,
-            args,
             flat_path=flat_path,
             max_workers=max_workers,
             input_path=in_path,
@@ -145,10 +144,9 @@ class TestParallelEquivalence(unittest.TestCase):
                 "out_weight_raw_path": None,
                 "individual_mask_paths": {},
             }
-            args = Namespace(tile_size=1024, individual_masks=False, max_workers=8)
             cfg = _load_cfg()
             with fitsio.FITS(sp) as hi, fitsio.FITS(fp) as hf:
-                n = process_all_hdus([0], hi, hf, cfg, paths, args, flat_path=fp, input_path=sp)
+                n = process_all_hdus([0], hi, hf, cfg, paths, flat_path=fp, input_path=sp, max_workers=8)
             self.assertEqual(n, 1)
             self.assertTrue(os.path.exists(paths["out_map_path"]))
 
@@ -173,10 +171,9 @@ class TestParallelEquivalence(unittest.TestCase):
                 "out_weight_raw_path": None,
                 "individual_mask_paths": {},
             }
-            args = Namespace(tile_size=1024, individual_masks=False, max_workers=1)
             cfg = _load_cfg()
             with fitsio.FITS(sp) as hi, fitsio.FITS(fp) as hf:
-                n = process_all_hdus([1, 2, 3], hi, hf, cfg, paths, args, flat_path=fp, input_path=sp)
+                n = process_all_hdus([1, 2, 3], hi, hf, cfg, paths, flat_path=fp, input_path=sp, max_workers=1)
             self.assertEqual(n, 0)
 
     def test_short_flat_mef_reports_why(self):
@@ -195,12 +192,11 @@ class TestParallelEquivalence(unittest.TestCase):
                 "out_weight_raw_path": None,
                 "individual_mask_paths": {},
             }
-            args = Namespace(tile_size=1024, individual_masks=False, max_workers=1)
             cfg = _load_cfg()
             buf = io.StringIO()
             with fitsio.FITS(sp) as hi, fitsio.FITS(fp) as hf:
                 with contextlib.redirect_stdout(buf):
-                    process_all_hdus([1, 2, 3], hi, hf, cfg, paths, args, flat_path=fp, input_path=sp)
+                    process_all_hdus([1, 2, 3], hi, hf, cfg, paths, flat_path=fp, input_path=sp, max_workers=1)
             log = buf.getvalue()
             self.assertIn("flat", log)
             self.assertIn("HDU(s), need index", log)
@@ -230,7 +226,6 @@ class TestParallelEquivalence(unittest.TestCase):
                 "out_weight_raw_path": None,
                 "individual_mask_paths": {},
             }
-            args = Namespace(tile_size=1024, individual_masks=False, max_workers=1)
             cfg = _load_cfg()
             buf = io.StringIO()
             with fitsio.FITS(sp) as hi, fitsio.FITS(bp) as hb:
@@ -241,10 +236,10 @@ class TestParallelEquivalence(unittest.TestCase):
                         None,
                         cfg,
                         paths,
-                        args,
                         input_path=sp,
                         hdul_badpix=hb,
                         badpix_path=bp,
+                        max_workers=1,
                     )
             self.assertEqual(n, 0)
             # Refusing to process must also refuse to publish: a partial
@@ -272,7 +267,6 @@ class TestParallelEquivalence(unittest.TestCase):
                 "out_weight_raw_path": None,
                 "individual_mask_paths": {},
             }
-            args = Namespace(tile_size=1024, individual_masks=False, max_workers=1)
             cfg = _load_cfg()
             buf = io.StringIO()
             with fitsio.FITS(sp) as hi, fitsio.FITS(bp) as hb:
@@ -283,10 +277,10 @@ class TestParallelEquivalence(unittest.TestCase):
                         None,
                         cfg,
                         paths,
-                        args,
                         input_path=sp,
                         hdul_badpix=hb,
                         badpix_path=bp,
+                        max_workers=1,
                     )
             log = buf.getvalue()
             self.assertIn("keep-map", log)
@@ -312,7 +306,6 @@ class TestParallelEquivalence(unittest.TestCase):
                 "out_weight_raw_path": None,
                 "individual_mask_paths": {},
             }
-            args = Namespace(tile_size=1024, individual_masks=False, max_workers=1)
             cfg = _load_cfg()
             buf = io.StringIO()
             # The *_path arguments are filename overrides for an already-open
@@ -326,11 +319,11 @@ class TestParallelEquivalence(unittest.TestCase):
                         hf,
                         cfg,
                         paths,
-                        args,
                         flat_path=fp,
                         input_path=sp,
                         hdul_dark=hd,
                         dark_path=dp,
+                        max_workers=1,
                     )
             log = buf.getvalue()
             self.assertIn("dark frame", log)
@@ -345,7 +338,6 @@ class TestParallelEquivalence(unittest.TestCase):
         above 1% of the normalisation to 1.0, while the header still claimed
         `normalized_weight_0_to_1`.
         """
-        from weightmask.contract import CONFIDENCE_SEMANTICS_SCALED
 
         shape = (48, 48)
         with tempfile.TemporaryDirectory() as tmp:
@@ -365,13 +357,12 @@ class TestParallelEquivalence(unittest.TestCase):
                 "out_weight_raw_path": None,
                 "individual_mask_paths": {},
             }
-            args = Namespace(tile_size=1024, individual_masks=False, max_workers=1)
             cfg = _load_cfg()
             cfg["streak_masking"]["enable"] = False
             cfg["output_params"]["output_map_format"] = "confidence"
             cfg["confidence_params"]["scale_to_100"] = True
             with fitsio.FITS(sp) as hi, fitsio.FITS(fp) as hf:
-                n = process_all_hdus([1, 2], hi, hf, cfg, paths, args, flat_path=fp, input_path=sp)
+                n = process_all_hdus([1, 2], hi, hf, cfg, paths, flat_path=fp, input_path=sp, max_workers=1)
             self.assertEqual(n, 2)
             with fitsio.FITS(paths["out_map_path"]) as f:
                 maps = [f[1].read(), f[2].read()]
@@ -381,12 +372,10 @@ class TestParallelEquivalence(unittest.TestCase):
             self.assertEqual(semantics, CONFIDENCE_SEMANTICS_SCALED)
 
     def test_resolve_workers(self):
-        import os as _os
-
         self.assertEqual(_resolve_max_workers(0, 36), 1)
         self.assertEqual(_resolve_max_workers(1, 36), 1)
         self.assertEqual(_resolve_max_workers(4, 2), 2)
-        self.assertEqual(_resolve_max_workers(None, 100), min(8, _os.cpu_count() or 4))
+        self.assertEqual(_resolve_max_workers(None, 100), min(8, os.cpu_count() or 4))
 
     def test_small_format_generic_defaults(self):
         # 512x512 vignetted flat + dead column, GAINA-only headers (no MegaPrime flat/GAIN).
@@ -450,11 +439,10 @@ class TestParallelEquivalence(unittest.TestCase):
                 "out_weight_raw_path": None,
                 "individual_mask_paths": {},
             }
-            args = Namespace(tile_size=32, individual_masks=False, max_workers=2)
             cfg = _load_cfg()
             cfg["variance"]["rescale_variance"] = False
             with fitsio.FITS(sp) as hi, fitsio.FITS(fp) as hf:
-                n = process_all_hdus([1, 2], hi, hf, cfg, paths, args, flat_path=fp, max_workers=2, input_path=sp)
+                n = process_all_hdus([1, 2], hi, hf, cfg, paths, flat_path=fp, max_workers=2, input_path=sp)
             self.assertEqual(n, 2)
             with fitsio.FITS(paths["out_invvar_path"]) as f:
                 ivars = [f[i].read() for i in range(len(f)) if i > 0 or len(f) == 1]
@@ -495,14 +483,12 @@ class TestStreamingFailureContainment(unittest.TestCase):
         ``fail_index`` are made to raise, so the surrounding streaming path is
         the production one. Returns ``(success_count, stdout, paths)``.
         """
-        import weightmask.mef as mef
 
         sp = os.path.join(tmp, f"{tag}.fits")
         fp = os.path.join(tmp, f"{tag}_flat.fits")
         _write_mef(sp, n_hdus)
         _write_flat(fp, n_hdus)
         paths = self._paths(tmp, tag)
-        args = Namespace(tile_size=1024, individual_masks=False, max_workers=max_workers)
         real_process = mef.process_hdu
 
         def flaky_process(science, flat, config, index, **kwargs):
@@ -537,7 +523,6 @@ class TestStreamingFailureContainment(unittest.TestCase):
                 hf,
                 _load_cfg(),
                 paths,
-                args,
                 flat_path=fp,
                 input_path=sp,
                 max_workers=max_workers,
@@ -556,7 +541,7 @@ class TestStreamingFailureContainment(unittest.TestCase):
             for max_workers in (1, 4):
                 n, log, paths = self._run_with_one_failing_hdu(tmp, f"contain{max_workers}", max_workers)
                 self.assertEqual(n, 3, f"max_workers={max_workers}")
-                self.assertIn("FATAL ERROR processing HDU 2: corrupt CCD 2", log)
+                self.assertIn("Skipping HDU 2: corrupt CCD 2", log)
                 self.assertIn("Skipping HDU 2 due to processing errors.", log)
                 for name, path in paths.items():
                     if path:

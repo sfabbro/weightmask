@@ -7,15 +7,19 @@ import pytest
 
 import weightmask
 from tests.fixtures.wave5_contract import FIXTURE_LABEL, classical_contract_fixture
+from weightmask._version import __version__ as _declared
 from weightmask.contract import (
+    _CONFIDENCE_SAMPLE_CHUNK_SIZE,
     CONFIDENCE_SEMANTICS,
     INVERSE_VARIANCE_SEMANTICS,
     MASK_POLARITY,
     MAX_CONFIDENCE_SAMPLES,
     ArtifactMetadata,
+    BoundedPrioritySampler,
     ProducerMetadata,
     QualityBit,
     WeightMaskProduct,
+    _bounded_percentile,
     build_weight_product,
     quality_bit_names,
     quality_bits_from_names,
@@ -63,15 +67,13 @@ def test_confidence_percentile_is_deterministically_bounded(monkeypatch):
 
 
 def test_priority_sampling_is_invariant_to_hdu_reordering_above_cap():
-    from weightmask.contract import _BoundedPrioritySampler
-
     populations = {
         "CCD-A": np.ones(50_500, dtype=np.float32),
         "CCD-B": np.full(50_501, 100, dtype=np.float32),
     }
     samples = []
     for identities in (("CCD-A", "CCD-B"), ("CCD-B", "CCD-A")):
-        sampler = _BoundedPrioritySampler()
+        sampler = BoundedPrioritySampler()
         for identity in identities:
             sampler.update(identity, populations[identity])
         samples.append(sampler.sample())
@@ -82,12 +84,10 @@ def test_priority_sampling_is_invariant_to_hdu_reordering_above_cap():
 
 
 def test_priority_sampling_is_invariant_to_splitting_one_hdu_above_cap():
-    from weightmask.contract import _BoundedPrioritySampler
-
     values = np.linspace(1, 200_001, 200_001, dtype=np.float32)
-    unsplit = _BoundedPrioritySampler()
+    unsplit = BoundedPrioritySampler()
     unsplit.update("CCD-A", values)
-    split = _BoundedPrioritySampler()
+    split = BoundedPrioritySampler()
     for chunk in np.array_split(values, [17_123, 99_999, 150_007]):
         split.update("CCD-A", chunk)
 
@@ -96,8 +96,6 @@ def test_priority_sampling_is_invariant_to_splitting_one_hdu_above_cap():
 
 
 def test_priority_collisions_are_resolved_independently_of_update_order(monkeypatch):
-    from weightmask.contract import _BoundedPrioritySampler
-
     monkeypatch.setattr(
         "weightmask.contract._priority_keys",
         lambda _identity_key, pixel_indices: np.zeros(pixel_indices.size, dtype=np.uint64),
@@ -108,7 +106,7 @@ def test_priority_collisions_are_resolved_independently_of_update_order(monkeypa
     }
     samples = []
     for identities in (("CCD-A", "CCD-B"), ("CCD-B", "CCD-A")):
-        sampler = _BoundedPrioritySampler(max_samples=7)
+        sampler = BoundedPrioritySampler(max_samples=7)
         for identity in identities:
             sampler.update(identity, populations[identity])
         samples.append(sampler.sample())
@@ -117,8 +115,6 @@ def test_priority_collisions_are_resolved_independently_of_update_order(monkeypa
 
 
 def test_priority_sampling_uses_bounded_chunks(monkeypatch):
-    from weightmask.contract import _CONFIDENCE_SAMPLE_CHUNK_SIZE, _BoundedPrioritySampler
-
     concatenated_sizes = []
     finite_input_sizes = []
     mask_sizes = []
@@ -141,7 +137,7 @@ def test_priority_sampling_uses_bounded_chunks(monkeypatch):
     monkeypatch.setattr("weightmask.contract.np.concatenate", bounded_concatenate)
     monkeypatch.setattr("weightmask.contract.np.flatnonzero", bounded_flatnonzero)
     monkeypatch.setattr("weightmask.contract.np.isfinite", bounded_isfinite)
-    sampler = _BoundedPrioritySampler()
+    sampler = BoundedPrioritySampler()
     values = np.ones((2 * MAX_CONFIDENCE_SAMPLES, 2), dtype=np.float32)[:, ::2]
     assert not values.flags.c_contiguous
     sampler.update("CCD-A", values)
@@ -153,8 +149,6 @@ def test_priority_sampling_uses_bounded_chunks(monkeypatch):
 
 
 def test_bounded_percentile_handles_empty_and_nonfinite_values_without_warnings():
-    from weightmask.contract import _bounded_percentile
-
     with warnings.catch_warnings():
         warnings.simplefilter("error")
         assert np.isnan(_bounded_percentile(np.array([], dtype=np.float32), 50))
@@ -163,8 +157,6 @@ def test_bounded_percentile_handles_empty_and_nonfinite_values_without_warnings(
 
 @pytest.mark.parametrize("percentile", [True, np.bool_(True)])
 def test_confidence_percentile_rejects_boolean(percentile):
-    from weightmask.contract import _bounded_percentile
-
     with pytest.raises(ValueError, match="confidence_percentile"):
         _bounded_percentile(np.ones(4), percentile)
     with pytest.raises(ValueError, match="confidence_percentile"):
@@ -352,7 +344,6 @@ def test_producer_and_artifact_metadata_round_trip_with_ml_fields_reserved():
     assert "WMQDCNT" in artifact.to_header()
     assert CONFIDENCE_SEMANTICS == "normalized_weight_0_to_1"
     assert INVERSE_VARIANCE_SEMANTICS == "inverse_variance_adu^-2"
-    from weightmask._version import __version__ as _declared
 
     assert weightmask.__version__ == _declared
 

@@ -1,19 +1,19 @@
 from pathlib import Path
 
+import astroscrappy
+import fitsio
 import numpy as np
+import sep
+from astropy.stats import mad_std
+from scipy.ndimage import gaussian_filter
+from skimage.draw import ellipse
+
+from weightmask.config import default_config
 
 REPO = Path(__file__).resolve().parents[1]
 
 
 def test_minimum_runtime_dependencies_support_representative_pipeline_operations(tmp_path):
-    import astroscrappy
-    import fitsio
-    import sep
-    import yaml
-    from astropy.stats import mad_std
-    from scipy.ndimage import gaussian_filter
-    from skimage.draw import ellipse
-
     image = np.zeros((32, 32), dtype=np.float32)
     image[16, 16] = 100.0
     assert np.isfinite(mad_std(image))
@@ -25,7 +25,7 @@ def test_minimum_runtime_dependencies_support_representative_pipeline_operations
     cosmic_mask, cleaned = astroscrappy.detect_cosmics(image, sigclip=5.0, niter=1)
     assert cosmic_mask.shape == image.shape
     assert cleaned.shape == image.shape
-    config = yaml.safe_load((REPO / "weightmask.yml").read_text())
+    config = default_config()
     assert isinstance(config, dict)
 
     path = tmp_path / "uint64.fits"

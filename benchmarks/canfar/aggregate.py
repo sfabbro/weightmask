@@ -185,7 +185,7 @@ def main(argv=None):
     lines += verdicts or ["- No jobs collected yet."]
     lines += [
         "",
-        "Gates per promoted winner: `pixi run test`, `python -m tests.benchmarks.run --suite megacam_real`,",
+        "Gates per promoted winner: `pixi run test`, `python -m benchmarks.suite --suite megacam_real`,",
         "`benchmarks/streak_inject.py` recall >= E0 (streak-touching variants only).",
         "Promote by appending before/after rows to `test_outputs/perf/megacam_perf_after.md`",
         "and merging the variant branch into the main line.",

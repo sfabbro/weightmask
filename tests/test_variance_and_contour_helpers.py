@@ -12,11 +12,23 @@ import warnings
 import numpy as np
 from numpy.testing import assert_allclose, assert_array_equal
 
+from weightmask.config import section_config
 from weightmask.objects import _adaptive_extract_threshold
 from weightmask.streaks import _contour_candidates
-from weightmask.variance import _handle_empirical_fit, _handle_theoretical, _mask_unmeasured_rms
+from weightmask.variance import _mask_unmeasured_rms, calculate_inverse_variance
 
 SENTINEL = np.inf
+_STREAK_CFG = section_config("streak_masking", {})
+
+
+def _theoretical(cfg, sky, flat, gain, read_noise, rms=None):
+    cfg = {"method": "theoretical", "rescale_variance": False, **cfg}
+    return calculate_inverse_variance(cfg, sky, flat, rms, gain, read_noise)
+
+
+def _empirical(cfg, sky, flat, sci, mask, gain, read_noise):
+    cfg = {"method": "empirical_fit", "rescale_variance": False, **cfg}
+    return calculate_inverse_variance(cfg, sky, flat, None, gain, read_noise, sci_data=sci, obj_mask=mask)
 
 
 class TestMaskUnmeasuredRms(unittest.TestCase):
@@ -62,22 +74,22 @@ class TestMaskUnmeasuredRms(unittest.TestCase):
         assert_array_equal(masked, np.array([[0.0, 0.0], [0.0, 5.0]], dtype=np.float32))
 
 
-class TestHandleTheoretical(unittest.TestCase):
+class TestTheoreticalVariance(unittest.TestCase):
     def _inputs(self):
         sky = np.full((8, 8), 100.0, dtype=np.float32)
         flat = np.ones((8, 8), dtype=np.float32)
         return sky, flat
 
-    def test_missing_flat_or_sky_is_refused_with_a_warning(self):
+    def test_missing_flat_or_sky_is_refused(self):
         sky, flat = self._inputs()
-        with self.assertWarns(RuntimeWarning):
-            self.assertIsNone(_handle_theoretical({}, sky, None, 1.0, 5.0, 1e-9))
-        with self.assertWarns(RuntimeWarning):
-            self.assertIsNone(_handle_theoretical({}, None, flat, 1.0, 5.0, 1e-9))
+        with self.assertRaisesRegex(ValueError, "flat and sky"):
+            _theoretical({}, sky, None, 1.0, 5.0)
+        with self.assertRaisesRegex(ValueError, "flat and sky"):
+            _theoretical({}, None, flat, 1.0, 5.0)
 
     def test_a_measured_flat_and_sky_produce_finite_positive_weights(self):
         sky, flat = self._inputs()
-        inv_var = _handle_theoretical({}, sky, flat, 1.0, 0.0, 1e-9)
+        inv_var = _theoretical({}, sky, flat, 1.0, 0.0)
         self.assertEqual(inv_var.shape, sky.shape)
         self.assertTrue(np.all(np.isfinite(inv_var)))
         self.assertTrue(np.all(inv_var > 0))
@@ -86,12 +98,12 @@ class TestHandleTheoretical(unittest.TestCase):
         sky, flat = self._inputs()
         rms = np.full((8, 8), 4.0, dtype=np.float32)
         rms[0, :] = SENTINEL
-        inv_var = _handle_theoretical({}, sky, flat, 1.0, 0.0, 1e-9, rms)
+        inv_var = _theoretical({}, sky, flat, 1.0, 0.0, rms)
         assert_array_equal(inv_var[0, :], 0.0)
         self.assertTrue(np.all(inv_var[1:, :] > 0))
 
 
-class TestHandleEmpiricalFit(unittest.TestCase):
+class TestEmpiricalFitVariance(unittest.TestCase):
     def _inputs(self, shape=(64, 64)):
         sky = np.full(shape, 100.0, dtype=np.float32)
         flat = np.ones(shape, dtype=np.float32)
@@ -99,15 +111,15 @@ class TestHandleEmpiricalFit(unittest.TestCase):
         mask = np.zeros(shape, dtype=bool)
         return sci, mask, sky, flat
 
-    def test_missing_science_data_is_refused_with_a_warning(self):
+    def test_missing_science_data_is_refused(self):
         _sci, mask, sky, flat = self._inputs()
-        with self.assertWarns(RuntimeWarning):
-            self.assertIsNone(_handle_empirical_fit({}, sky, flat, None, mask, 1.0, 5.0, 1e-9))
+        with self.assertRaisesRegex(ValueError, "science data"):
+            _empirical({}, sky, flat, None, mask, 1.0, 5.0)
 
-    def test_a_missing_object_mask_is_refused_with_a_warning(self):
+    def test_a_missing_object_mask_is_refused(self):
         sci, _mask, sky, flat = self._inputs()
-        with self.assertWarns(RuntimeWarning):
-            self.assertIsNone(_handle_empirical_fit({}, sky, flat, sci, None, 1.0, 5.0, 1e-9))
+        with self.assertRaisesRegex(ValueError, "object mask"):
+            _empirical({}, sky, flat, sci, None, 1.0, 5.0)
 
     def test_too_few_patches_falls_back_to_the_header_gain_and_read_noise(self):
         # patch_size 128 on a 64x64 frame leaves one patch, below the fit's
@@ -115,8 +127,8 @@ class TestHandleEmpiricalFit(unittest.TestCase):
         # gain/read noise must be used unchanged.
         sci, mask, sky, flat = self._inputs()
         cfg = {"empirical_patch_size": 128}
-        fallback = _handle_empirical_fit(cfg, sky, flat, sci, mask, 1.0, 5.0, 1e-9)
-        expected = _handle_theoretical(cfg, sky, flat, 1.0, 5.0, 1e-9)
+        fallback = _empirical(cfg, sky, flat, sci, mask, 1.0, 5.0)
+        expected = _theoretical(cfg, sky, flat, 1.0, 5.0)
         self.assertIsNotNone(fallback)
         assert_allclose(fallback, expected)
 
@@ -129,7 +141,7 @@ class TestHandleEmpiricalFit(unittest.TestCase):
         flat = np.ones(shape, dtype=np.float32)
         with warnings.catch_warnings():
             warnings.simplefilter("ignore")
-            inv_var = _handle_empirical_fit({"empirical_patch_size": 16}, sky, flat, sci, mask, 1.0, 5.0, 1e-9)
+            inv_var = _empirical({"empirical_patch_size": 16}, sky, flat, sci, mask, 1.0, 5.0)
         self.assertIsNotNone(inv_var)
         self.assertEqual(inv_var.shape, shape)
         self.assertTrue(np.all(np.isfinite(inv_var)))
@@ -195,15 +207,13 @@ class TestContourCandidates(unittest.TestCase):
         return data
 
     def test_a_blank_frame_proposes_nothing(self):
-        self.assertEqual(_contour_candidates(self._frame(), None, None, {}), [])
+        self.assertEqual(_contour_candidates(self._frame(), None, None, _STREAK_CFG), [])
 
     def test_a_long_thin_trail_is_proposed_once_with_a_boundary_to_boundary_span(self):
-        candidates = _contour_candidates(self._horizontal_trail(), None, None, {})
+        candidates = _contour_candidates(self._horizontal_trail(), None, None, _STREAK_CFG)
         self.assertEqual(len(candidates), 1)
         candidate = candidates[0]
         self.assertEqual(candidate["source"], "contours")
-        # The PCA span is the blob; the reported span is the clipped line.
-        self.assertAlmostEqual(candidate["raw_span"], 300.0, delta=5.0)
         self.assertGreater(candidate["span"], 350.0)
         self.assertEqual(candidate["edge_touches"], 2)
         # A horizontal trail has an axis angle of 0 degrees. Normalised into
@@ -212,15 +222,12 @@ class TestContourCandidates(unittest.TestCase):
         self.assertLess(min(abs(angle), abs(180.0 - angle)), 1.0)
 
     def test_a_vertical_trail_is_proposed_on_the_other_axis(self):
-        candidates = _contour_candidates(self._vertical_trail(), None, None, {})
+        candidates = _contour_candidates(self._vertical_trail(), None, None, _STREAK_CFG)
         self.assertEqual(len(candidates), 1)
         candidate = candidates[0]
         self.assertAlmostEqual(candidate["angle_deg"], 90.0, delta=1.0)
-        self.assertAlmostEqual(candidate["raw_span"], 300.0, delta=5.0)
         self.assertEqual(candidate["edge_touches"], 2)
         (x0, y0), (x1, y1) = candidate["clipped_endpoints"]
-        self.assertEqual(candidate["endpoints"], candidate["clipped_endpoints"])
-        self.assertEqual(candidate["segments"], [candidate["clipped_endpoints"]])
         # Clipped to the frame: a vertical trail spans top edge to bottom edge.
         self.assertLess(min(y0, y1), 1.0)
         self.assertGreater(max(y0, y1), 398.0)
@@ -229,37 +236,46 @@ class TestContourCandidates(unittest.TestCase):
         data = self._frame()
         yy, xx = np.indices(data.shape)
         data[np.hypot(yy - 200, xx - 200) < 25.0] = 10.0
-        self.assertEqual(_contour_candidates(data, None, None, {}), [])
+        self.assertEqual(_contour_candidates(data, None, None, _STREAK_CFG), [])
 
     def test_a_bright_existing_mask_suppresses_the_trail(self):
         data = self._horizontal_trail()
         mask = data > 0
-        self.assertEqual(_contour_candidates(data, mask, None, {}), [])
+        self.assertEqual(_contour_candidates(data, mask, None, _STREAK_CFG), [])
 
     def test_the_detection_level_is_set_by_the_measured_rms(self):
         data = self._horizontal_trail(amplitude=10.0)
         # A scale of 8 puts the 2.5-sigma level at 20, above the 10 ADU trail.
         rms = np.full(data.shape, 8.0, dtype=np.float32)
-        self.assertEqual(_contour_candidates(data, None, rms, {}), [])
+        self.assertEqual(_contour_candidates(data, None, rms, _STREAK_CFG), [])
         rms_low = np.full(data.shape, 1.0, dtype=np.float32)
-        self.assertEqual(len(_contour_candidates(data, None, rms_low, {})), 1)
+        self.assertEqual(len(_contour_candidates(data, None, rms_low, _STREAK_CFG)), 1)
 
     def test_an_unmeasured_rms_map_falls_back_to_unit_scale_rather_than_the_sentinel(self):
         # If the sentinel were taken at face value the level would be infinite
         # and the stage would never propose anything.
         data = self._horizontal_trail()
         rms = np.full(data.shape, SENTINEL, dtype=np.float32)
-        self.assertEqual(len(_contour_candidates(data, None, rms, {})), 1)
+        self.assertEqual(len(_contour_candidates(data, None, rms, _STREAK_CFG)), 1)
 
     def test_the_span_gate_is_configurable(self):
         data = self._horizontal_trail()
-        self.assertEqual(len(_contour_candidates(data, None, None, {"contour_params": {"min_span": 400.0}})), 0)
+        self.assertEqual(
+            len(
+                _contour_candidates(
+                    data, None, None, section_config("streak_masking", {"contour_params": {"min_span": 400.0}})
+                )
+            ),
+            0,
+        )
 
     def test_the_shape_gate_is_configurable(self):
         data = self._frame()
         yy, xx = np.indices(data.shape)
         data[np.hypot(yy - 200, xx - 200) < 25.0] = 10.0
-        permissive = {"contour_params": {"shape_cut": 2.0, "radius_dev_cut": 0.0, "min_span": 1.0}}
+        permissive = section_config(
+            "streak_masking", {"contour_params": {"shape_cut": 1.0, "radius_dev_cut": 0.0, "min_span": 1.0}}
+        )
         self.assertEqual(len(_contour_candidates(data, None, None, permissive)), 1)
 
 

@@ -1,27 +1,34 @@
 """Declarative validation and packaged access for the weightmask configuration."""
 
+import copy
 import hashlib
 import os
 import stat
 import tempfile
 from contextlib import contextmanager
 from dataclasses import dataclass
+from functools import cache
 from importlib import resources
 from numbers import Integral, Real
 from pathlib import Path
 
 import numpy as np
+import yaml
 
 _CONFIG_NAME = "weightmask.yml"
 
 __all__ = [
     "clean_config_dict",
+    "configuration_errors",
     "copy_default_config",
+    "default_config",
     "default_config_bytes",
     "default_config_path",
     "default_config_resource",
     "default_config_sha256",
     "default_config_text",
+    "resolve_config",
+    "section_config",
 ]
 
 
@@ -309,9 +316,7 @@ CONFIG_SCHEMA = {
     },
     "streak_masking": {
         "enable": _BOOL,
-        "mode": _enum("auto_ground"),
         "profile_accept": _BOOL,
-        "debug": _BOOL,
         "houghpeak_params": {
             "enable": _BOOL,
             "bin": _POSITIVE_INTEGER,
@@ -487,59 +492,33 @@ def _validate_mapping(value, schema, path=""):
     return errors
 
 
-def _nested(config, path, default=None):
-    value = config
+def _nested(config, path):
     for key in path:
-        if not isinstance(value, dict) or key not in value:
-            return default
-        value = value[key]
-    return value
+        config = config[key]
+    return config
+
+
+_ORDERED_PAIRS = (
+    (("flat_masking", "local_low_thresh"), "<", ("flat_masking", "local_high_thresh")),
+    (("saturation", "bleed_cap_min"), "<=", ("saturation", "bleed_cap_max")),
+    (("cosmic_ray", "faint_cr", "min_component_area"), "<=", ("cosmic_ray", "faint_cr", "max_component_area")),
+    (
+        ("cosmic_ray", "faint_cr", "residual", "min_component_area"),
+        "<=",
+        ("cosmic_ray", "faint_cr", "residual", "max_component_area"),
+    ),
+    (("streak_masking", "mask_params", "min_row_hits"), "<=", ("streak_masking", "mask_params", "strip_length")),
+    (("streak_masking", "mask_params", "max_support_width"), "<=", ("streak_masking", "mask_params", "strip_width")),
+    (("sep_background", "box_size"), "<=", ("sep_background", "max_box_size")),
+)
 
 
 def _cross_field_errors(config):
-    checks = [
-        (("flat_masking", "local_low_thresh"), 0.5, ("flat_masking", "local_high_thresh"), 2.0, "<"),
-        (("saturation", "bleed_cap_min"), 20, ("saturation", "bleed_cap_max"), 200, "<="),
-        (
-            ("cosmic_ray", "faint_cr", "min_component_area"),
-            3,
-            ("cosmic_ray", "faint_cr", "max_component_area"),
-            12,
-            "<=",
-        ),
-        (
-            ("cosmic_ray", "faint_cr", "residual", "min_component_area"),
-            4,
-            ("cosmic_ray", "faint_cr", "residual", "max_component_area"),
-            12,
-            "<=",
-        ),
-        (
-            ("streak_masking", "mask_params", "min_row_hits"),
-            8,
-            ("streak_masking", "mask_params", "strip_length"),
-            256,
-            "<=",
-        ),
-        (
-            ("streak_masking", "mask_params", "max_support_width"),
-            16,
-            ("streak_masking", "mask_params", "strip_width"),
-            96,
-            "<=",
-        ),
-    ]
     errors = []
-    for left_path, left_default, right_path, right_default, operator in checks:
-        left = _nested(config, left_path, left_default)
-        right = _nested(config, right_path, right_default)
-        valid = left < right if operator == "<" else left <= right
-        if not valid:
+    for left_path, operator, right_path in _ORDERED_PAIRS:
+        left, right = _nested(config, left_path), _nested(config, right_path)
+        if not (left < right if operator == "<" else left <= right):
             errors.append(f"'{'.'.join(left_path)}' must be {operator} '{'.'.join(right_path)}'.")
-    box_size = _nested(config, ("sep_background", "box_size"), 128)
-    max_box_size = _nested(config, ("sep_background", "max_box_size"), max(box_size, 1024))
-    if box_size > max_box_size:
-        errors.append("'sep_background.box_size' must be <= 'sep_background.max_box_size'.")
     hist_min = _nested(config, ("saturation", "histogram_params", "hist_min_adu"))
     hist_max = _nested(config, ("saturation", "histogram_params", "hist_max_adu"))
     if hist_min is not None and hist_max is not None and hist_min >= hist_max:
@@ -549,8 +528,46 @@ def _cross_field_errors(config):
     return errors
 
 
+@cache
+def _defaults():
+    return clean_config_dict(yaml.safe_load(default_config_text()))
+
+
+def default_config():
+    """The packaged configuration as a fresh, mutable dict."""
+    return copy.deepcopy(_defaults())
+
+
+def _merged(base, override):
+    merged = dict(base)
+    for key, value in override.items():
+        if isinstance(value, dict) and isinstance(base.get(key), dict):
+            merged[key] = _merged(base[key], value)
+        else:
+            merged[key] = value
+    return merged
+
+
 def configuration_errors(config):
+    """Problems with ``config`` as an override of the packaged defaults."""
     errors = _validate_mapping(config, CONFIG_SCHEMA)
     if not errors:
-        errors.extend(_cross_field_errors(config))
+        errors.extend(_cross_field_errors(_merged(_defaults(), config)))
     return errors
+
+
+def resolve_config(config=None):
+    """``config`` merged over the packaged defaults; raises ValueError if invalid.
+
+    Every key of the result is present, so stages index it directly.
+    """
+    config = {} if config is None else config
+    errors = configuration_errors(config)
+    if errors:
+        raise ValueError("Invalid configuration: " + " ".join(errors))
+    return _merged(default_config(), config)
+
+
+def section_config(name, section=None):
+    """One section of the configuration, resolved like ``resolve_config``."""
+    return resolve_config({name: {} if section is None else section})[name]

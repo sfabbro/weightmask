@@ -10,10 +10,17 @@ Usage:
     pixi run python benchmarks/mine_trail_candidates.py <pid> [pid ...]
 """
 
+import glob
+import os
 import sys
 import time
 
+import fitsio
 import numpy as np
+
+from weightmask.background import estimate_background
+from weightmask.config import default_config
+from weightmask.streaks import _detect_streaks_houghpeaks
 
 
 def _hdu_identity(header):
@@ -46,15 +53,7 @@ def _matching_hdu(handle, target_header):
 
 
 def main():
-    import glob
-
-    import fitsio
-    import yaml
-
-    from weightmask.background import estimate_background
-    from weightmask.streaks import _detect_streaks_houghpeaks
-
-    base = yaml.safe_load(open("weightmask.yml"))
+    base = default_config()
     scfg = dict(base["streak_masking"])
     scfg["enable"] = True
     print("pid\thdu\ttheta\trho\tconf\tmaskpx\ttime_s", flush=True)
@@ -62,8 +61,6 @@ def main():
     for pid in sys.argv[1:]:
         src = None
         for cand in (f"/scratch/sfabbro/downloads/{pid}.fits.fz", f"/scratch/sfabbro/downloads/{pid}.fits"):
-            import os
-
             if os.path.exists(cand):
                 src = cand
                 break
@@ -97,8 +94,11 @@ def main():
                         dt = time.time() - t0
                         if acc:
                             for a in acc:
-                                print(f"{pid}\t{i}\t{a['theta_deg']:.2f}\t{a['rho']:.0f}\t"
-                                      f"{a['confidence']:.2f}\t{int((mask > 0).sum())}\t{dt:.0f}", flush=True)
+                                print(
+                                    f"{pid}\t{i}\t{a['theta_deg']:.2f}\t{a['rho']:.0f}\t"
+                                    f"{a['confidence']:.2f}\t{int((mask > 0).sum())}\t{dt:.0f}",
+                                    flush=True,
+                                )
                         else:
                             print(f"{pid}\t{i}\t-\t-\t-\t0\t{dt:.0f}", flush=True)
                     except Exception as e:

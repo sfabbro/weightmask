@@ -68,33 +68,25 @@ import os
 import sys
 import time
 
+import fitsio
 import numpy as np
-import yaml
+from astropy.io import fits
 
-_HERE = os.path.dirname(os.path.abspath(__file__))
-if _HERE not in sys.path:
-    sys.path.insert(0, _HERE)
-try:
-    from production_inputs import capture_detector_inputs
-    from streak_inject import apply_overrides
-    from streak_nonsidereal_acceptance import render_chain, render_trail, synthetic_frame
-except ImportError:  # pragma: no cover - the package layout
-    from benchmarks.production_inputs import capture_detector_inputs  # type: ignore[no-redef]
-    from benchmarks.streak_inject import apply_overrides  # type: ignore[no-redef]
-    from benchmarks.streak_nonsidereal_acceptance import (  # type: ignore[no-redef]
-        render_chain,
-        render_trail,
-        synthetic_frame,
-    )
-
-from weightmask.streaks import (  # noqa: E402
+from weightmask.config import default_config, section_config
+from weightmask.streaks import (
     _angular_distance_deg,
     _component_geometry,
-    _drop_star_trail_family_components,
     _label_components,
+    _veto_components,
     detect_streaks,
     frame_trail_family,
 )
+
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+
+from benchmarks.production_inputs import capture_detector_inputs
+from benchmarks.streak_inject import apply_overrides
+from benchmarks.streak_nonsidereal_acceptance import render_chain, render_trail, synthetic_frame
 
 PARALLEL_MULTIPLES = (0.5, 1.0, 1.5, 2.0, 2.5, 3.0, 3.5, 4.0, 4.5, 6.0, 8.0)
 ANGLE_OFFSETS = (0.0, 5.0, 9.0, 11.0, 15.0, 30.0, 90.0)
@@ -140,7 +132,8 @@ def probe(body, family, veto_cfg, *, angle_deg, kind, label, length=None, gap_fa
     geometry = _component_of(body, angle_deg)
     if geometry is None:
         raise ValueError("an empty body has nothing to probe")
-    kept, dropped = _drop_star_trail_family_components(body, family, veto_cfg, min_pixels=24)
+    config = section_config("streak_masking", {"star_trail_veto": veto_cfg})
+    kept, dropped = _veto_components(body, np.zeros(body.shape, dtype=np.float32), None, None, config, family)
     family_length = float(family["length_px"])
     row = {
         "kind": kind,
@@ -325,7 +318,7 @@ def stage_cell(shape, *, angle_deg, trail_length, frame, header, config, streak_
         cfg = dict(streak_cfg)
         cfg["star_trail_veto"] = dict(cfg.get("star_trail_veto") or {}, enable=enable)
         t0 = time.time()
-        mask = detect_streaks(data_sub, rms, existing, cfg)
+        mask = detect_streaks(data_sub, rms, existing, cfg).mask
         out[name] = {
             "mask_px": int(np.count_nonzero(mask)),
             "chain_px_in_mask": int(np.count_nonzero(mask & body)),
@@ -410,8 +403,6 @@ def main(argv=None):
     parser.add_argument("--out", default="")
     options = parser.parse_args(argv)
 
-    from astropy.io import fits
-
     size = int(options.size)
     shape = (size, size)
     angle_deg = float(options.trail_angle)
@@ -428,13 +419,11 @@ def main(argv=None):
     flat = None
     if options.flat:
         # The primary HDU, which is what a single-chip flat carries.
-        import fitsio
 
         flat = np.asarray(fitsio.read(options.flat, ext=0), dtype=np.float32)
     header = fits.Header({"NAXIS": 2, "SATURATE": 65535.0, "EXPTIME": 60.0, "GAIN": 1.6, "RDNOISE": 5.0})
 
-    with open("weightmask.yml") as handle:
-        config = yaml.safe_load(handle)
+    config = default_config()
     config = apply_overrides(config, options.set)
     streak_cfg = dict(config["streak_masking"])
     veto_cfg = dict(streak_cfg["star_trail_veto"])
@@ -484,7 +473,7 @@ def main(argv=None):
 
     for kind, title in (
         ("satellite-parallel", "a satellite parallel to the field's own trails"),
-        ("satellite-offset", f"the same trail at 2.0x, rotated away from the family angle"),
+        ("satellite-offset", "the same trail at 2.0x, rotated away from the family angle"),
     ):
         print(f"\n=== {title} ===", flush=True)
         print(f"{'cell':18s} {'geometric':>18s} {'measured':>18s} {'off':>6s}  decision", flush=True)

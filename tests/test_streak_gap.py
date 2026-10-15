@@ -5,7 +5,12 @@ from unittest.mock import patch
 
 import numpy as np
 
+from weightmask.config import section_config
 from weightmask.streaks import _largest_contiguous_run, _refine_trail_mask
+
+
+def _mask_cfg(**overrides):
+    return section_config("streak_masking", {"mask_params": overrides})["mask_params"]
 
 
 class TestGapTolerantStreakSupport(unittest.TestCase):
@@ -30,14 +35,14 @@ class TestGapTolerantStreakSupport(unittest.TestCase):
 
         strips = [strip(low_noise), strip(low_noise)] + [strip(high_noise) for _ in range(10)]
         candidate = {"source": "houghpeaks", "clipped_endpoints": ((20, 0), (20, 119))}
-        config = {
-            "padding": 0,
-            "profile_percentile": 50,
-            "profile_sigma_threshold": 3.0,
-            "min_col_hit_fraction": 0.2,
-            "min_row_hit_fraction": 0.2,
-            "max_support_width": 4,
-        }
+        config = _mask_cfg(
+            padding=0,
+            profile_percentile=50,
+            profile_sigma_threshold=3.0,
+            min_col_hit_fraction=0.2,
+            min_row_hit_fraction=0.2,
+            max_support_width=4,
+        )
         with (
             patch("weightmask.streaks._sample_trail_strip", side_effect=strips),
             patch("weightmask.streaks._refit_endpoints_from_strip", return_value=candidate["clipped_endpoints"]),
@@ -68,14 +73,14 @@ class TestGapTolerantStreakSupport(unittest.TestCase):
 
         strips = [strip(high_noise), strip(high_noise)] + [strip(low_noise) for _ in range(10)]
         candidate = {"source": "houghpeaks", "clipped_endpoints": ((20, 0), (20, 119))}
-        config = {
-            "padding": 0,
-            "profile_percentile": 50,
-            "profile_sigma_threshold": 3.0,
-            "min_col_hit_fraction": 0.2,
-            "min_row_hit_fraction": 0.2,
-            "max_support_width": 4,
-        }
+        config = _mask_cfg(
+            padding=0,
+            profile_percentile=50,
+            profile_sigma_threshold=3.0,
+            min_col_hit_fraction=0.2,
+            min_row_hit_fraction=0.2,
+            max_support_width=4,
+        )
         with (
             patch("weightmask.streaks._sample_trail_strip", side_effect=strips),
             patch("weightmask.streaks._refit_endpoints_from_strip", return_value=candidate["clipped_endpoints"]),
@@ -94,13 +99,13 @@ class TestGapTolerantStreakSupport(unittest.TestCase):
             sampled[rows, columns] += 20
             strips.append({"sampled": sampled, "inside": np.ones(yy.shape, bool), "y_coords": yy, "x_coords": xx})
         candidate = {"source": "houghpeaks", "clipped_endpoints": ((20, 0), (20, 199))}
-        config = {
-            "padding": 0,
-            "profile_percentile": 85,
-            "min_col_hit_fraction": 0.1,
-            "min_row_hit_fraction": 0.5,
-            "max_support_width": 8,
-        }
+        config = _mask_cfg(
+            padding=0,
+            profile_percentile=85,
+            min_col_hit_fraction=0.1,
+            min_row_hit_fraction=0.5,
+            max_support_width=8,
+        )
         data = np.zeros(yy.shape, np.float32)
         with (
             patch("weightmask.streaks._sample_trail_strip", side_effect=strips),
@@ -167,27 +172,23 @@ class TestGapTolerantStreakSupport(unittest.TestCase):
         for start, stop in ((20, 70), (90, 140), (160, 220)):
             data[59:62, start:stop] = 20.0
         candidate = {
-            "segments": [((10.0, 60.0), (240.0, 60.0))],
-            "angle_deg": 0.0,
-            "endpoints": ((10.0, 60.0), (240.0, 60.0)),
             "clipped_endpoints": ((10.0, 60.0), (240.0, 60.0)),
             "span": 230.0,
-            "raw_span": 230.0,
             "edge_touches": 2,
         }
-        mask_cfg = {
-            "strip_length": 256,
-            "strip_width": 80,
-            "profile_sigma_threshold": 1.0,
-            "profile_percentile": 50.0,
-            "padding": 1,
-            "min_mask_pixels": 10,
-            "min_row_hits": 3,
-            "min_row_hit_fraction": 0.1,
-            "min_col_hit_fraction": 0.1,
-            "max_support_width": 30,
-            "max_row_gap": 20,
-        }
+        mask_cfg = _mask_cfg(
+            strip_length=256,
+            strip_width=80,
+            profile_sigma_threshold=1.0,
+            profile_percentile=50.0,
+            padding=1,
+            min_mask_pixels=10,
+            min_row_hits=3,
+            min_row_hit_fraction=0.1,
+            min_col_hit_fraction=0.1,
+            max_support_width=30,
+            max_row_gap=20,
+        )
         rms = np.ones_like(data)
 
         contour_candidate = dict(candidate, source="contours")
