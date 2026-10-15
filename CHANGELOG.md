@@ -1,6 +1,6 @@
 # Changelog
 
-## 1.2.2 - 2026-10-15
+## 0.3.0 - 2026-10-15
 
 Products from a complete configuration (such as a copy of the bundled
 `weightmask.yml`) are bit-identical to 0.2.1. Partial configurations now get the
