@@ -14,8 +14,8 @@ except Exception:  # pragma: no cover
 from scipy.ndimage import binary_dilation
 from skimage.transform import hough_line, hough_line_peaks
 
-from tests.benchmarks.download_data import process_suite, validate_case_file
-from tests.simulate_and_test import GENERATOR_REVISION, METRIC_REVISION, _f1, run_masking_test
+from benchmarks.download_data import process_suite, validate_case_file
+from benchmarks.simulate import GENERATOR_REVISION, METRIC_REVISION, _f1, run_masking_test
 from weightmask.bad import compute_flat_bad_mask, detect_dark_hot_pixels
 from weightmask.config import default_config
 from weightmask.contract import (
@@ -29,7 +29,7 @@ from weightmask.cosmics import detect_cosmic_rays
 from weightmask.streaks import detect_streaks
 from weightmask.variance import calculate_inverse_variance
 
-ROOT = Path(__file__).resolve().parents[2]
+ROOT = Path(__file__).resolve().parents[1]
 MANIFEST_DIR = Path(__file__).resolve().parent / "manifests"
 OUTPUT_ROOT = ROOT / "test_outputs" / "benchmarks"
 

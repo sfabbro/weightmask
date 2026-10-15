@@ -245,6 +245,17 @@ def _largest_contiguous_run(mask_1d, max_gap=0, min_run_length=1, valid=None):
     return keep
 
 
+def _strided_slopes(rows, cols):
+    """Column slopes between rows 1, 2 and 4 samples apart that are at least 4 rows apart."""
+    slopes = []
+    for stride in (1, 2, 4):
+        for k in range(0, len(rows) - stride, stride):
+            dr = rows[k + stride] - rows[k]
+            if dr >= 4:
+                slopes.append((cols[k + stride] - cols[k]) / dr)
+    return slopes
+
+
 def _refit_endpoints_from_strip(strip, centered, inside):
     """Refit trail endpoints from across-strip flux centroids (one robust pass).
 
@@ -266,12 +277,7 @@ def _refit_endpoints_from_strip(strip, centered, inside):
     # rows and lose the median), then one inlier refit. No consensus -> None.
     sel = np.linspace(0, len(rows) - 1, min(len(rows), 41)).astype(int)
     r, c = rows[sel], cent[sel]
-    slopes = []
-    for stride in (1, 2, 4):
-        for k in range(0, len(r) - stride, stride):
-            dr = r[k + stride] - r[k]
-            if dr >= 4:
-                slopes.append((c[k + stride] - c[k]) / dr)
+    slopes = _strided_slopes(r, c)
     if not slopes:
         return None
     slope = float(np.median(slopes))
@@ -283,12 +289,7 @@ def _refit_endpoints_from_strip(strip, centered, inside):
     if float(r[inl].max() - r[inl].min()) < 100:
         return None  # consensus spans a star, not the strip; keep geometry
     r2, c2 = r[inl], c[inl]
-    slopes2 = []
-    for stride in (1, 2, 4):
-        for k in range(0, len(r2) - stride, stride):
-            dr = r2[k + stride] - r2[k]
-            if dr >= 4:
-                slopes2.append((c2[k + stride] - c2[k]) / dr)
+    slopes2 = _strided_slopes(r2, c2)
     if slopes2:
         slope = float(np.median(slopes2))
         icept = float(np.median(c2 - slope * r2))
@@ -310,6 +311,15 @@ def _refit_endpoints_from_strip(strip, centered, inside):
     if np.hypot(x1 - x0, y1 - y0) < 20:
         return None
     return ((x0, y0), (x1, y1))
+
+
+def _rejected(shape, reason, support_width=0, row_hit_fraction=0.0, mask_pixels=0):
+    return np.zeros(shape, dtype=bool), {
+        "support_width": support_width,
+        "row_hit_fraction": row_hit_fraction,
+        "mask_pixels": mask_pixels,
+        "reject_reason": reason,
+    }
 
 
 def _refine_trail_mask(data_sub, bkg_rms_map, candidate, mask_cfg, existing_mask=None):
@@ -347,8 +357,8 @@ def _refine_trail_mask(data_sub, bkg_rms_map, candidate, mask_cfg, existing_mask
     max_row_gap = mask_cfg["max_row_gap"] if is_hough else 0
     min_row_run = mask_cfg["min_row_run"] if max_row_gap > 0 else 0
 
-    def _support_count(centered, inside, bg_std):
-        # Padded support width for one sampled geometry (argmin criterion).
+    def _support(centered, inside, bg_std):
+        """Padded support columns, row hits and observed rows of one sampled strip."""
         with warnings.catch_warnings():
             warnings.simplefilter("ignore", category=RuntimeWarning)
             profile = np.nanpercentile(centered, profile_percentile, axis=0)
@@ -361,12 +371,17 @@ def _refine_trail_mask(data_sub, bkg_rms_map, candidate, mask_cfg, existing_mask
         sup = _largest_near_center(sup)
         if np.any(sup) and padding > 0:
             sup = ndi.binary_dilation(sup, structure=np.ones(2 * padding + 1, dtype=bool))
-        # A narrower refit is useful only if it still supports a coherent trail.
-        # Otherwise a short noise fragment can replace and erase a valid line.
         hits = np.any(hot & sup[np.newaxis, :], axis=1)
         hits = ndi.binary_closing(hits, structure=np.ones(2 * padding + 1, dtype=bool))
         observed = np.any(np.isfinite(centered[:, sup]), axis=1) if is_hough else None
         hits = _largest_contiguous_run(hits, max_gap=max_row_gap, min_run_length=min_row_run, valid=observed)
+        return sup, hits, observed
+
+    def _support_count(centered, inside, bg_std):
+        # Padded support width for one sampled geometry (argmin criterion).
+        # A narrower refit is useful only if it still supports a coherent trail.
+        # Otherwise a short noise fragment can replace and erase a valid line.
+        sup, hits, _observed = _support(centered, inside, bg_std)
         if np.count_nonzero(hits) < min_row_hits or np.mean(hits) < min_row_hit_fraction:
             return 0
         return int(np.count_nonzero(sup))
@@ -383,12 +398,7 @@ def _refine_trail_mask(data_sub, bkg_rms_map, candidate, mask_cfg, existing_mask
     for _pass in range(2):
         strip = _sample_trail_strip(detect_img, endpoints, strip_length, strip_width, interpolation_order)
         if strip is None:
-            return np.zeros(data_sub.shape, dtype=bool), {
-                "support_width": 0,
-                "row_hit_fraction": 0.0,
-                "mask_pixels": 0,
-                "reject_reason": "strip_none",
-            }
+            return _rejected(data_sub.shape, "strip_none")
         sampled = strip["sampled"]
         inside = strip["inside"]
         width_axis = np.arange(sampled.shape[1], dtype=np.float32)
@@ -396,12 +406,7 @@ def _refine_trail_mask(data_sub, bkg_rms_map, candidate, mask_cfg, existing_mask
         sideband = np.abs(width_axis - center_col) >= max(3.0, 0.25 * sampled.shape[1])
         background = _strip_background(sampled, sideband)
         if background is None:
-            return np.zeros(data_sub.shape, dtype=bool), {
-                "support_width": 0,
-                "row_hit_fraction": 0.0,
-                "mask_pixels": 0,
-                "reject_reason": "bg_starved",
-            }
+            return _rejected(data_sub.shape, "bg_starved")
         background_pixels, bg_med, bg_std, row_bg = background
         # Check for asymmetric step discontinuity (e.g. amplifier boundary) across the strip
         left_band = sampled[:, : max(1, int(0.25 * sampled.shape[1]))]
@@ -413,12 +418,7 @@ def _refine_trail_mask(data_sub, bkg_rms_map, candidate, mask_cfg, existing_mask
         if np.isfinite(left_med) and np.isfinite(right_med):
             step_diff = abs(left_med - right_med)
             if step_diff > 3.5 * bg_std:
-                return np.zeros(data_sub.shape, dtype=bool), {
-                    "support_width": 0,
-                    "row_hit_fraction": 0.0,
-                    "mask_pixels": 0,
-                    "reject_reason": "step_discontinuity",
-                }
+                return _rejected(data_sub.shape, "step_discontinuity")
         centered = sampled - row_bg[:, np.newaxis]
         if _pass == 0:
             width0 = _support_count(centered, inside, bg_std)
@@ -485,56 +485,17 @@ def _refine_trail_mask(data_sub, bkg_rms_map, candidate, mask_cfg, existing_mask
                             fcen,
                         )
 
-    with warnings.catch_warnings():
-        warnings.simplefilter("ignore", category=RuntimeWarning)
-        profile = np.nanpercentile(centered, profile_percentile, axis=0)
-
-    hot_pixels = inside & np.isfinite(centered) & (centered > profile_sigma * bg_std)
-    with warnings.catch_warnings():
-        warnings.simplefilter("ignore", category=RuntimeWarning)
-        col_hit_fraction = np.nanmean(hot_pixels, axis=0)
-
-    support_cols = np.isfinite(profile) & (profile > profile_sigma * bg_std)
-    support_cols &= np.isfinite(col_hit_fraction) & (col_hit_fraction >= min_col_hit_fraction)
-    support_cols = _largest_near_center(support_cols)
-    if np.any(support_cols) and padding > 0:
-        support_cols = ndi.binary_dilation(support_cols, structure=np.ones(2 * padding + 1, dtype=bool))
-
-    if not np.any(support_cols):
-        return np.zeros(data_sub.shape, dtype=bool), {
-            "support_width": 0,
-            "row_hit_fraction": 0.0,
-            "mask_pixels": 0,
-            "reject_reason": "no_support",
-        }
-    if np.count_nonzero(support_cols) > max_support_width:
-        return np.zeros(data_sub.shape, dtype=bool), {
-            "support_width": int(np.count_nonzero(support_cols)),
-            "row_hit_fraction": 0.0,
-            "mask_pixels": 0,
-            "reject_reason": "width_over_max",
-        }
-
-    hot_pixels = hot_pixels & support_cols[np.newaxis, :]
-    row_hits = np.any(hot_pixels, axis=1)
-    row_hits = ndi.binary_closing(row_hits, structure=np.ones(2 * padding + 1, dtype=bool))
-    observed = np.any(np.isfinite(centered[:, support_cols]), axis=1) if is_hough else None
-    row_hits = _largest_contiguous_run(row_hits, max_gap=max_row_gap, min_run_length=min_row_run, valid=observed)
-    if np.count_nonzero(row_hits) < min_row_hits:
-        return np.zeros(data_sub.shape, dtype=bool), {
-            "support_width": int(np.count_nonzero(support_cols)),
-            "row_hit_fraction": float(np.mean(row_hits)),
-            "mask_pixels": 0,
-            "reject_reason": "few_row_hits",
-        }
+    support_cols, row_hits, observed = _support(centered, inside, bg_std)
+    support_width = int(np.count_nonzero(support_cols))
+    if not support_width:
+        return _rejected(data_sub.shape, "no_support")
+    if support_width > max_support_width:
+        return _rejected(data_sub.shape, "width_over_max", support_width)
     row_hit_fraction = float(np.mean(row_hits))
+    if np.count_nonzero(row_hits) < min_row_hits:
+        return _rejected(data_sub.shape, "few_row_hits", support_width, row_hit_fraction)
     if row_hit_fraction < min_row_hit_fraction:
-        return np.zeros(data_sub.shape, dtype=bool), {
-            "support_width": int(np.count_nonzero(support_cols)),
-            "row_hit_fraction": row_hit_fraction,
-            "mask_pixels": 0,
-            "reject_reason": "low_row_hit_fraction",
-        }
+        return _rejected(data_sub.shape, "low_row_hit_fraction", support_width, row_hit_fraction)
 
     occluded_geometry = None
     if observed is not None and existing_mask is not None and np.any(row_hits):
@@ -552,7 +513,7 @@ def _refine_trail_mask(data_sub, bkg_rms_map, candidate, mask_cfg, existing_mask
         if np.any(occluded):
             occluded_geometry = yy, xx, occluded
 
-    refined_strip = np.zeros_like(hot_pixels, dtype=bool)
+    refined_strip = np.zeros(centered.shape, dtype=bool)
     refined_strip[row_hits, :] = support_cols[np.newaxis, :]
     refined_strip &= inside
 
@@ -563,17 +524,14 @@ def _refine_trail_mask(data_sub, bkg_rms_map, candidate, mask_cfg, existing_mask
     xx = np.rint(strip["x_coords"][refined_strip]).astype(int)
     valid = (yy >= 0) & (yy < data_sub.shape[0]) & (xx >= 0) & (xx < data_sub.shape[1])
     if np.count_nonzero(valid) < min_mask_pixels:
-        return np.zeros(data_sub.shape, dtype=bool), {
-            "support_width": int(np.count_nonzero(support_cols)),
-            "row_hit_fraction": row_hit_fraction,
-            "mask_pixels": int(np.count_nonzero(valid)),
-            "reject_reason": "few_mask_pixels",
-        }
+        return _rejected(
+            data_sub.shape, "few_mask_pixels", support_width, row_hit_fraction, int(np.count_nonzero(valid))
+        )
 
     mask = np.zeros(data_sub.shape, dtype=bool)
     mask[yy[valid], xx[valid]] = True
     return mask, {
-        "support_width": int(np.count_nonzero(support_cols)),
+        "support_width": support_width,
         "row_hit_fraction": row_hit_fraction,
         "mask_pixels": int(np.count_nonzero(mask)),
         "occluded_geometry": occluded_geometry,

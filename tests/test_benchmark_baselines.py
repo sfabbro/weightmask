@@ -25,8 +25,8 @@ import unittest
 
 import numpy as np
 
-from tests.benchmarks import run as bench
-from tests.benchmarks.run import _mask_stats, _radon_baseline, _simple_hough_baseline
+from benchmarks import suite as bench
+from benchmarks.suite import _mask_stats, _radon_baseline, _simple_hough_baseline
 
 SHAPE = (300, 300)
 RMS = np.full(SHAPE, 5.0, dtype=np.float32)

@@ -7,7 +7,7 @@ import numpy as np
 # the path so `tests` is importable (same shim as examples/test_real_mef.py).
 REPO_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, REPO_ROOT)  # noqa: E402
-from tests.simulate_and_test import create_simulated_data, run_masking_test  # noqa: E402
+from benchmarks.simulate import create_simulated_data, run_masking_test  # noqa: E402
 
 
 def run_complex_demonstration():

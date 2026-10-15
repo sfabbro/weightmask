@@ -371,7 +371,7 @@ The other four cases do not: their primary trails sit near 1–4σ in the Poisso
 background, and the cosmic-ray and object stages claim those pixels before the
 streak stage. That average is not a pass. The acceptance thresholds are unchanged.
 
-The streak and blank-control cases in `tests.benchmarks` are stage diagnostics:
+The streak and blank-control cases in `benchmarks.suite` are stage diagnostics:
 they use a global median sky, global RMS, and an empty initial mask. They do
 not reproduce the calibrated sky and upstream exclusions used by
 `process_image`. Production-input evidence comes from the capture helper in

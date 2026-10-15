@@ -34,3 +34,15 @@
 
 - id: streak-fp-prior
   desc: "Static columns need other exposures of the same CCD (persistent_axis_mask); a single-file run does not claim the 0.10 artefact-FP gate."
+
+- id: config-single-source
+  desc: "weightmask/weightmask.yml is the only source of defaults. Public entry points call resolve_config/section_config; internal helpers index keys directly (no .get(k, default))."
+
+- id: golden-refactor
+  desc: "Behaviour-preserving refactors: test_outputs/golden/golden.py run <label> (~6 min, subprocesses import weightmask/, so do not edit it meanwhile), then compare against the previous label; WM_SRC=<worktree> runs another commit."
+
+- id: canfar-manifest-pinned
+  desc: "benchmarks/canfar/manifest.py is SHA-256 pinned by the CANFAR manifest; it is excluded from ruff and must stay byte-identical."
+
+- id: hdu-failure-channel
+  desc: "process_image/process_hdu raise (ValueError inputs, OSError reads, RuntimeError background, StageFailure stages); mef skips the HDU on the first three, aborts on StageFailure; CLI exits 1 without publishing either way."

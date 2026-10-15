@@ -50,3 +50,24 @@ Whole repo at `67820bd`. Read-only; nothing fixed yet. Read with
    `benchmarks` a package; drop it from ruff exclude.
 6. Tests: add `testpaths`, a `conftest.py`, merge by module, drop
    text-grepping CI/doc tests, stop pinning private helpers.
+
+## Outcome (2026-10-15, branch wip/thermo-cleanup)
+
+Done: 1 (3d27bd6); 2 and 3 (f5fa2de; StageFailure plus raising
+`process_image`/`process_hdu` in b9c7273); 4 for mef (products/replicas) and
+the streak refiner dedupe; 5 (dead scripts deleted, suite/simulator moved to
+`benchmarks/`, benchmarks linted); 6 `testpaths`. Golden: every label since p2
+is bit-identical on syn/rep/trail; syn_partial differs from 3d27bd6 by design
+(partial configs now get packaged defaults).
+
+Refuted or not worth it after checking: "dead candidate fields" (they feed the
+report and benchmarks); veto "label once" (each stage's mask is vetoed on its
+own components, merging changes semantics); `_SEGMENT_SCORE` is a constant
+term the confidence thresholds were tuned with; the text-reading CLI tests
+guard against dead config keys and flags, so they stay.
+
+Deferred: `streaks.py` package split (32 test/benchmark modules patch its
+private names; 1.4k lines of one stage), `conftest.py` (no shared fixture
+duplication worth it), merging test modules, print -> logging, satur
+`effective_full_scale`, `_unbias_variance` naming, version bump (recommend
+0.3.0: config semantics changed).

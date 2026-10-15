@@ -8,9 +8,9 @@ import numpy as np
 import pytest
 from scipy.ndimage import binary_dilation
 
-from benchmarks import cr_faint_curves, perf_megacam, streak_inject
-from tests import simulate_and_test as simulation
-from tests.benchmarks import download_data, run
+from benchmarks import cr_faint_curves, download_data, perf_megacam, streak_inject
+from benchmarks import simulate as simulation
+from benchmarks import suite as run
 from weightmask.config import default_config_resource
 from weightmask.contract import INVERSE_VARIANCE_SEMANTICS, MASK_POLARITY
 from weightmask.objects import ObjectDetection

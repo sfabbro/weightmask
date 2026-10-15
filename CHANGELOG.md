@@ -55,6 +55,10 @@ bundled defaults for every key they omit, so their products can change.
   count).
 - Benchmarks and tests are linted (ruff, including no inline imports); the
   pre-commit ruff hook matches the pixi ruff version.
+- The benchmark suite runner, its downloader and manifests, and the synthetic
+  simulator moved out of `tests/` into `benchmarks/`: run suites with
+  `python -m benchmarks.suite` (the `pixi run benchmark-*` tasks are updated)
+  and import the simulator from `benchmarks.simulate`.
 
 ### Removed
 

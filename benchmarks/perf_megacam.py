@@ -52,7 +52,7 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 
 from benchmarks import perf_protocol
-from tests.benchmarks.download_data import _quarantine_invalid_file, download_http, validate_case_file
+from benchmarks.download_data import _quarantine_invalid_file, download_http, validate_case_file
 
 PERF_DATA_DIR = ROOT / "benchmark_data" / "megacam" / "perf"
 OUT_DIR = ROOT / "test_outputs" / "perf"

@@ -15,7 +15,7 @@ except ImportError:
     Cadc = None
     Observations = None
 
-ROOT = Path(__file__).resolve().parents[2]
+ROOT = Path(__file__).resolve().parents[1]
 MANIFEST_DIR = Path(__file__).resolve().parent / "manifests"
 
 
