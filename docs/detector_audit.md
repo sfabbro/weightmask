@@ -180,7 +180,7 @@ gate. `_axis_lengths` prefers the new spelling and falls back for older skimage.
 
 ### `mef` — bogus `compress="NOT_SET"` (fixed)
 
-`_StreamingMapWriter.write` and `_rescale_confidence_to_global` passed
+`_StreamingMapWriter.write` and `rescale_confidence_to_global` passed
 `compress="NOT_SET"` to fitsio when not compressing, which fitsio warns about and
 ignores. The keyword is now passed only when actually compressing, so the file
 format and bytes are unchanged.
@@ -589,7 +589,7 @@ against the gates that produced it, so a label cannot be added without evidence.
    (angle, span, support width, confidence, which pass accepted) already exists in
    `_last_run` under `debug: true`. Writing it as a FITS table per CCD would make tuning
    auditable and let downstream consumers verify a trail rather than trust a bit.
-5. **`mef._get_global_median` flat re-read.** The dead-CCD veto re-reads all 36
+5. **`mef.global_median` flat re-read.** The dead-CCD veto re-reads all 36
    flat HDUs once per exposure purely for their medians (36 reads x 10 exposures
    per run). It could share the flat cache identity used by
    `compute_flat_bad_mask_cached`.

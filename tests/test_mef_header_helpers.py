@@ -13,15 +13,15 @@ import numpy as np
 
 from weightmask._version import __version__
 from weightmask.contract import _json_from_header_cards
-from weightmask.mef import (
+from weightmask.products import (
     _INDIVIDUAL_MASK_KEYS,
     _PRODUCT_PATH_KEYS,
     _assign_map_if_valid,
-    _common_wcs_geometry,
-    _header_with_contract_metadata,
     _ordered_product_paths,
-    _strip_compression_keywords,
+    header_with_contract_metadata,
+    strip_compression_keywords,
 )
+from weightmask.replicas import _common_wcs_geometry
 
 _COMPRESSION_CARDS = {
     "BZERO": 32668.0,
@@ -56,10 +56,10 @@ def _tan_header(cdelt=True):
 
 class TestStripCompressionKeywords(unittest.TestCase):
     def test_none_passes_through(self):
-        self.assertIsNone(_strip_compression_keywords(None))
+        self.assertIsNone(strip_compression_keywords(None))
 
     def test_every_fpack_card_is_removed(self):
-        stripped = _strip_compression_keywords({**_COMPRESSION_CARDS, "OBJECT": "M31", "NAXIS": 2})
+        stripped = strip_compression_keywords({**_COMPRESSION_CARDS, "OBJECT": "M31", "NAXIS": 2})
         for name in _COMPRESSION_CARDS:
             self.assertNotIn(name, stripped, name)
         self.assertEqual(stripped, {"OBJECT": "M31", "NAXIS": 2})
@@ -67,17 +67,17 @@ class TestStripCompressionKeywords(unittest.TestCase):
     def test_the_input_header_is_not_mutated(self):
         original = {**_COMPRESSION_CARDS, "OBJECT": "M31"}
         before = dict(original)
-        _strip_compression_keywords(original)
+        strip_compression_keywords(original)
         self.assertEqual(original, before)
 
     def test_an_uncompressed_header_is_returned_unchanged(self):
         clean = {"NAXIS": 2, "OBJECT": "M31", "EXPTIME": 120.0}
-        self.assertEqual(_strip_compression_keywords(clean), clean)
+        self.assertEqual(strip_compression_keywords(clean), clean)
 
     def test_only_z_prefixed_cards_are_swept(self):
         # A real science keyword that merely starts with Z must survive; only
         # the tile-compression families (ZTILE/ZNAME/ZVAL) are removed.
-        stripped = _strip_compression_keywords({"ZODIAC": "yes", "ZTILE1": 100, "EXPTIME": 1.0})
+        stripped = strip_compression_keywords({"ZODIAC": "yes", "ZTILE1": 100, "EXPTIME": 1.0})
         self.assertEqual(stripped, {"ZODIAC": "yes", "EXPTIME": 1.0})
 
 
@@ -158,35 +158,35 @@ class TestAssignMapIfValid(unittest.TestCase):
 
 class TestHeaderWithContractMetadata(unittest.TestCase):
     def test_required_contract_cards_are_written(self):
-        header = _header_with_contract_metadata({"OBJECT": "M31"}, "quality_mask")
+        header = header_with_contract_metadata({"OBJECT": "M31"}, "quality_mask")
         self.assertEqual(header["WMART"], "quality_mask")
         self.assertEqual(header["WMVERS"], "1.0")
         self.assertEqual(header["OBJECT"], "M31")
 
     def test_mask_polarity_and_semantics_are_optional(self):
-        plain = _header_with_contract_metadata({}, "weight")
+        plain = header_with_contract_metadata({}, "weight")
         self.assertNotIn("WMMASK", plain)
         self.assertNotIn("WMSEM", plain)
 
-        flagged = _header_with_contract_metadata({}, "quality_mask", mask=True, semantics="boolean_mask")
+        flagged = header_with_contract_metadata({}, "quality_mask", mask=True, semantics="boolean_mask")
         self.assertEqual(flagged["WMMASK"], "set_means_flagged")
         self.assertEqual(flagged["WMSEM"], "boolean_mask")
 
     def test_provenance_carries_the_package_version_and_stage(self):
-        header = _header_with_contract_metadata({}, "weight")
+        header = header_with_contract_metadata({}, "weight")
         payload = json.loads(_json_from_header_cards(header, "WMPROV", "WMPV"))
         self.assertEqual(payload["producer"]["version"], __version__)
         self.assertEqual(payload["provenance"]["producer_stage"], "weightmask.cli")
 
     def test_input_header_values_survive(self):
-        header = _header_with_contract_metadata({"EXPTIME": 120.0, "NAXIS": 2}, "weight")
+        header = header_with_contract_metadata({"EXPTIME": 120.0, "NAXIS": 2}, "weight")
         self.assertEqual(header["EXPTIME"], 120.0)
         self.assertEqual(header["NAXIS"], 2)
 
     def test_none_and_unconvertible_headers_still_produce_contract_cards(self):
         for bad in (None, 5, "ab"):
             with self.subTest(header=bad):
-                header = _header_with_contract_metadata(bad, "weight")
+                header = header_with_contract_metadata(bad, "weight")
                 self.assertEqual(header["WMART"], "weight")
 
 

@@ -30,6 +30,31 @@ bundled defaults for every key they omit, so their products can change.
   `read_noise_e` as arguments.
 - Persistence-prior helpers moved from `weightmask.streaks` to
   `weightmask.persistence`.
+- `mef.process_all_hdus` no longer takes the CLI `argparse.Namespace`; pass
+  `max_workers=` directly. It and `mef.process_hdu` resolve the configuration
+  themselves, so partial configs work through the MEF API as well.
+- `weightmask.mef` is split: product writers, map assembly and publication live
+  in `weightmask.products` (`make_output_writers`, `flush_hdu_output`,
+  `store_output_maps`, `rescale_confidence_to_global`, `ProductPublication`,
+  `strip_compression_keywords`, `header_with_contract_metadata`,
+  `ensure_hdu_extname`), and the cross-chip replica veto in
+  `weightmask.replicas` (`streak_catalog`, `clear_chip_replicas`). Helpers used
+  across modules lost their leading underscore (`global_median`,
+  `effective_tile_size`, `validated_sky_mesh`, `parse_section`,
+  `BoundedPrioritySampler`).
+- `process_image` and `mef.process_hdu` raise instead of returning six `None`s:
+  `ValueError` for inconsistent inputs (flat or keep-map shape, non-binary
+  keep-map), `OSError` for unreadable HDUs, `RuntimeError` when no background
+  estimator succeeds. `calculate_inverse_variance` raises `ValueError` when its
+  method's inputs are missing. The MEF driver still skips such an HDU and the
+  CLI still exits 1 without publishing.
+- `cli.get_hdus_to_process` and `reconstruct_sky`'s private copy are replaced
+  by `weightmask.utils.image_hdus`.
+- Output dtypes and the worker count no longer fall back silently: an unknown
+  output dtype raises, and `max_workers` is used as given (clamped to the HDU
+  count).
+- Benchmarks and tests are linted (ruff, including no inline imports); the
+  pre-commit ruff hook matches the pixi ruff version.
 
 ### Removed
 
@@ -37,6 +62,11 @@ bundled defaults for every key they omit, so their products can change.
   `weightmask.config.copy_default_config` to write an editable copy.
 - The `streak_masking.mode` and `streak_masking.debug` keys (now rejected), and
   `bad.detect_bad_pixels` (use `compute_flat_bad_mask`).
+- The `weightmask.MASK_BITS` alias (use `QUALITY_BITS`) and the
+  `weightmask.utils.clean_config_dict` re-export (use
+  `weightmask.config.clean_config_dict`).
+- The undocumented `args.tile_size` override read by `process_all_hdus` (the
+  CLI never set it), and benchmark and CANFAR probe scripts nothing referenced.
 
 ### Fixed
 

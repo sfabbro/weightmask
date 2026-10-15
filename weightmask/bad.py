@@ -10,7 +10,7 @@ from scipy.ndimage import median_filter
 from .config import section_config
 
 
-def _get_global_median(flat_data):
+def global_median(flat_data):
     """Calculate a robust global median of valid pixels."""
     flat = np.asarray(flat_data).reshape(-1)
     chunk_size = 100000
@@ -136,7 +136,7 @@ def compute_flat_bad_mask(flat_data, config, tile_size=1024):
     """
     config = section_config("flat_masking", config)
     bad_mask = np.zeros(flat_data.shape, dtype=bool)
-    global_med = _get_global_median(flat_data)
+    global_med = global_median(flat_data)
     halo = config["local_filter_size"] // 2
     for y in range(0, flat_data.shape[0], tile_size):
         for x in range(0, flat_data.shape[1], tile_size):
@@ -263,7 +263,7 @@ def compute_flat_bad_mask_cached(flat_data, flat_cfg, tile_size=1024, *, flat_pa
     return bad_mask
 
 
-def _parse_section(section):
+def parse_section(section):
     """Parse a FITS '[x1:x2,y1:y2]' section string to 0-based exclusive (r0, r1, c0, c1); None on failure."""
     if not isinstance(section, str):
         return None
@@ -286,7 +286,7 @@ def detect_non_illuminated(shape, header):
     no behavior change. Malformed or missing sections never raise.
     """
     h, w = shape
-    illum = _parse_section(header.get("DATASEC")) if header is not None else None
+    illum = parse_section(header.get("DATASEC")) if header is not None else None
     if illum is None:
         return np.zeros(shape, dtype=bool)
     r0, r1, c0, c1 = illum
@@ -294,7 +294,7 @@ def detect_non_illuminated(shape, header):
     c0, c1 = max(c0, 0), min(c1, w)
     if r1 <= r0 or c1 <= c0:
         return np.zeros(shape, dtype=bool)
-    ccd = _parse_section(header.get("CCDSIZE"))
+    ccd = parse_section(header.get("CCDSIZE"))
     if ccd is not None:
         cr0, cr1, cc0, cc1 = ccd
         if r0 >= cr1 or r1 <= cr0 or c0 >= cc1 or c1 <= cc0:

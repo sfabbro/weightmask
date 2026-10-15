@@ -56,6 +56,9 @@ weightmask = ["weightmask.yml"]
 weightmask = "weightmask.cli:run_pipeline"
 weightmask-reconstruct-sky = "weightmask.reconstruct_sky:main"
 
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+
 [tool.ruff]
 line-length = 120
 # The CANFAR manifest pins this validator's SHA-256, so it must stay byte-identical.

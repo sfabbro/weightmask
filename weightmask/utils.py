@@ -3,9 +3,36 @@ import re
 
 import numpy as np
 
-from . import config as _config
 
-clean_config_dict = _config.clean_config_dict
+def image_hdus(hdul, hdu=None) -> list:
+    """Indices of the 2-D image HDUs of ``hdul`` (only ``hdu``, if given); [] with a message if none."""
+    if hdu is not None:
+        if not 0 <= hdu < len(hdul):
+            print(f"ERROR: Specified HDU {hdu} not found.")
+            return []
+        try:
+            info = hdul[hdu].get_info()
+        except Exception as e:
+            print(f"ERROR: Cannot inspect specified HDU {hdu}: {e}")
+            return []
+        if info.get("hdutype") != 0 or info.get("ndims") != 2:
+            print(
+                f"ERROR: Specified HDU {hdu} is not a 2D image (hdutype={info.get('hdutype')}, ndims={info.get('ndims')})."
+            )
+            return []
+        return [hdu]
+    hdus = []
+    for idx, item in enumerate(hdul):
+        try:
+            info = item.get_info()
+        except Exception as e:
+            print(f"  WARNING: skipping HDU {idx}: get_info() failed: {e}")
+            continue
+        if info.get("hdutype") == 0 and info.get("ndims") == 2:
+            hdus.append(idx)
+    if not hdus:
+        print("ERROR: No suitable Image HDUs found.")
+    return hdus
 
 
 def paths_alias(first, second):

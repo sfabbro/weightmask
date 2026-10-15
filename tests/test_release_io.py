@@ -3,7 +3,6 @@
 import os
 import warnings
 import weakref
-from argparse import Namespace
 from unittest.mock import Mock, patch
 
 import fitsio
@@ -12,20 +11,14 @@ import pytest
 
 from weightmask.background import sky_to_mesh
 from weightmask.cli import build_persistence_priors, load_configuration, run_pipeline
-from weightmask.config import configuration_errors
+from weightmask.config import configuration_errors, resolve_config
 from weightmask.contract import ArtifactMetadata, ProducerMetadata, QualityBit, WeightMaskProduct, build_weight_product
 from weightmask.errors import StageFailure
-from weightmask.mef import (
-    _clear_chip_replicas,
-    _ProductPublication,
-    _rescale_confidence_to_global,
-    _streak_catalog,
-    _StreamingMapWriter,
-    process_all_hdus,
-    process_hdu,
-)
+from weightmask.mef import process_all_hdus, process_hdu
 from weightmask.process import process_image
+from weightmask.products import ProductPublication, _StreamingMapWriter, rescale_confidence_to_global
 from weightmask.reconstruct_sky import reconstruct_sky_fits
+from weightmask.replicas import clear_chip_replicas, streak_catalog
 
 
 def _fake_product(*args, **kwargs):
@@ -71,8 +64,8 @@ def _run_fake_product_set(source, paths, *, config=None):
                 None,
                 config or {},
                 paths,
-                Namespace(individual_masks=False, max_workers=1),
                 input_path=str(source),
+                max_workers=1,
             )
 
 
@@ -144,8 +137,8 @@ def test_failure_before_first_product_write_preserves_existing_generation(tmp_pa
                     None,
                     {},
                     paths,
-                    __import__("argparse").Namespace(individual_masks=False, max_workers=1),
                     input_path=str(source),
+                    max_workers=1,
                 )
 
     _assert_products_unchanged(snapshots)
@@ -182,7 +175,7 @@ def test_postprocessing_failure_preserves_existing_generation(tmp_path):
         "confidence_params": {"normalize_scope": "per_exposure"},
     }
 
-    with patch("weightmask.mef._rescale_confidence_to_global", return_value=False):
+    with patch("weightmask.mef.rescale_confidence_to_global", return_value=False):
         assert _run_fake_product_set(source, paths, config=config) == 0
 
     _assert_products_unchanged(snapshots)
@@ -245,7 +238,7 @@ def test_incomplete_rollback_keeps_promotion_error_as_exception_cause(tmp_path):
         "out_map_path": str(tmp_path / "weight.fits"),
         "out_mask_path": str(tmp_path / "mask.fits"),
     }
-    publication = _ProductPublication(paths)
+    publication = ProductPublication(paths)
     for path in paths.values():
         open(path, "wb").write(b"old")
     for key in paths:
@@ -286,8 +279,8 @@ def test_successful_product_set_has_one_generation_and_synchronized_structure(tm
             None,
             {},
             paths,
-            Namespace(individual_masks=False, max_workers=1),
             input_path=str(source),
+            max_workers=1,
         )
 
     assert count == 2
@@ -380,8 +373,8 @@ def test_failed_detector_hdu_propagates_after_prior_output(tmp_path):
                     None,
                     {},
                     paths,
-                    Namespace(individual_masks=False, max_workers=1),
                     input_path=str(source),
+                    max_workers=1,
                 )
 
     assert raised.value is failure
@@ -423,8 +416,8 @@ def test_parallel_stage_failure_cancels_unsubmitted_hdus_and_writes_nothing(tmp_
                 None,
                 {},
                 paths,
-                Namespace(individual_masks=False, max_workers=2),
                 input_path=str(source),
+                max_workers=2,
             )
 
     assert raised.value is failure
@@ -448,9 +441,9 @@ def test_invalid_keep_map_fails_hdu_without_dropping_calibration(tmp_path, fault
         if fault == "unreadable":
             hdu.read.side_effect = OSError("corrupt keep-map")
         with patch("weightmask.mef.process_image", side_effect=_fake_product) as process:
-            result = process_hdu(sci[0], None, {}, 0, hdu_badpix=hdu)
+            with pytest.raises((OSError, ValueError)):
+                process_hdu(sci[0], None, {}, 0, hdu_badpix=hdu)
         assert process.call_count == 0
-        assert result == (None,) * 6
 
 
 @pytest.mark.parametrize("alias", ["input", "symlink", "hardlink", "product"])
@@ -708,11 +701,18 @@ def test_chip_replica_restores_outputs_and_keeps_detected_exclusion(tmp_path, ou
                 "CD2_1": 0.0,
                 "CD2_2": 1.0e-4,
             }
-            catalogs.extend(_streak_catalog(index, mask, header))
+            catalogs.extend(streak_catalog(index, mask, header))
             for key, data in (("mask", mask), ("map", weight), ("weight_raw", weight), ("invvar", ivar)):
                 writers[key].write(index, data, {}, str(index))
-    _clear_chip_replicas(
-        catalogs, writers, {"output_params": {"output_map_format": output_format, "mask_detected_in_weight": True}}
+    clear_chip_replicas(
+        catalogs,
+        writers,
+        resolve_config(
+            {
+                "output_params": {"output_map_format": output_format, "mask_detected_in_weight": True},
+                "confidence_params": {"normalize_scope": "per_hdu"},
+            }
+        ),
     )
     for key in ("map", "weight_raw"):
         with fitsio.FITS(writers[key].out_path) as handle:
@@ -779,8 +779,8 @@ def test_chip_replica_transaction_synchronizes_every_affected_product(tmp_path, 
                 None,
                 config,
                 paths,
-                Namespace(individual_masks=True, max_workers=1),
                 input_path=str(source),
+                max_workers=1,
             )
             == 2
         )
@@ -846,7 +846,7 @@ def test_missing_individual_streak_position_aborts_transaction(tmp_path):
         individual["streak"] = mask != 0
         return mask, ivar, weight, weight, np.zeros(shape, np.float32), {"individual_masks": individual}
 
-    real_clear = _clear_chip_replicas
+    real_clear = clear_chip_replicas
 
     def desynchronize(catalogs, writers, config):
         writers["ind_streak"].positions.pop(1)
@@ -855,7 +855,7 @@ def test_missing_individual_streak_position_aborts_transaction(tmp_path):
     with (
         fitsio.FITS(str(source)) as hdul,
         patch("weightmask.mef.process_hdu", side_effect=product),
-        patch("weightmask.mef._clear_chip_replicas", side_effect=desynchronize),
+        patch("weightmask.mef.clear_chip_replicas", side_effect=desynchronize),
     ):
         assert (
             process_all_hdus(
@@ -864,8 +864,8 @@ def test_missing_individual_streak_position_aborts_transaction(tmp_path):
                 None,
                 {"output_params": {"output_map_format": "weight"}},
                 paths,
-                Namespace(individual_masks=True, max_workers=1),
                 input_path=str(source),
+                max_workers=1,
             )
             == 0
         )
@@ -907,7 +907,7 @@ def test_chip_replica_rejects_unsynchronized_individual_streak_before_mutation(t
             individual_streak = (mask != 0).astype(np.uint8)
             if fault == "shape_mismatch" and index == 0:
                 individual_streak = individual_streak[:-1]
-            catalogs.extend(_streak_catalog(index, mask, {**header, "CRPIX1": 1.0 + 100.0 * index}))
+            catalogs.extend(streak_catalog(index, mask, {**header, "CRPIX1": 1.0 + 100.0 * index}))
             for key, data in (
                 ("mask", mask),
                 ("map", weight),
@@ -923,7 +923,9 @@ def test_chip_replica_rejects_unsynchronized_individual_streak_before_mutation(t
         with fitsio.FITS(writer.out_path) as handle:
             before[key] = [item.read() for item in handle if item.get_info().get("ndims") == 2]
 
-    assert not _clear_chip_replicas(catalogs, writers, {"output_params": {"output_map_format": "weight"}})
+    assert not clear_chip_replicas(
+        catalogs, writers, resolve_config({"output_params": {"output_map_format": "weight"}})
+    )
 
     for key, writer in writers.items():
         with fitsio.FITS(writer.out_path) as handle:
@@ -985,8 +987,8 @@ def test_exposure_confidence_matches_exact_pooled_percentile(tmp_path, populatio
                 None,
                 config,
                 paths,
-                Namespace(individual_masks=False, max_workers=1),
                 input_path=str(source),
+                max_workers=1,
             )
             == 2
         )
@@ -1044,7 +1046,7 @@ def test_exposure_confidence_reads_each_hdu_once_for_sampling_and_once_for_writi
 
     monkeypatch.setattr("weightmask.mef.fitsio.FITS", lambda *_args, **_kwargs: handle)
 
-    assert _rescale_confidence_to_global({"out_map_path": "unused.fits"}, {"map": writer}, config)
+    assert rescale_confidence_to_global({"out_map_path": "unused.fits"}, {"map": writer}, resolve_config(config))
     assert [hdus[position].read_count for position in (1, 2)] == [2, 2]
     assert np.isfinite(hdus[1].data).all()
 
@@ -1087,7 +1089,7 @@ def test_exposure_confidence_empty_population_needs_no_write_pass(monkeypatch):
 
     monkeypatch.setattr("weightmask.mef.fitsio.FITS", lambda *_args, **_kwargs: FitsHandle(hdu))
 
-    assert _rescale_confidence_to_global({"out_map_path": "unused.fits"}, {"map": writer}, config)
+    assert rescale_confidence_to_global({"out_map_path": "unused.fits"}, {"map": writer}, resolve_config(config))
     assert hdu.read_count == 1
 
 
@@ -1136,7 +1138,9 @@ def test_exposure_confidence_is_invariant_to_reordered_hdus_above_cap():
             },
         )()
         with patch("weightmask.mef.fitsio.FITS", return_value=FitsHandle(hdus)):
-            assert _rescale_confidence_to_global({"out_map_path": "unused.fits"}, {"map": writer}, config)
+            assert rescale_confidence_to_global(
+                {"out_map_path": "unused.fits"}, {"map": writer}, resolve_config(config)
+            )
         return {identity: hdus[position].data for position, identity in enumerate(order, 1)}
 
     forward = normalize(("MAP_CCD-A", "MAP_CCD-B"))
@@ -1177,4 +1181,4 @@ def test_exposure_confidence_rejects_duplicate_hdu_identities_before_sampling(mo
     monkeypatch.setattr("weightmask.mef.fitsio.FITS", lambda *_args, **_kwargs: FitsHandle())
 
     with pytest.raises(ValueError, match="duplicate HDU identity"):
-        _rescale_confidence_to_global({"out_map_path": "unused.fits"}, {"map": writer}, config)
+        rescale_confidence_to_global({"out_map_path": "unused.fits"}, {"map": writer}, resolve_config(config))

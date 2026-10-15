@@ -1,10 +1,8 @@
-import warnings
-
 import numpy as np
 from astropy.stats import mad_std
 from scipy.stats import iqr, linregress
 
-from .bad import _parse_section
+from .bad import parse_section
 from .config import section_config
 from .utils import rms_valid_mask
 
@@ -164,8 +162,8 @@ def amplifier_gain_map(header, shape, fallback):
     h, w = shape
     sec_a = sec_b = None
     for prefix in ("DETSEC", "DATASEC", "AMPSEC"):
-        sec_a = _parse_section(_value(prefix + "A"))
-        sec_b = _parse_section(_value(prefix + "B"))
+        sec_a = parse_section(_value(prefix + "A"))
+        sec_b = parse_section(_value(prefix + "B"))
         if sec_a is None or sec_b is None:
             continue
         # DETSEC can use mosaic coordinates. Only an in-image, disjoint pair
@@ -290,8 +288,7 @@ def _calculate_inverse_variance_rms(bkg_rms_map, epsilon):
     Internal: Calculate inverse variance based on SEP's background RMS map.
     """
     if bkg_rms_map is None:
-        warnings.warn("RMS map is None, cannot calculate variance from RMS.", RuntimeWarning)
-        return None
+        raise ValueError("variance method 'rms_map' requires a background RMS map")
 
     # The ``inf`` sentinel means "no RMS measurement here"; squaring it gives an
     # infinite variance, so those pixels fall through to zero inverse variance
@@ -311,8 +308,8 @@ def calculate_inverse_variance(
 
     ``gain`` (e-/ADU, scalar or per-pixel map) and ``read_noise_e`` (e-) are the
     header values; ``empirical_fit`` replaces them with a fit to ``sci_data``
-    outside ``obj_mask`` when that fit succeeds. Returns None when the method's
-    inputs are missing.
+    outside ``obj_mask`` when that fit succeeds. Raises ``ValueError`` when the
+    method's inputs are missing.
     """
     cfg = section_config("variance", variance_cfg)
     method, epsilon = cfg["method"], cfg["epsilon"]
@@ -323,8 +320,7 @@ def calculate_inverse_variance(
     else:
         if method == "empirical_fit":
             if sci_data is None or obj_mask is None:
-                warnings.warn("Empirical fit method requires science data and object mask.", RuntimeWarning)
-                return None
+                raise ValueError("variance method 'empirical_fit' requires science data and an object mask")
             emp_gain, emp_rn_e = _calculate_empirical_noise_params(
                 sci_data, obj_mask, cfg["empirical_patch_size"], cfg["empirical_clip_sigma"]
             )
@@ -333,8 +329,7 @@ def calculate_inverse_variance(
             else:
                 gain, read_noise_e = emp_gain, emp_rn_e
         elif flat_map is None or sky_map is None:
-            warnings.warn("Theoretical method requires flat and sky maps.", RuntimeWarning)
-            return None
+            raise ValueError("variance method 'theoretical' requires flat and sky maps")
         inv_var = _calculate_inverse_variance_theoretical(
             sky_map, flat_map, gain, read_noise_e, epsilon, cfg["flat_rel_noise"]
         )

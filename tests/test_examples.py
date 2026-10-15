@@ -109,5 +109,5 @@ def test_real_mef_example_reports_processing_failure(tmp_path, monkeypatch):
     path = tmp_path / "benchmark_data" / "megacam" / "megacam_streak_case.fits"
     path.parent.mkdir(parents=True)
     fits.HDUList([fits.PrimaryHDU(), fits.ImageHDU(np.ones((2, 2))), fits.ImageHDU(np.ones((2, 2)))]).writeto(path)
-    with patch.object(real_mef, "process_image", return_value=(None,) * 6):
+    with patch.object(real_mef, "process_image", side_effect=RuntimeError("background estimation failed")):
         assert real_mef.evaluate_real_mef() == 1

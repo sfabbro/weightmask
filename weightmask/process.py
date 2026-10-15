@@ -7,7 +7,7 @@ from typing import Optional, Tuple
 import numpy as np
 from scipy.ndimage import gaussian_filter
 
-from . import MASK_BITS, MASK_DTYPE
+from . import MASK_DTYPE, QUALITY_BITS
 from .background import estimate_background, sky_to_mesh
 from .bad import compute_flat_bad_mask, detect_non_illuminated
 from .config import resolve_config
@@ -130,16 +130,9 @@ def header_gain_read_noise(header, variance_cfg):
     return gain, read_noise_e
 
 
-def _effective_tile_size(tile_size, shape) -> int:
-    try:
-        t = int(tile_size)
-    except (TypeError, ValueError):
-        t = 1024
-    try:
-        min_dim = int(min(shape))
-    except Exception:
-        return max(16, t)
-    return min(max(16, t), max(16, min_dim // 2), min_dim)
+def effective_tile_size(tile_size: int, shape) -> int:
+    min_dim = min(shape)
+    return min(max(16, tile_size), max(16, min_dim // 2), min_dim)
 
 
 def process_image(
@@ -151,15 +144,12 @@ def process_image(
     bad_mask: Optional[np.ndarray] = None,
     badpix_mask: Optional[np.ndarray] = None,
     detector_prior: Optional[np.ndarray] = None,
-) -> Tuple[
-    Optional[np.ndarray],
-    Optional[np.ndarray],
-    Optional[np.ndarray],
-    Optional[np.ndarray],
-    Optional[np.ndarray],
-    Optional[dict],
-]:
-    """Processes a single Science image to generate all mask and map products."""
+) -> Tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray, np.ndarray, dict]:
+    """Processes a single Science image to generate all mask and map products.
+
+    Raises ``ValueError`` for inconsistent inputs, ``RuntimeError`` when no
+    background estimator succeeds, and ``StageFailure`` from failed stages.
+    """
     config = resolve_config(config)
     hdu_start_time = _time.time()
     variance_cfg = config["variance"]
@@ -176,12 +166,11 @@ def process_image(
         if detector_prior_array.shape != sci_shape:
             raise ValueError("detector prior shape must match science data")
     using_unit_flat = True
-    eff_tile = _effective_tile_size(tile_size, sci_shape)
+    eff_tile = effective_tile_size(tile_size, sci_shape)
     if flat_data_full is not None:
         using_unit_flat = False
         if flat_data_full.shape != sci_shape:
-            print("Skipping processing: Flat data shape mismatch.")
-            return None, None, None, None, None, None
+            raise ValueError("flat shape must match science data")
         flat_data_full = np.ascontiguousarray(flat_data_full, dtype=np.float32)
     else:
         print("  INFO: No flat field provided, assuming flat = 1.0.")
@@ -226,15 +215,15 @@ def process_image(
         n_nodata = int(np.count_nonzero(nodata_mask))
         if n_nodata:
             print(f"    Masking {n_nodata} non-finite or non-illuminated pixels NO_DATA.")
-    final_mask_int[bad_mask] |= MASK_BITS["BAD"]
-    final_mask_int[nodata_mask] |= MASK_BITS["NO_DATA"]
+    final_mask_int[bad_mask] |= QUALITY_BITS["BAD"]
+    final_mask_int[nodata_mask] |= QUALITY_BITS["NO_DATA"]
 
     print("  (1.1/7) Detecting saturation on the full image...")
     sat_cfg = config["saturation"]
     with _timed(timings, "saturation"):
         saturation_level, sat_method_used, sat_mask = detect_saturated_pixels(saturation_data, sci_hdr, sat_cfg)
     del saturation_data
-    final_mask_int[sat_mask] |= MASK_BITS["SAT"]
+    final_mask_int[sat_mask] |= QUALITY_BITS["SAT"]
     header_info["SAT_LVL"], header_info["SAT_METH"] = saturation_level, sat_method_used
 
     # --- Full Image Processing Steps ---
@@ -252,7 +241,7 @@ def process_image(
             sat_mask_full = grow_bleed_trails(sci_data_full, sat_mask, prelim_bkg_map, prelim_bkg_rms, sat_cfg)
             new_bleed_pixels = sat_mask_full & ~sat_mask
             sat_mask |= new_bleed_pixels
-            final_mask_int[new_bleed_pixels] |= MASK_BITS["SAT"]
+            final_mask_int[new_bleed_pixels] |= QUALITY_BITS["SAT"]
             interim_mask_bool |= new_bleed_pixels
             print(f"      Added {np.count_nonzero(new_bleed_pixels)} bleed trail pixels.")
 
@@ -273,7 +262,7 @@ def process_image(
             header=sci_hdr,
         )
     cr_mask |= cr_add_mask
-    final_mask_int[cr_add_mask] |= MASK_BITS["CR"]
+    final_mask_int[cr_add_mask] |= QUALITY_BITS["CR"]
     interim_mask_bool |= cr_add_mask
     print(f"      Masked {np.count_nonzero(cr_add_mask)} new CR pixels.")
 
@@ -300,7 +289,7 @@ def process_image(
                     sci_data_full, total_mask_for_bg, sep_bg_cfg, diagnostics=bg_diag
                 )
             if bkg_map is None:
-                return None, None, None, None, None, None
+                raise RuntimeError("background estimation failed")
             data_sub = sci_data_full - bkg_map
             with _timed(timings, f"obj_iter_{i}"):
                 new_obj_add_mask, handoff = detect_objects(data_sub, bkg_rms_map, total_mask_for_bg, object_cfg)
@@ -315,7 +304,7 @@ def process_image(
     baseline_object_mask &= ~interim_mask_bool
     elongated_mask &= baseline_object_mask
     ordinary_object_mask = baseline_object_mask & ~elongated_mask
-    final_mask_int[baseline_object_mask] |= MASK_BITS["DETECTED"]
+    final_mask_int[baseline_object_mask] |= QUALITY_BITS["DETECTED"]
     print(f"      Masked {np.count_nonzero(baseline_object_mask)} DETECTED pixels total.")
     # --- 4. Final Sky Maps and Object Mask ---
     print("  (4/7) Finalizing sky maps and object mask...")
@@ -329,7 +318,7 @@ def process_image(
                 sci_data_full, final_full_mask, sep_bg_cfg, diagnostics=bg_diag
             )
     if sky_map is None:
-        return None, None, None, None, None, None
+        raise RuntimeError("background estimation failed")
 
     # --- 5. Inverse Variance Map ---
     print("  (5/7) Calculating inverse variance map...")
@@ -349,8 +338,6 @@ def process_image(
             sci_data=sci_data_full,
             obj_mask=final_full_mask,
         )
-    if inv_variance_map is None:
-        return None, None, None, None, None, None
     # --- 6. Streak Detection ---
     print("  (6/7) Detecting streaks...")
     with _timed(timings, "streaks"):
@@ -372,17 +359,17 @@ def process_image(
             accepted = streak_add_mask & elongated_mask & ~ordinary_object_mask
             if np.any(accepted):
                 detected_bit = np.asarray(
-                    ~int(MASK_BITS["DETECTED"]) & np.iinfo(final_mask_int.dtype).max, dtype=final_mask_int.dtype
+                    ~int(QUALITY_BITS["DETECTED"]) & np.iinfo(final_mask_int.dtype).max, dtype=final_mask_int.dtype
                 )
                 final_mask_int[accepted] &= detected_bit
             streak_mask |= streak_add_mask
-            final_mask_int[streak_add_mask] |= MASK_BITS["STREAK"]
+            final_mask_int[streak_add_mask] |= QUALITY_BITS["STREAK"]
             final_full_mask |= streak_add_mask
             print(f"      Masked {np.count_nonzero(streak_add_mask)} new STREAK pixels.")
 
     accepted = streak_mask & elongated_mask & ~ordinary_object_mask
     final_detected = ordinary_object_mask | (elongated_mask & ~accepted)
-    final_mask_int[final_detected] |= MASK_BITS["DETECTED"]
+    final_mask_int[final_detected] |= QUALITY_BITS["DETECTED"]
     obj_mask |= final_detected
 
     # --- 7. Generate Final Weight and Confidence Maps ---
@@ -391,8 +378,6 @@ def process_image(
         weight_map, confidence_map, contract_product = generate_weight_and_confidence(
             inv_variance_map, final_mask_int, config
         )
-    if weight_map is None:
-        return None, None, None, None, None, None
 
     # Sky *output* product (internal sky_map above stays full-res for variance/streaks).
     with _timed(timings, "sky_mesh"):
@@ -422,11 +407,9 @@ def process_image(
     )[:3]
     _top_str = " ".join(f"{k}:{v:.1f}s" for k, v in _top)
     print(f"--- Image processed in {hdu_elapsed:.2f} seconds --- top={_top_str}")
-    out_mask = contract_product.quality_mask if contract_product is not None else final_mask_int
-    out_ivar = contract_product.inverse_variance if contract_product is not None else inv_variance_map
     return (
-        out_mask,
-        out_ivar,
+        contract_product.quality_mask,
+        contract_product.inverse_variance,
         weight_map,
         confidence_map,
         sky_out,

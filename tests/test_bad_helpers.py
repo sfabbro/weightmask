@@ -15,8 +15,8 @@ from weightmask.bad import (
     _detect_bad_columns_derivative,
     _detect_bad_pixels_local,
     _flat_bad_settings,
-    _get_global_median,
-    _parse_section,
+    global_median,
+    parse_section,
 )
 from weightmask.config import section_config
 
@@ -27,15 +27,15 @@ def _flat_cfg(**overrides):
 
 class TestGetGlobalMedian(unittest.TestCase):
     def test_a_uniform_flat_returns_its_own_value(self):
-        self.assertAlmostEqual(_get_global_median(np.full((4, 4), 5.0)), 5.0)
+        self.assertAlmostEqual(global_median(np.full((4, 4), 5.0)), 5.0)
 
     def test_only_positive_pixels_are_used(self):
         flat = np.array([[1.0, 2.0], [-5.0, 4.0]])
-        self.assertAlmostEqual(_get_global_median(flat), 2.0)
+        self.assertAlmostEqual(global_median(flat), 2.0)
 
     def test_non_finite_pixels_do_not_enter_the_median(self):
         flat = np.array([[1.0, 2.0], [3.0, np.nan]])
-        self.assertAlmostEqual(_get_global_median(flat), 2.0)
+        self.assertAlmostEqual(global_median(flat), 2.0)
 
     def test_an_all_invalid_flat_falls_back_to_one(self):
         for flat in (
@@ -45,18 +45,18 @@ class TestGetGlobalMedian(unittest.TestCase):
             np.full((2, 2), np.inf),
         ):
             with self.subTest(flat=flat.tolist()):
-                self.assertEqual(_get_global_median(flat), 1.0)
+                self.assertEqual(global_median(flat), 1.0)
 
     def test_the_chunked_sample_stays_close_to_the_exact_median(self):
         # 200k positive pixels make the sampler step by 2, so its answer may
         # differ from the exact median by at most the step.
         flat = np.arange(1.0, 200001.0)
-        median = _get_global_median(flat)
+        median = global_median(flat)
         self.assertAlmostEqual(median, float(np.median(flat)), delta=1.0)
 
     def test_a_multi_dimensional_flat_is_flattened(self):
         flat = np.arange(6.0).reshape(2, 3)  # includes a zero, which is excluded
-        self.assertAlmostEqual(_get_global_median(flat), np.median([1.0, 2.0, 3.0, 4.0, 5.0]))
+        self.assertAlmostEqual(global_median(flat), np.median([1.0, 2.0, 3.0, 4.0, 5.0]))
 
 
 class TestDetectBadPixelsLocal(unittest.TestCase):
@@ -219,28 +219,28 @@ class TestFlatBadSettings(unittest.TestCase):
 class TestParseSection(unittest.TestCase):
     def test_a_standard_datasection_maps_to_half_open_bounds(self):
         # FITS is 1-based inclusive; the helper returns 0-based exclusive.
-        self.assertEqual(_parse_section("[33:2080,1:4612]"), (0, 4612, 32, 2080))
+        self.assertEqual(parse_section("[33:2080,1:4612]"), (0, 4612, 32, 2080))
 
     def test_reversed_bounds_are_normalised(self):
-        self.assertEqual(_parse_section("[2080:33,4612:1]"), (0, 4612, 32, 2080))
-        self.assertEqual(_parse_section("[10:1,20:2]"), (1, 20, 0, 10))
+        self.assertEqual(parse_section("[2080:33,4612:1]"), (0, 4612, 32, 2080))
+        self.assertEqual(parse_section("[10:1,20:2]"), (1, 20, 0, 10))
 
     def test_surrounding_space_is_tolerated(self):
-        self.assertEqual(_parse_section("[ 1 : 10 , 2 : 20 ]"), (1, 20, 0, 10))
+        self.assertEqual(parse_section("[ 1 : 10 , 2 : 20 ]"), (1, 20, 0, 10))
 
     def test_negative_bounds_are_parsed_and_left_unclamped(self):
         # Clamping belongs to the caller; the parser reports what the header said.
-        self.assertEqual(_parse_section("[-5:10,1:10]"), (0, 10, -6, 10))
+        self.assertEqual(parse_section("[-5:10,1:10]"), (0, 10, -6, 10))
 
     def test_a_non_string_is_not_a_section(self):
         for section in (None, 5, 1.5, b"[1:2,1:2]", ["[1:2,1:2]"], {"DATASEC": "[1:2,1:2]"}):
             with self.subTest(section=section):
-                self.assertIsNone(_parse_section(section))
+                self.assertIsNone(parse_section(section))
 
     def test_a_zero_bound_is_rejected(self):
         for section in ("[0:10,1:10]", "[1:10,0:10]", "[1:0,1:10]", "[1:10,1:0]"):
             with self.subTest(section=section):
-                self.assertIsNone(_parse_section(section))
+                self.assertIsNone(parse_section(section))
 
     def test_a_malformed_section_is_rejected(self):
         for section in (
@@ -254,7 +254,7 @@ class TestParseSection(unittest.TestCase):
             "garbage",
         ):
             with self.subTest(section=section):
-                self.assertIsNone(_parse_section(section))
+                self.assertIsNone(parse_section(section))
 
 
 if __name__ == "__main__":

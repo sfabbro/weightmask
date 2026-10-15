@@ -17,7 +17,7 @@ import numpy as np
 
 from weightmask import bad
 from weightmask.config import section_config
-from weightmask.process import _effective_tile_size
+from weightmask.process import effective_tile_size
 
 
 def _flat(shape=(64, 96), seed=1):
@@ -164,9 +164,9 @@ class TestFlatBadMaskCache(unittest.TestCase):
 class TestEffectiveTileSize(unittest.TestCase):
     def test_requested_size_caps_the_tiles(self):
         for size in (16, 128, 1024):
-            self.assertEqual(_effective_tile_size(size, (4644, 2112)), size)
-        self.assertEqual(_effective_tile_size(1024, (32, 32)), 16)
-        self.assertEqual(_effective_tile_size(1024, (1, 7)), 1)
+            self.assertEqual(effective_tile_size(size, (4644, 2112)), size)
+        self.assertEqual(effective_tile_size(1024, (32, 32)), 16)
+        self.assertEqual(effective_tile_size(1024, (1, 7)), 1)
 
 
 if __name__ == "__main__":

@@ -42,8 +42,8 @@ ROOT = Path(__file__).resolve().parents[1]
 
 
 def test_root_all_is_exact_and_does_not_grow_with_module_apis():
-    assert weightmask.__all__ == ["MASK_BITS", "MASK_DTYPE", "QUALITY_BITS", "__version__"]
-    assert set(weightmask.__all__) == {"MASK_BITS", "MASK_DTYPE", "QUALITY_BITS", "__version__"}
+    assert weightmask.__all__ == ["MASK_DTYPE", "QUALITY_BITS", "__version__"]
+    assert set(weightmask.__all__) == {"MASK_DTYPE", "QUALITY_BITS", "__version__"}
     assert config_module.__all__ == [
         "clean_config_dict",
         "configuration_errors",
@@ -158,7 +158,7 @@ def test_derived_output_paths_follow_the_primary_map_stem(tmp_path):
         paths = determine_output_paths(
             args,
             str(tmp_path / input_name),
-            {"output_params": {"compress": compress}},
+            resolve_config({"output_params": {"compress": compress}}),
         )
         assert Path(paths["out_map_path"]).name == primary_name
         stem = Path(primary_name).stem

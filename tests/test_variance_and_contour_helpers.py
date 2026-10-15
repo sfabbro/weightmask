@@ -80,12 +80,12 @@ class TestTheoreticalVariance(unittest.TestCase):
         flat = np.ones((8, 8), dtype=np.float32)
         return sky, flat
 
-    def test_missing_flat_or_sky_is_refused_with_a_warning(self):
+    def test_missing_flat_or_sky_is_refused(self):
         sky, flat = self._inputs()
-        with self.assertWarns(RuntimeWarning):
-            self.assertIsNone(_theoretical({}, sky, None, 1.0, 5.0))
-        with self.assertWarns(RuntimeWarning):
-            self.assertIsNone(_theoretical({}, None, flat, 1.0, 5.0))
+        with self.assertRaisesRegex(ValueError, "flat and sky"):
+            _theoretical({}, sky, None, 1.0, 5.0)
+        with self.assertRaisesRegex(ValueError, "flat and sky"):
+            _theoretical({}, None, flat, 1.0, 5.0)
 
     def test_a_measured_flat_and_sky_produce_finite_positive_weights(self):
         sky, flat = self._inputs()
@@ -111,15 +111,15 @@ class TestEmpiricalFitVariance(unittest.TestCase):
         mask = np.zeros(shape, dtype=bool)
         return sci, mask, sky, flat
 
-    def test_missing_science_data_is_refused_with_a_warning(self):
+    def test_missing_science_data_is_refused(self):
         _sci, mask, sky, flat = self._inputs()
-        with self.assertWarns(RuntimeWarning):
-            self.assertIsNone(_empirical({}, sky, flat, None, mask, 1.0, 5.0))
+        with self.assertRaisesRegex(ValueError, "science data"):
+            _empirical({}, sky, flat, None, mask, 1.0, 5.0)
 
-    def test_a_missing_object_mask_is_refused_with_a_warning(self):
+    def test_a_missing_object_mask_is_refused(self):
         sci, _mask, sky, flat = self._inputs()
-        with self.assertWarns(RuntimeWarning):
-            self.assertIsNone(_empirical({}, sky, flat, sci, None, 1.0, 5.0))
+        with self.assertRaisesRegex(ValueError, "object mask"):
+            _empirical({}, sky, flat, sci, None, 1.0, 5.0)
 
     def test_too_few_patches_falls_back_to_the_header_gain_and_read_noise(self):
         # patch_size 128 on a 64x64 frame leaves one patch, below the fit's

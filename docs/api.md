@@ -67,8 +67,8 @@ Single-array entry: no dark, keep-map, or MEF dead-CCD veto. Pass a real flat
 or flat-based `BAD` is skipped (`F = 1`). Use the CLI (`weightmask.cli.run_pipeline`)
 for those extra `BAD` sources and MEF orchestration.
 
-`process_image()` returns `(mask, ivar, weight, confidence, sky, header_info)`
-(or a 6-tuple of `None` on failure), where `header_info` includes:
+`process_image()` returns `(mask, ivar, weight, confidence, sky, header_info)`,
+where `header_info` includes:
 
 | Key | Contents |
 |---|---|
@@ -79,16 +79,18 @@ for those extra `BAD` sources and MEF orchestration.
 
 Science input must be a nonempty 2-D array; supplied bad masks must match its
 shape and are interpreted as boolean pixel masks. Invalid shapes raise
-`ValueError`. Non-finite science pixels receive `NO_DATA` and zero weight.
+`ValueError`; a frame no background estimator can model raises `RuntimeError`;
+a failed detection stage raises `weightmask.errors.StageFailure`. Non-finite
+science pixels receive `NO_DATA` and zero weight.
 `tile_size` caps flat-mask tiles, with smaller tiles on small images.
 
 ## Bits and polarity
 
 ```python
-from weightmask import MASK_BITS, QUALITY_BITS, MASK_DTYPE
+from weightmask import QUALITY_BITS, MASK_DTYPE
 ```
 
-`MASK_BITS` is an alias of `QUALITY_BITS`:
+`QUALITY_BITS`:
 
 | Name | Value |
 |---|---|

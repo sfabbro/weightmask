@@ -1,5 +1,4 @@
 import unittest
-from argparse import Namespace
 from pathlib import Path
 from tempfile import TemporaryDirectory
 from unittest.mock import patch
@@ -8,7 +7,7 @@ import fitsio
 import numpy as np
 from scipy.ndimage import median_filter
 
-from weightmask import MASK_BITS
+from weightmask import QUALITY_BITS
 from weightmask.bad import compute_flat_bad_mask, detect_dark_hot_pixels
 from weightmask.config import default_config
 from weightmask.mef import process_all_hdus
@@ -213,7 +212,7 @@ class TestBadPixels(unittest.TestCase):
             "saturation": {"mask_bleed_trails": False},
         }
         mask, ivar, weight, _confidence, _sky, info = process_image(data, {}, None, config)
-        self.assertTrue(np.all(mask[0, :3] & MASK_BITS["NO_DATA"]))
+        self.assertTrue(np.all(mask[0, :3] & QUALITY_BITS["NO_DATA"]))
         self.assertTrue(info["individual_masks"]["nodata"][0, :3].all())
         self.assertTrue(np.all(weight[0, :3] == 0))
         self.assertTrue(np.isfinite(ivar).all())
@@ -237,7 +236,7 @@ class TestBadPixels(unittest.TestCase):
                 expected_level, expected_method, expected_mask = detect_saturated_pixels(data, {}, config["saturation"])
                 self.assertEqual(np.count_nonzero(expected_mask), 100)
                 mask, _ivar, weight, _confidence, _sky, info = process_image(data, {}, None, config)
-                np.testing.assert_array_equal((mask & MASK_BITS["SAT"]) != 0, expected_mask)
+                np.testing.assert_array_equal((mask & QUALITY_BITS["SAT"]) != 0, expected_mask)
                 self.assertEqual(info["SAT_LVL"], expected_level)
                 self.assertEqual(info["SAT_METH"], expected_method)
                 self.assertTrue(np.all(weight[expected_mask] == 0))
@@ -252,7 +251,7 @@ class TestBadPixels(unittest.TestCase):
         data[10:20, 10:20] = 65535.0
         expected_level, expected_method, expected_mask = detect_saturated_pixels(data, {}, config["saturation"])
         mask, _ivar, _weight, _confidence, _sky, info = process_image(data, {}, None, config)
-        np.testing.assert_array_equal((mask & MASK_BITS["SAT"]) != 0, expected_mask)
+        np.testing.assert_array_equal((mask & QUALITY_BITS["SAT"]) != 0, expected_mask)
         self.assertEqual(info["SAT_LVL"], expected_level)
         self.assertEqual(info["SAT_METH"], expected_method)
 
@@ -291,15 +290,15 @@ class TestBadPixels(unittest.TestCase):
                     dark[5, 5] = 100
                 fitsio.write(dark_path, dark, clobber=True)
                 with fitsio.FITS(science_path) as science, fitsio.FITS(dark_path) as dark_hdul:
-                    with patch("weightmask.mef.process_hdu", return_value=(None,) * 6) as process:
+                    with patch("weightmask.mef.process_hdu", side_effect=RuntimeError("skip")) as process:
                         process_all_hdus(
                             [0],
                             science,
                             None,
                             {},
                             {},
-                            Namespace(max_workers=1),
                             hdul_dark=dark_hdul,
+                            max_workers=1,
                         )
                 actual = process.call_args.kwargs["extra_bad_mask"]
                 expected = np.zeros(image.shape, dtype=bool)

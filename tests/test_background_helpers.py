@@ -16,7 +16,7 @@ from weightmask.background import (
     _mesh_node_coords,
     _positive_int,
     _sky_mesh_shape,
-    _validated_sky_mesh,
+    validated_sky_mesh,
 )
 
 
@@ -93,7 +93,7 @@ class TestSkyMeshShape(unittest.TestCase):
 class TestValidatedSkyMesh(unittest.TestCase):
     def test_accepts_a_finite_mesh_of_the_expected_shape(self):
         mesh = np.array([[5.0]], dtype=np.float32)
-        data, shape, box = _validated_sky_mesh(mesh, (4, 4), 4)
+        data, shape, box = validated_sky_mesh(mesh, (4, 4), 4)
         self.assertEqual(shape, (4, 4))
         self.assertEqual(box, 4)
         self.assertEqual(data.dtype, np.float64)
@@ -102,37 +102,37 @@ class TestValidatedSkyMesh(unittest.TestCase):
     def test_returns_input_unchanged_content(self):
         mesh = np.arange(6, dtype=np.float64).reshape(2, 3)
         # shape (8, 9) with box 4 -> nodes (2, 3)
-        data, _shape, _box = _validated_sky_mesh(mesh, (8, 9), 4)
+        data, _shape, _box = validated_sky_mesh(mesh, (8, 9), 4)
         np.testing.assert_allclose(data, mesh)
 
     def test_rejects_a_mesh_that_is_not_two_dimensional(self):
         for mesh in (np.zeros(4), np.zeros((1, 1, 1))):
             with self.subTest(rank=np.ndim(mesh)):
                 with self.assertRaises(ValueError) as raised:
-                    _validated_sky_mesh(mesh, (4, 4), 4)
+                    validated_sky_mesh(mesh, (4, 4), 4)
                 self.assertIn("two-dimensional", str(raised.exception))
 
     def test_rejects_non_numeric_mesh_data(self):
         with self.assertRaises(ValueError) as raised:
-            _validated_sky_mesh(np.array([["x"]]), (4, 4), 4)
+            validated_sky_mesh(np.array([["x"]]), (4, 4), 4)
         self.assertIn("numeric", str(raised.exception))
 
     def test_rejects_non_finite_mesh_values(self):
         for bad in (np.nan, np.inf, -np.inf):
             with self.subTest(bad=bad):
                 with self.assertRaises(ValueError) as raised:
-                    _validated_sky_mesh(np.array([[bad]]), (4, 4), 4)
+                    validated_sky_mesh(np.array([[bad]]), (4, 4), 4)
                 self.assertIn("finite", str(raised.exception))
 
     def test_rejects_a_shape_mismatch(self):
         with self.assertRaises(ValueError) as raised:
-            _validated_sky_mesh(np.ones((2, 2)), (4, 4), 4)
+            validated_sky_mesh(np.ones((2, 2)), (4, 4), 4)
         self.assertIn("does not match expected shape", str(raised.exception))
 
     def test_validates_the_image_shape_before_the_mesh(self):
         # A bad image shape must fail even when the mesh itself is fine.
         with self.assertRaises(ValueError):
-            _validated_sky_mesh(np.ones((1, 1)), (4,), 4)
+            validated_sky_mesh(np.ones((1, 1)), (4,), 4)
 
 
 class TestMeshNodeCoords(unittest.TestCase):

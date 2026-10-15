@@ -168,8 +168,8 @@ class TestValidateConfig(unittest.TestCase):
             "sep_objects": ("objects.py", "process.py"),
             "streak_masking": ("streaks.py", "process.py"),
             "variance": ("variance.py", "process.py"),
-            "confidence_params": ("weight.py", "mef.py"),
-            "output_params": ("weight.py", "mef.py", "process.py", "cli.py"),
+            "confidence_params": ("weight.py", "mef.py", "products.py", "replicas.py"),
+            "output_params": ("weight.py", "mef.py", "products.py", "replicas.py", "process.py", "cli.py"),
         }
         config = self._canonical_config()
         for section, filenames in consumers.items():
@@ -567,7 +567,9 @@ class TestValidateInputFiles(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             sp = os.path.join(tmp, "s.fits")
             fitsio.write(sp, np.full((32, 32), 1000.0, dtype=np.float32), clobber=True)
-            args = Namespace(input_file=f"{sp}[0]", flat_image=None, badpix_mask=None, dark_image=None)
+            args = Namespace(
+                input_file=f"{sp}[0]", flat_image=None, badpix_mask=None, dark_image=None, persistence=None
+            )
             self.assertTrue(validate_input_files(args))
             # An out-of-range index is the run's problem, not validation's.
             args.input_file = f"{sp}[7]"
@@ -662,7 +664,7 @@ class TestValidateInputFiles(unittest.TestCase):
             fp = os.path.join(tmp, "f.fits")
             fitsio.write(sp, np.full((32, 32), 1000.0, dtype=np.float32), clobber=True)
             fitsio.write(fp, np.ones((32, 32), dtype=np.float32), clobber=True)
-            args = Namespace(input_file=sp, flat_image=f"{fp}[0]", badpix_mask=None, dark_image=None)
+            args = Namespace(input_file=sp, flat_image=f"{fp}[0]", badpix_mask=None, dark_image=None, persistence=None)
             self.assertFalse(validate_input_files(args))
             args.flat_image = fp
             self.assertTrue(validate_input_files(args))
@@ -670,7 +672,9 @@ class TestValidateInputFiles(unittest.TestCase):
     def test_missing_input_still_reports_the_clean_path(self):
         # CFITSIO puts the spec at the end; `extract_hdu_spec` only strips a
         # trailing "[N]", so this is the form that must be reported cleanly.
-        args = Namespace(input_file="/nonexistent/dir.fits[2]", flat_image=None, badpix_mask=None, dark_image=None)
+        args = Namespace(
+            input_file="/nonexistent/dir.fits[2]", flat_image=None, badpix_mask=None, dark_image=None, persistence=None
+        )
         with contextlib.redirect_stdout(io.StringIO()) as buf:
             self.assertFalse(validate_input_files(args))
         self.assertIn("/nonexistent/dir.fits", buf.getvalue())

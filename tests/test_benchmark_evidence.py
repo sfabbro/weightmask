@@ -864,7 +864,7 @@ def test_perf_cpu_seconds_only_cover_the_timed_processing_region(tmp_path):
     ]
     with (
         patch("fitsio.FITS", return_value=Handle()),
-        patch.object(cli, "get_hdus_to_process", return_value=[0]),
+        patch.object(perf_megacam, "image_hdus", return_value=[0]),
         patch.object(cli, "determine_output_paths", return_value={}),
         patch.object(mef, "process_all_hdus", return_value=1),
         patch.object(perf_megacam, "_install_timing_collector", return_value=([], None)),

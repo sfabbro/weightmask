@@ -42,11 +42,11 @@ import yaml
 from astroquery.cadc import Cadc
 
 import weightmask.process as proc_mod
-from weightmask import cli, mef
+from weightmask import mef
 from weightmask.cli import determine_output_paths
 from weightmask.config import resolve_config
 from weightmask.mef import _resolve_max_workers
-from weightmask.utils import paths_alias
+from weightmask.utils import image_hdus, paths_alias
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
@@ -438,10 +438,10 @@ def _process_one_exposure(
     config = resolve_config(config_overrides)
     hdul_input = fitsio.FITS(str(in_path), "r")
     try:
-        hdus = cli.get_hdus_to_process(hdul_input, None)
+        hdus = image_hdus(hdul_input, None)
     except Exception as e:
         hdul_input.close()
-        raise SystemExit(f"get_hdus_to_process failed for {safe}: {e}")
+        raise SystemExit(f"image_hdus failed for {safe}: {e}")
     if hdu_limit > 0:
         hdus = hdus[:hdu_limit]
     nhdus_expected = len(hdus)
@@ -473,8 +473,6 @@ def _process_one_exposure(
         output_sky=str(output_dir / f"{tag}.sky.fits") if write_all else None,
         output_weight_raw=str(output_dir / f"{tag}.weight_raw.fits") if write_all else None,
         individual_masks=write_all,
-        max_workers=workers,
-        tile_size=1024,
     )
 
     paths = determine_output_paths(args, str(in_path), config)
@@ -497,7 +495,6 @@ def _process_one_exposure(
             hdul_flat,
             config,
             paths,
-            args,
             flat_path=str(flat) if flat else None,
             max_workers=workers,
             input_path=str(in_path),
@@ -868,7 +865,7 @@ def _run_cprofile_first_hdu(
     hdul = fitsio.FITS(str(in_path), "r")
     hdul_flat = fitsio.FITS(str(flat), "r") if flat else None
     try:
-        hdus = cli.get_hdus_to_process(hdul, None)
+        hdus = image_hdus(hdul, None)
         if hdu_limit > 0:
             hdus = hdus[:hdu_limit]
         mid = hdus[len(hdus) // 2]

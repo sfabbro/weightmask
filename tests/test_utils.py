@@ -2,7 +2,8 @@ import unittest
 
 import numpy as np
 
-from weightmask.utils import clean_config_dict, create_binary_mask, extract_hdu_spec
+from weightmask.config import clean_config_dict
+from weightmask.utils import create_binary_mask, extract_hdu_spec
 
 
 class TestUtils(unittest.TestCase):

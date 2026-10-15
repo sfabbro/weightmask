@@ -49,9 +49,10 @@ import fitsio
 import numpy as np
 import yaml
 
-from weightmask import cli, mef
+from weightmask import mef
 from weightmask.cli import determine_output_paths
 from weightmask.contract import QUALITY_BITS
+from weightmask.utils import image_hdus
 
 
 def _pod_run():
@@ -267,9 +268,9 @@ def main(argv=None) -> int:
     hdul_input = fitsio.FITS(str(exposure), "r")
     try:
         try:
-            hdus = [int(i) for i in cli.get_hdus_to_process(hdul_input, None)]
+            hdus = [int(i) for i in image_hdus(hdul_input, None)]
         except Exception as exc:
-            save_record(status="failed", error=f"get_hdus_to_process: {exc}")
+            save_record(status="failed", error=f"image_hdus: {exc}")
             hdul_input.close()
             return 4
         if options.hdus:
@@ -312,8 +313,6 @@ def main(argv=None) -> int:
             output_sky=None,
             output_weight_raw=None,
             individual_masks=False,
-            max_workers=options.workers,
-            tile_size=1024,
         )
         paths = determine_output_paths(args, str(exposure), config)
         for key in ("out_invvar_path", "out_sky_path", "out_weight_raw_path"):
@@ -332,7 +331,6 @@ def main(argv=None) -> int:
                 hdul_flat,
                 config,
                 paths,
-                args,
                 flat_path=str(options.flat) if options.flat else None,
                 max_workers=options.workers,
                 input_path=str(exposure),

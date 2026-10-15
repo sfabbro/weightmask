@@ -31,10 +31,10 @@ def evaluate_real_mef():
             print(f"Data shape: {data.shape}")
             print(f"Gain: {header.get('GAIN', 'N/A')}, Readnoise: {header.get('RDNOISE', 'N/A')}")
 
-            mask_data, _inv_var, weight_map, _conf, _sky, _info = process_image(data, header, None, config)
-
-            if weight_map is None:
-                print("Processing failed for this extension.")
+            try:
+                mask_data, _inv_var, weight_map, _conf, _sky, _info = process_image(data, header, None, config)
+            except (RuntimeError, ValueError) as exc:
+                print(f"Processing failed for this extension: {exc}")
                 failed = True
                 continue
 

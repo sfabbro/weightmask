@@ -222,7 +222,7 @@ def _sky_mesh_shape(shape, box):
     return (h, w), ((h - 1) // box + 1, (w - 1) // box + 1), box
 
 
-def _validated_sky_mesh(mesh, shape, box):
+def validated_sky_mesh(mesh, shape, box):
     shape, expected_shape, box = _sky_mesh_shape(shape, box)
     try:
         data = np.asarray(mesh)
@@ -278,7 +278,7 @@ def reconstruct_sky_mesh(mesh, shape, box):
     """Rebuild full-res sky from mesh (SEP node phase + natural cubic)."""
     # scipy CubicSpline rather than SEP's C bicubic; agree to sub-ADU on MegaPrime.
     # Swap back to a SEP port if bit-identical back() is ever required.
-    m, (h, w), box = _validated_sky_mesh(mesh, shape, box)
+    m, (h, w), box = validated_sky_mesh(mesh, shape, box)
     ny, nx = m.shape
     if ny == 1 and nx == 1:
         return np.full((h, w), float(m[0, 0]), dtype=np.float32)

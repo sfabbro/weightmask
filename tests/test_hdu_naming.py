@@ -10,7 +10,6 @@ import os
 import tempfile
 import threading
 import unittest
-from argparse import Namespace
 from unittest.mock import patch
 
 import fitsio
@@ -93,7 +92,6 @@ class TestOutputHduNaming(unittest.TestCase):
             _write_mef_with_ccd_ids(in_path, ccd_ids)
             _write_flat(flat_path, len(ccd_ids))
             paths = _paths(tmp, "named")
-            args = Namespace(tile_size=1024, individual_masks=False, max_workers=2)
             with fitsio.FITS(in_path) as hdul_in, fitsio.FITS(flat_path) as hdul_flat:
                 n = process_all_hdus(
                     list(range(1, len(ccd_ids) + 1)),
@@ -101,7 +99,6 @@ class TestOutputHduNaming(unittest.TestCase):
                     hdul_flat,
                     _load_cfg(),
                     paths,
-                    args,
                     flat_path=flat_path,
                     max_workers=2,
                     input_path=in_path,
@@ -131,7 +128,6 @@ class TestBoundedHduWindow(unittest.TestCase):
             _write_mef_with_ccd_ids(in_path, [f"ccd-{i}" for i in range(1, n_hdus + 1)], shape=(24, 24))
             _write_flat(flat_path, n_hdus, shape=(24, 24))
             paths = _paths(tmp, "bounded")
-            args = Namespace(tile_size=1024, individual_masks=False, max_workers=max_workers)
 
             live = {"now": 0, "peak": 0}
             lock = threading.Lock()
@@ -166,11 +162,11 @@ class TestBoundedHduWindow(unittest.TestCase):
 
             with (
                 patch.object(mef, "process_hdu", side_effect=fake_process_hdu),
-                patch.object(mef, "_store_output_maps"),
-                patch.object(mef, "_make_output_writers", return_value={}),
-                patch.object(mef, "_flush_hdu_output", side_effect=lambda *a, **k: held_at_flush.append(live["now"])),
-                patch.object(mef._ProductPublication, "validate"),
-                patch.object(mef._ProductPublication, "promote"),
+                patch.object(mef, "store_output_maps"),
+                patch.object(mef, "make_output_writers", return_value={}),
+                patch.object(mef, "flush_hdu_output", side_effect=lambda *a, **k: held_at_flush.append(live["now"])),
+                patch.object(mef.ProductPublication, "validate"),
+                patch.object(mef.ProductPublication, "promote"),
             ):
                 with fitsio.FITS(in_path) as hdul_in, fitsio.FITS(flat_path) as hdul_flat:
                     n = process_all_hdus(
@@ -179,7 +175,6 @@ class TestBoundedHduWindow(unittest.TestCase):
                         hdul_flat,
                         _load_cfg(),
                         paths,
-                        args,
                         flat_path=flat_path,
                         max_workers=max_workers,
                         input_path=in_path,

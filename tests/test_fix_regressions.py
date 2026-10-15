@@ -12,7 +12,6 @@ Each test pins one fix behaviorally (observable result, not source text):
 import os
 import tempfile
 import unittest
-from argparse import Namespace
 from unittest.mock import MagicMock, patch
 
 import fitsio
@@ -22,12 +21,13 @@ from weightmask import bad as bad_mod
 from weightmask import cosmics as cosmics_mod
 from weightmask import mef as cli_mod
 from weightmask.bad import detect_non_illuminated
-from weightmask.config import configuration_errors, default_config
+from weightmask.config import configuration_errors, default_config, resolve_config, section_config
 from weightmask.contract import QualityBit, build_weight_product
 from weightmask.cosmics import _filter_faint_components
-from weightmask.mef import _rescale_confidence_to_global, _StreamingMapWriter, _veto_dead_ccd_hdus, process_all_hdus
+from weightmask.mef import _veto_dead_ccd_hdus, process_all_hdus
 from weightmask.objects import ObjectDetection
 from weightmask.process import process_image
+from weightmask.products import _StreamingMapWriter, rescale_confidence_to_global
 from weightmask.satur import grow_bleed_trails
 from weightmask.streaks import StreakDetection
 from weightmask.variance import _calculate_inverse_variance_theoretical as f
@@ -95,7 +95,6 @@ class TestSingleFlatPrecompute(unittest.TestCase):
         hdul_input = MagicMock()
         hdul_input.__len__.return_value = 2
         hdul_input.__getitem__.side_effect = lambda i: hdu
-        args = Namespace(tile_size=1024)
 
         calls = []
 
@@ -109,15 +108,15 @@ class TestSingleFlatPrecompute(unittest.TestCase):
         # compute seam lives in weightmask.bad, behind the cache wrapper.
         with (
             patch.object(bad_mod, "compute_flat_bad_mask", side_effect=counting_compute),
-            patch.object(cli_mod, "_make_output_writers", return_value={}),
-            patch.object(cli_mod, "_store_output_maps"),
-            patch.object(cli_mod, "_flush_hdu_output"),
+            patch.object(cli_mod, "make_output_writers", return_value={}),
+            patch.object(cli_mod, "store_output_maps"),
+            patch.object(cli_mod, "flush_hdu_output"),
         ):
-            n = process_all_hdus([1], hdul_input, hdul_flat, config, {}, args, flat_path="flat.fits")
+            n = process_all_hdus([1], hdul_input, hdul_flat, config, {}, flat_path="flat.fits")
 
         self.assertEqual(n, 1)
         self.assertEqual(len(calls), 1)  # one HDU -> exactly one mask compute, in its worker
-        # Worker miss path uses _effective_tile_size (32x32 → 16), matching process_image.
+        # Worker miss path uses effective_tile_size (32x32 → 16), matching process_image.
         self.assertEqual(calls[0], 16)
 
 
@@ -160,12 +159,11 @@ class TestInvalidVarianceWritten(unittest.TestCase):
                 "out_weight_raw_path": None,
                 "individual_mask_paths": {},
             }
-            args = Namespace(tile_size=32, individual_masks=False, max_workers=1)
             cfg = default_config()
             cfg["streak_masking"]["enable"] = False
             with patch("weightmask.process.calculate_inverse_variance", side_effect=fake_ivar):
                 with fitsio.FITS(sp) as hi, fitsio.FITS(fp) as hf:
-                    n = process_all_hdus([0], hi, hf, cfg, paths, args, flat_path=fp, input_path=sp)
+                    n = process_all_hdus([0], hi, hf, cfg, paths, flat_path=fp, input_path=sp, max_workers=1)
             self.assertEqual(n, 1)
             with fitsio.FITS(paths["out_mask_path"]) as f:
                 mask = f[0].read()
@@ -215,10 +213,6 @@ def _run_with_detector_prior(detector_result, detector_prior, bad_mask=None):
         patch("weightmask.process.detect_cosmic_rays", return_value=zero_mask.copy()),
         patch("weightmask.process.detect_objects", return_value=ObjectDetection(zero_mask.copy(), zero_mask.copy())),
         patch("weightmask.process.calculate_inverse_variance", return_value=np.ones(shape, dtype=np.float32)),
-        patch(
-            "weightmask.process.generate_weight_and_confidence",
-            return_value=(np.ones(shape, dtype=np.float32), np.ones(shape, dtype=np.float32), None),
-        ),
         patch("weightmask.process.detect_streaks", side_effect=capture),
     ):
         result = process_image(
@@ -319,12 +313,11 @@ class TestElixirKeepMap(unittest.TestCase):
                 "out_weight_raw_path": None,
                 "individual_mask_paths": {},
             }
-            args = Namespace(tile_size=32, individual_masks=False, max_workers=1)
             cfg = default_config()
             cfg["streak_masking"]["enable"] = False
             with fitsio.FITS(sp) as hi, fitsio.FITS(fp) as hf, fitsio.FITS(bp) as hb:
                 n = process_all_hdus(
-                    [0], hi, hf, cfg, paths, args, flat_path=fp, input_path=sp, hdul_badpix=hb, badpix_path=bp
+                    [0], hi, hf, cfg, paths, flat_path=fp, input_path=sp, hdul_badpix=hb, badpix_path=bp, max_workers=1
                 )
             self.assertEqual(n, 1)
             with fitsio.FITS(paths["out_mask_path"]) as f:
@@ -337,7 +330,7 @@ class TestDeadCcdVeto(unittest.TestCase):
         masks = {i: np.zeros((8, 8), dtype=bool) for i in range(1, 9)}
         meds = {i: 0.94 for i in range(1, 9)}
         meds[4] = 1.53
-        _veto_dead_ccd_hdus(masks, meds, {})
+        _veto_dead_ccd_hdus(masks, meds, section_config("flat_masking"))
         self.assertTrue(bool(masks[4].all()))
         for i in range(1, 9):
             if i != 4:
@@ -346,13 +339,13 @@ class TestDeadCcdVeto(unittest.TestCase):
     def test_agreeing_ccds_untouched(self):
         masks = {i: np.zeros((8, 8), dtype=bool) for i in range(1, 9)}
         meds = {i: 0.94 + 0.001 * i for i in range(1, 9)}
-        _veto_dead_ccd_hdus(masks, meds, {})
+        _veto_dead_ccd_hdus(masks, meds, section_config("flat_masking"))
         for i in range(1, 9):
             self.assertFalse(bool(masks[i].any()))
 
     def test_small_run_skipped(self):
         masks = {0: np.zeros((8, 8), dtype=bool)}
-        _veto_dead_ccd_hdus(masks, {0: 99.0}, {})
+        _veto_dead_ccd_hdus(masks, {0: 99.0}, section_config("flat_masking"))
         self.assertFalse(bool(masks[0].any()))
 
 
@@ -387,9 +380,8 @@ class TestConfidenceGlobalHookup(unittest.TestCase):
                 "out_weight_raw_path": None,
                 "individual_mask_paths": {},
             }
-            args = Namespace(tile_size=1024, individual_masks=False)
             with fitsio.FITS(sp) as hi, fitsio.FITS(fp) as hf:
-                n = process_all_hdus([1, 2], hi, hf, cfg, paths, args, flat_path=fp)
+                n = process_all_hdus([1, 2], hi, hf, cfg, paths, flat_path=fp)
             self.assertEqual(n, 2)
             with fitsio.FITS(os.path.join(tmp, "o.conf.fits")) as f:
                 c1, c2 = f[1].read(), f[2].read()
@@ -421,9 +413,8 @@ class TestDarkLeg(unittest.TestCase):
                 "out_weight_raw_path": None,
                 "individual_mask_paths": {},
             }
-            args = Namespace(tile_size=1024, individual_masks=False)
             with fitsio.FITS(sp) as hi, fitsio.FITS(fp) as hf, fitsio.FITS(dp) as hd:
-                n = process_all_hdus([0], hi, hf, cfg, paths, args, flat_path=fp, hdul_dark=hd)
+                n = process_all_hdus([0], hi, hf, cfg, paths, flat_path=fp, hdul_dark=hd)
             self.assertEqual(n, 1)
             with fitsio.FITS(os.path.join(tmp, "o.mask.fits")) as f:
                 m = f[0].read()
@@ -440,8 +431,8 @@ class TestGlobalConfidenceRescale(unittest.TestCase):
             # Global normalization runs once on raw weights, before any clipping.
             w.write(1, np.ones((8, 8), dtype=np.float32), hdr, "C1")
             w.write(2, np.full((8, 8), 10.0, dtype=np.float32), hdr, "C2")
-            cfg = {"output_params": {"output_map_format": "confidence"}}
-            _rescale_confidence_to_global({"out_map_path": path}, {"map": w}, cfg)
+            cfg = resolve_config({"output_params": {"output_map_format": "confidence"}})
+            rescale_confidence_to_global({"out_map_path": path}, {"map": w}, cfg)
 
             with fitsio.FITS(path) as f:
                 # global p99 ~10: HDU1 -> 0.1, HDU2 stays 1.0
@@ -450,10 +441,10 @@ class TestGlobalConfidenceRescale(unittest.TestCase):
 
     def test_skip_when_weight_format(self):
         # Must not touch anything when the map product holds weight.
-        _rescale_confidence_to_global(
+        rescale_confidence_to_global(
             {"out_map_path": "/nonexistent.fits"},
             {},
-            {"output_params": {"output_map_format": "weight"}},
+            resolve_config({"output_params": {"output_map_format": "weight"}}),
         )
 
 

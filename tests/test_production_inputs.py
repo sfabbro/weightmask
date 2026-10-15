@@ -16,7 +16,7 @@ import numpy as np
 
 import weightmask.process as proc
 from benchmarks.production_inputs import capture_detector_calls, capture_detector_inputs, streak_config
-from weightmask import MASK_BITS
+from weightmask import QUALITY_BITS
 from weightmask.background import estimate_background as production_background
 from weightmask.config import default_config
 from weightmask.objects import ObjectDetection
@@ -93,7 +93,7 @@ class TestCaptureMatchesProduction(unittest.TestCase):
             )
         bar = np.zeros(SHAPE, dtype=bool)
         bar[58:62, 20:100] = True
-        self.assertTrue(np.any(result[0][bar] & MASK_BITS["DETECTED"]))
+        self.assertTrue(np.any(result[0][bar] & QUALITY_BITS["DETECTED"]))
 
     def test_accepted_compact_elongated_source_hands_off_to_streak(self):
         cfg = _enabled_config()
@@ -110,8 +110,8 @@ class TestCaptureMatchesProduction(unittest.TestCase):
                 cfg,
                 tile_size=32,
             )
-        self.assertTrue(np.all(result[0][bar] & MASK_BITS["STREAK"]))
-        self.assertFalse(np.any(result[0][bar] & MASK_BITS["DETECTED"]))
+        self.assertTrue(np.all(result[0][bar] & QUALITY_BITS["STREAK"]))
+        self.assertFalse(np.any(result[0][bar] & QUALITY_BITS["DETECTED"]))
 
     def test_empty_streak_detector_matches_handoff_disabled_object_footprint(self):
         def run(handoff, accepted, frame=None):
@@ -131,8 +131,8 @@ class TestCaptureMatchesProduction(unittest.TestCase):
 
         disabled = run(False, np.zeros(SHAPE, dtype=bool))
         enabled = run(True, np.zeros(SHAPE, dtype=bool))
-        disabled_detected = (disabled & MASK_BITS["DETECTED"]) != 0
-        enabled_detected = (enabled & MASK_BITS["DETECTED"]) != 0
+        disabled_detected = (disabled & QUALITY_BITS["DETECTED"]) != 0
+        enabled_detected = (enabled & QUALITY_BITS["DETECTED"]) != 0
         np.testing.assert_array_equal(enabled_detected, disabled_detected)
 
     def test_handoff_does_not_change_final_streak_data_or_rms_inputs(self):
@@ -221,8 +221,8 @@ class TestCaptureMatchesProduction(unittest.TestCase):
         disabled = run(False)
         enabled = run(True)
         np.testing.assert_array_equal(
-            (enabled & MASK_BITS["DETECTED"]) != 0,
-            (disabled & MASK_BITS["DETECTED"]) != 0,
+            (enabled & QUALITY_BITS["DETECTED"]) != 0,
+            (disabled & QUALITY_BITS["DETECTED"]) != 0,
         )
 
     def test_partial_streak_acceptance_restores_only_unaccepted_footprint(self):
@@ -247,10 +247,10 @@ class TestCaptureMatchesProduction(unittest.TestCase):
             partial = process_image(
                 frame, {"GAIN": 1.5, "RDNOISE": 5.0}, np.ones(SHAPE, dtype=np.float32), cfg, tile_size=32
             )[0]
-        disabled_detected = (disabled & MASK_BITS["DETECTED"]) != 0
-        partial_detected = (partial & MASK_BITS["DETECTED"]) != 0
+        disabled_detected = (disabled & QUALITY_BITS["DETECTED"]) != 0
+        partial_detected = (partial & QUALITY_BITS["DETECTED"]) != 0
         np.testing.assert_array_equal(partial_detected, disabled_detected & ~accepted)
-        self.assertTrue(np.all(partial[accepted] & MASK_BITS["STREAK"]))
+        self.assertTrue(np.all(partial[accepted] & QUALITY_BITS["STREAK"]))
 
     def test_streak_overlap_never_subtracts_ordinary_object_detection(self):
         cfg = _enabled_config()
@@ -281,11 +281,11 @@ class TestCaptureMatchesProduction(unittest.TestCase):
             accepted = process_image(
                 _frame(), {"GAIN": 1.5, "RDNOISE": 5.0}, np.ones(SHAPE, dtype=np.float32), cfg, tile_size=32
             )[0]
-        empty_detected = (empty & MASK_BITS["DETECTED"]) != 0
-        accepted_detected = (accepted & MASK_BITS["DETECTED"]) != 0
+        empty_detected = (empty & QUALITY_BITS["DETECTED"]) != 0
+        accepted_detected = (accepted & QUALITY_BITS["DETECTED"]) != 0
         overlap = accepted_detected & empty_detected
         self.assertGreater(int(np.count_nonzero(overlap)), 0)
-        self.assertTrue(np.any(((accepted & MASK_BITS["STREAK"]) != 0) & overlap))
+        self.assertTrue(np.any(((accepted & QUALITY_BITS["STREAK"]) != 0) & overlap))
         self.assertTrue(background_inputs)
         self.assertTrue(streak_inputs)
         self.assertTrue(np.all(background_inputs[-1][overlap]))
@@ -314,7 +314,7 @@ class TestCaptureMatchesProduction(unittest.TestCase):
                 _frame(), {"GAIN": 1.5, "RDNOISE": 5.0}, np.ones(SHAPE, dtype=np.float32), cfg, tile_size=32
             )[0]
         self.assertGreaterEqual(len(calls), 2)
-        detected = (result & MASK_BITS["DETECTED"]) != 0
+        detected = (result & QUALITY_BITS["DETECTED"]) != 0
         self.assertTrue(np.all(detected[first]))
         self.assertTrue(np.all(detected[later_fallback]))
 

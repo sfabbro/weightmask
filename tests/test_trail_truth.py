@@ -33,7 +33,7 @@ from benchmarks.curate_trail_truth import (
     write_fixture,
 )
 from weightmask.contract import QualityBit
-from weightmask.mef import _streak_catalog
+from weightmask.replicas import streak_catalog
 
 FIXTURE = Path(__file__).resolve().parents[1] / "benchmarks" / "trail_truth" / "megacam_real_labels.json"
 MEGACAM_SHAPE = (4644, 2112)
@@ -279,7 +279,7 @@ def test_pipeline_common_geometry_matches_curation_tangent_plane():
     mask = np.zeros((64, 64), np.uint32)
     mask[np.arange(48), np.arange(48) + 8] = int(QualityBit.STREAK)
 
-    component = _streak_catalog(0, mask, header)[0]
+    component = streak_catalog(0, mask, header)[0]
     reference = line_to_mosaic(
         component["local"]["point"], component["local"]["direction"], geometry_from_header(header)
     )
